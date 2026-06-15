@@ -1,0 +1,323 @@
+/**
+ * srcode hooks unit tests.
+ *
+ * We exercise the loader (file discovery, merge, dedupe), the runner
+ * (success / non-zero / timeout / placeholder substitution), and the
+ * extension factory (registers all four event handlers and dispatches the
+ * right ones).
+ *
+ * The runner tests use `bun -e` as a fixture so we don't need a separate
+ * shell script; the extension tests use a fake ExtensionAPI that records
+ * subscriptions, never spawning an actual subprocess.
+ */
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  __resetWarnedPaths,
+  hookConfigPaths,
+  loadHooks,
+  type Hook,
+} from "../src/extensions/hooks/config.ts";
+import { runHook, substitute } from "../src/extensions/hooks/runner.ts";
+import { createHooksExtension } from "../src/extensions/hooks/index.ts";
+
+let workdir: string;
+let originalHome: string | undefined;
+let homeRoot: string;
+
+beforeEach(() => {
+  workdir = mkdtempSync(join(tmpdir(), "srcode-hooks-"));
+  homeRoot = mkdtempSync(join(tmpdir(), "srcode-hooks-home-"));
+  originalHome = process.env.SRCODE_HOME;
+  process.env.SRCODE_HOME = homeRoot;
+  __resetWarnedPaths();
+});
+
+afterEach(() => {
+  if (originalHome === undefined) delete process.env.SRCODE_HOME;
+  else process.env.SRCODE_HOME = originalHome;
+  try { rmSync(workdir, { recursive: true, force: true }); } catch {}
+  try { rmSync(homeRoot, { recursive: true, force: true }); } catch {}
+});
+
+function writeHomeConfig(content: unknown): void {
+  const dir = join(homeRoot);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "hooks.json"), JSON.stringify(content));
+}
+
+function writeCwdConfig(content: unknown): void {
+  const dir = join(workdir, ".srcode");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "hooks.json"), JSON.stringify(content));
+}
+
+test("hookConfigPaths returns home then cwd", () => {
+  const [home, cwd] = hookConfigPaths(workdir);
+  expect(home).toBe(join(homeRoot, "hooks.json"));
+  expect(cwd).toBe(join(workdir, ".srcode", "hooks.json"));
+});
+
+test("loadHooks returns [] when no config files exist", () => {
+  expect(loadHooks(workdir)).toEqual([]);
+});
+
+test("loadHooks merges home and cwd layers, dedupes by event+tool+command", () => {
+  writeHomeConfig({
+    hooks: [
+      { event: "PreToolUse", tool: "edit", command: "echo home-edit" },
+      { event: "PostToolUse", command: "echo shared" },
+    ],
+  });
+  writeCwdConfig({
+    hooks: [
+      // exact duplicate of home — should drop
+      { event: "PostToolUse", command: "echo shared" },
+      // cwd-only
+      { event: "PreToolUse", tool: "write", command: "echo cwd-write" },
+    ],
+  });
+  const hooks = loadHooks(workdir);
+  expect(hooks.length).toBe(3);
+  expect(hooks[0]).toMatchObject({ event: "PreToolUse", tool: "edit", command: "echo home-edit" });
+  expect(hooks[1]).toMatchObject({ event: "PostToolUse", command: "echo shared" });
+  expect(hooks[2]).toMatchObject({ event: "PreToolUse", tool: "write", command: "echo cwd-write" });
+  // defaults applied
+  expect(hooks[0]!.timeoutMs).toBe(30_000);
+  expect(hooks[0]!.blocking).toBe(true);
+});
+
+test("loadHooks drops entries with bad event/command and ignores unknown fields", () => {
+  writeCwdConfig({
+    hooks: [
+      { event: "PreToolUse", command: "echo ok", timeoutMs: 200_000 }, // capped
+      { event: "Bogus", command: "echo no" },
+      { event: "PreToolUse", command: "" },
+      { event: "PreToolUse" }, // no command
+    ],
+  });
+  const hooks = loadHooks(workdir);
+  expect(hooks.length).toBe(1);
+  expect(hooks[0]!.timeoutMs).toBe(120_000);
+});
+
+test("loadHooks tolerates malformed JSON without throwing", () => {
+  const dir = join(workdir, ".srcode");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "hooks.json"), "{not json");
+  expect(loadHooks(workdir)).toEqual([]);
+});
+
+test("substitute fills $FILE / $TOOL / $TURN and leaves unknowns empty", () => {
+  expect(substitute("fmt $FILE for $TOOL turn=$TURN", {
+    FILE: "/x/y.ts",
+    TOOL: "edit",
+    TURN: "3",
+  })).toBe("fmt /x/y.ts for edit turn=3");
+  expect(substitute("nada $UNKNOWN", {})).toBe("nada ");
+});
+
+test("runHook returns exitCode=0 on success", async () => {
+  const hook: Hook = {
+    event: "PreToolUse",
+    command: "exit 0",
+    timeoutMs: 5000,
+  };
+  const res = await runHook(hook, {});
+  expect(res.exitCode).toBe(0);
+  expect(res.timedOut).toBe(false);
+});
+
+test("runHook reports non-zero exit", async () => {
+  const hook: Hook = {
+    event: "PreToolUse",
+    command: "exit 7",
+    timeoutMs: 5000,
+  };
+  const res = await runHook(hook, {});
+  expect(res.exitCode).toBe(7);
+  expect(res.timedOut).toBe(false);
+});
+
+test("runHook substitutes placeholders into the command", async () => {
+  const hook: Hook = {
+    event: "PreToolUse",
+    command: "test \"$TOOL\" = edit && test \"$FILE\" = /tmp/x.ts",
+    timeoutMs: 5000,
+  };
+  const res = await runHook(hook, { TOOL: "edit", FILE: "/tmp/x.ts" });
+  expect(res.exitCode).toBe(0);
+});
+
+test("runHook hard-kills on timeout", async () => {
+  const hook: Hook = {
+    event: "PreToolUse",
+    command: "sleep 5",
+    timeoutMs: 100,
+  };
+  const start = Date.now();
+  const res = await runHook(hook, {});
+  const elapsed = Date.now() - start;
+  expect(res.timedOut).toBe(true);
+  expect(elapsed).toBeLessThan(2000);
+});
+
+// ---------------------------------------------------------------------------
+// Extension factory wiring
+// ---------------------------------------------------------------------------
+
+interface FakeApi {
+  handlers: Record<string, (event: unknown) => unknown>;
+  messages: Array<{ customType?: string; content?: string }>;
+}
+
+function makeFakeApi(): FakeApi & { api: Parameters<ReturnType<typeof createHooksExtension>>[0] } {
+  const handlers: FakeApi["handlers"] = {};
+  const messages: FakeApi["messages"] = [];
+  const api = {
+    on: (event: string, handler: (event: unknown) => unknown) => {
+      handlers[event] = handler;
+    },
+    sendMessage: (msg: { customType?: string; content?: string }) => {
+      messages.push(msg);
+    },
+    registerTool: () => {},
+    registerCommand: () => {},
+    registerMessageRenderer: () => {},
+  } as unknown as Parameters<ReturnType<typeof createHooksExtension>>[0];
+  return { handlers, messages, api };
+}
+
+test("factory registers handlers for all four mapped events", () => {
+  const factory = createHooksExtension({
+    load: () => [],
+    run: async () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false }),
+  });
+  const fake = makeFakeApi();
+  factory(fake.api);
+  expect(Object.keys(fake.handlers).sort()).toEqual(
+    ["session_shutdown", "tool_call", "tool_result", "turn_end"].sort(),
+  );
+});
+
+test("PreToolUse hook with non-zero exit and blocking=true blocks the tool", async () => {
+  const factory = createHooksExtension({
+    load: () => [
+      { event: "PreToolUse", tool: "edit", command: "fmt $FILE", timeoutMs: 1000, blocking: true },
+    ],
+    run: async (hook, vars) => {
+      // Make sure the runner gets the substituted vars.
+      expect(vars.FILE).toBe("/abs/x.ts");
+      expect(vars.TOOL).toBe("edit");
+      expect(hook.command).toBe("fmt $FILE");
+      return { exitCode: 1, stdout: "", stderr: "no formatter found", timedOut: false };
+    },
+  });
+  const fake = makeFakeApi();
+  factory(fake.api);
+  const handler = fake.handlers.tool_call;
+  expect(typeof handler).toBe("function");
+
+  const result = (await handler!({
+    type: "tool_call",
+    toolCallId: "t1",
+    toolName: "edit",
+    input: { path: "/abs/x.ts", edits: [] },
+  })) as { block?: boolean; reason?: string };
+
+  expect(result.block).toBe(true);
+  expect(result.reason).toContain("no formatter found");
+});
+
+test("PreToolUse hook with blocking=false only warns on failure", async () => {
+  const factory = createHooksExtension({
+    load: () => [
+      { event: "PreToolUse", command: "noop", timeoutMs: 1000, blocking: false },
+    ],
+    run: async () => ({ exitCode: 1, stdout: "", stderr: "boom", timedOut: false }),
+  });
+  const fake = makeFakeApi();
+  factory(fake.api);
+  const result = (await fake.handlers.tool_call!({
+    type: "tool_call",
+    toolCallId: "t1",
+    toolName: "edit",
+    input: {},
+  })) as { block?: boolean };
+  expect(result.block).toBeUndefined();
+  expect(fake.messages.some((m) => m.customType === "srcode.hook.warn")).toBe(true);
+});
+
+test("PostToolUse failure surfaces a warning, never blocks", async () => {
+  const factory = createHooksExtension({
+    load: () => [{ event: "PostToolUse", command: "x", timeoutMs: 1000 }],
+    run: async () => ({ exitCode: 2, stdout: "", stderr: "", timedOut: false }),
+  });
+  const fake = makeFakeApi();
+  factory(fake.api);
+  const out = await fake.handlers.tool_result!({
+    type: "tool_result",
+    toolCallId: "t1",
+    toolName: "edit",
+    input: {},
+    content: [],
+    isError: false,
+  });
+  expect(out).toEqual({});
+  expect(fake.messages.some((m) => m.customType === "srcode.hook.warn")).toBe(true);
+});
+
+test("turn_end fires PostUserMessage hooks with $TURN populated", async () => {
+  let captured: Record<string, string | undefined> = {};
+  const factory = createHooksExtension({
+    load: () => [{ event: "PostUserMessage", command: "echo $TURN", timeoutMs: 1000 }],
+    run: async (_hook, vars) => {
+      captured = vars;
+      return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+    },
+  });
+  const fake = makeFakeApi();
+  factory(fake.api);
+  await fake.handlers.turn_end!({ type: "turn_end", turnIndex: 4, message: {}, toolResults: [] });
+  expect(captured.TURN).toBe("4");
+});
+
+test("session_shutdown fires PreSessionEnd hooks", async () => {
+  let calls = 0;
+  const factory = createHooksExtension({
+    load: () => [{ event: "PreSessionEnd", command: "cleanup", timeoutMs: 1000 }],
+    run: async () => {
+      calls += 1;
+      return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+    },
+  });
+  const fake = makeFakeApi();
+  factory(fake.api);
+  await fake.handlers.session_shutdown!({ type: "session_shutdown", reason: "quit" });
+  expect(calls).toBe(1);
+});
+
+test("non-matching tool name skips the hook", async () => {
+  let runs = 0;
+  const factory = createHooksExtension({
+    load: () => [
+      { event: "PreToolUse", tool: "edit", command: "x", timeoutMs: 1000, blocking: true },
+    ],
+    run: async () => {
+      runs += 1;
+      return { exitCode: 1, stdout: "", stderr: "", timedOut: false };
+    },
+  });
+  const fake = makeFakeApi();
+  factory(fake.api);
+  const out = (await fake.handlers.tool_call!({
+    type: "tool_call",
+    toolCallId: "t1",
+    toolName: "read", // <- doesn't match "edit"
+    input: { path: "/x" },
+  })) as { block?: boolean };
+  expect(runs).toBe(0);
+  expect(out.block).toBeUndefined();
+});

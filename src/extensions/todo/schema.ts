@@ -1,0 +1,41 @@
+/**
+ * TodoWrite schema + constants.
+ *
+ * Mirrors the field shape used by claude-code's TodoWriteTool
+ * (see claude-code/packages/builtin-tools/src/tools/TodoWriteTool/TodoWriteTool.ts:13-29)
+ * but expressed as typebox so it composes with pi-coding-agent's tool runtime.
+ */
+import { Type, type Static } from "@earendil-works/pi-ai";
+
+export const TodoStatus = Type.Union([
+  Type.Literal("pending"),
+  Type.Literal("in_progress"),
+  Type.Literal("completed"),
+]);
+
+export const TodoItem = Type.Object({
+  content: Type.String({
+    description: "Imperative form describing the task. Example: 'Run tests'.",
+  }),
+  activeForm: Type.String({
+    description:
+      "Present-continuous form shown while the task is in_progress. Example: 'Running tests'.",
+  }),
+  status: TodoStatus,
+  id: Type.Optional(
+    Type.String({
+      description:
+        "Stable identifier. Provide on first add to keep the same task across updates; auto-assigned otherwise.",
+    }),
+  ),
+});
+
+export const TodoWriteParams = Type.Object({
+  todos: Type.Array(TodoItem, {
+    description:
+      "Full updated todo list. Replaces the previous list — pass every item you want to keep, with their final statuses.",
+  }),
+});
+
+export type Todo = Static<typeof TodoItem>;
+export type TodoWriteInput = Static<typeof TodoWriteParams>;

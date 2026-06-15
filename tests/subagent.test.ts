@@ -29,7 +29,7 @@ test("discoverAgents finds the four bundled roles under user scope", () => {
   expect(names.has("reviewer")).toBe(true);
 
   // Source must be "user" — bundled agents are loaded under user scope so
-  // they're available without symlinking into ~/.pi/agent.
+  // they're available without symlinking into ~/.srcode/agent.
   for (const a of result.agents) expect(a.source).toBe("user");
 });
 

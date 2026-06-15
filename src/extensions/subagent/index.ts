@@ -235,7 +235,7 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 }
 
 async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
-	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
+	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "srcode-subagent-"));
 	const safeName = agentName.replace(/[^\w.-]+/g, "_");
 	const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
 	await withFileMutationQueue(filePath, async () => {
@@ -257,7 +257,7 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 		return { command: process.execPath, args };
 	}
 
-	return { command: "pi", args };
+	return { command: "srcode", args };
 }
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
@@ -463,8 +463,8 @@ export default function (pi: ExtensionAPI) {
 			"Delegate tasks to specialized subagents with isolated context.",
 			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
 			"Built-in agents (always available): scout, planner, worker, reviewer.",
-			"User-level overrides may live in ~/.pi/agent/agents/<name>.md (same name = replaces built-in).",
-			'Project-local agents in .pi/agents are opt-in: set agentScope: "both" (or "project").',
+			"User-level overrides may live in ~/.srcode/agent/agents/<name>.md (same name = replaces built-in).",
+			'Project-local agents in .srcode/agents are opt-in: set agentScope: "both" (or "project").',
 			"Do NOT shell out to `ls` to discover agents — call this tool with an obviously wrong agent name to get the authoritative list, or just trust the four built-ins above.",
 		].join(" "),
 		parameters: SubagentParams,

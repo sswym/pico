@@ -5,7 +5,7 @@
  * with one srcode-specific change: agents bundled at
  * `src/extensions/subagent/agents/` are loaded by default (under the "user"
  * scope) so the four built-in roles work out of the box. User-defined agents
- * in ~/.pi/agent/agents/ still override by name.
+ * in ~/.srcode/agent/agents/ still override by name.
  */
 
 import * as fs from "node:fs";
@@ -94,7 +94,7 @@ function isDirectory(p: string): boolean {
 function findNearestProjectAgentsDir(cwd: string): string | null {
 	let currentDir = cwd;
 	while (true) {
-		const candidate = path.join(currentDir, ".pi", "agents");
+		const candidate = path.join(currentDir, ".srcode", "agents");
 		if (isDirectory(candidate)) return candidate;
 
 		const parentDir = path.dirname(currentDir);
@@ -108,7 +108,7 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
 
 	// Builtins are loaded first under the "user" scope; same-named entries from
-	// ~/.pi/agent/agents/ replace them via Map.set().
+	// ~/.srcode/agent/agents/ replace them via Map.set().
 	const builtinAgents = scope === "project" ? [] : loadAgentsFromDir(BUILTIN_AGENTS_DIR, "user");
 	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
 	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");

@@ -7,9 +7,9 @@
  *   - injects a recall block into the system prompt at the start of each turn
  *   - auto-extracts user prefs / project decisions on session shutdown
  *
- * Storage layout: ~/.config/srcode/memory.db (overridable via $SRCODE_MEMORY_DB).
+ * Storage layout: ~/.srcode/memory.db (overridable via $SRCODE_MEMORY_DB,
+ * or relocate the whole srcode root via $SRCODE_HOME).
  */
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
@@ -21,13 +21,12 @@ import { autoExtractFromMessages, type ExtractableMessage } from "./extract.ts";
 import { formatFactLine, formatRecallBlock, systemPromptBlock } from "./prompt.ts";
 import { MemoryStore, type Fact } from "./store.ts";
 import { VALID_CATEGORIES, type Category } from "./schema.ts";
+import { srcodeHome } from "../paths.ts";
 
 function resolveDbPath(): string {
   const override = process.env.SRCODE_MEMORY_DB;
   if (override) return override;
-  const xdg = process.env.XDG_CONFIG_HOME;
-  const root = xdg ? join(xdg, "srcode") : join(homedir(), ".config", "srcode");
-  return join(root, "memory.db");
+  return join(srcodeHome(), "memory.db");
 }
 
 const MemoryParams = Type.Object({
