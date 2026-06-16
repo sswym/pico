@@ -12,8 +12,16 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { applyOverrides, loadSubagentConfig } from "./config.ts";
 
 export type AgentScope = "user" | "project" | "both";
+
+export interface AcceptanceConfig {
+	criteria?: string[];
+	evidence?: Array<{ command: string; expect?: string }>;
+	selfRepair?: boolean;
+	maxRepairAttempts?: number;
+}
 
 export interface AgentConfig {
 	name: string;
@@ -23,6 +31,15 @@ export interface AgentConfig {
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
+	thinking?: string; // "low" | "medium" | "high"
+	maxExecutionTimeMs?: number; // wall-clock timeout per invocation
+	maxTokens?: number; // --max-tokens override
+	fallbackModels?: string[]; // ordered list of models to retry on provider failure
+	systemPromptMode?: "append" | "replace"; // default "append"
+	inheritProjectContext?: boolean; // whether to pass project instructions
+	inheritSkills?: boolean; // whether to pass skills catalog
+	outputMode?: "inline" | "file-only"; // large output handling
+	acceptance?: AcceptanceConfig; // structured acceptance contract
 }
 
 export interface AgentDiscoveryResult {
@@ -30,7 +47,26 @@ export interface AgentDiscoveryResult {
 	projectAgentsDir: string | null;
 }
 
-const BUILTIN_AGENTS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "agents");
+const BUILTIN_AGENTS_DIR = resolveBuiltinAgentsDir();
+
+/**
+ * Locate the bundled agents/ directory.
+ *
+ * In source mode (`bun run bin/srcode.ts`), `import.meta.url` points to this
+ * file, so agents/ is its sibling. In Bun-compiled binaries, `import.meta.url`
+ * resolves into `/$bunfs/...`, which is a virtual filesystem that does NOT
+ * include .md assets — `fs.readdirSync` on that path returns nothing. The
+ * compiled binary ships the agent definitions on disk next to the executable
+ * (see scripts/build.ts), so we fall back to `<execDir>/agents` there.
+ */
+function resolveBuiltinAgentsDir(): string {
+	const url = import.meta.url;
+	const isBunBinary = url.includes("$bunfs") || url.includes("~BUN") || url.includes("%7EBUN");
+	if (isBunBinary) {
+		return path.join(path.dirname(process.execPath), "agents");
+	}
+	return path.join(path.dirname(fileURLToPath(url)), "agents");
+}
 
 function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
 	const agents: AgentConfig[] = [];
@@ -58,25 +94,91 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			continue;
 		}
 
-		const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
+		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
 
-		if (!frontmatter.name || !frontmatter.description) {
+		if (typeof frontmatter.name !== "string" || typeof frontmatter.description !== "string") {
 			continue;
 		}
 
-		const tools = frontmatter.tools
-			?.split(",")
-			.map((t: string) => t.trim())
-			.filter(Boolean);
+		const tools =
+			typeof frontmatter.tools === "string"
+				? frontmatter.tools
+						.split(",")
+						.map((t) => t.trim())
+						.filter(Boolean)
+				: undefined;
+
+		const fallbackModels =
+			typeof frontmatter.fallbackModels === "string"
+				? frontmatter.fallbackModels
+						.split(",")
+						.map((m) => m.trim())
+						.filter(Boolean)
+				: Array.isArray(frontmatter.fallbackModels)
+					? (frontmatter.fallbackModels as unknown[]).map((m) => String(m).trim()).filter(Boolean)
+					: undefined;
+
+		const toNumber = (v: unknown): number | undefined => {
+			if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+			if (typeof v === "string") {
+				const n = Number(v);
+				if (Number.isFinite(n) && n > 0) return n;
+			}
+			return undefined;
+		};
+		const toBool = (v: unknown): boolean | undefined => {
+			if (typeof v === "boolean") return v;
+			if (v === "true") return true;
+			if (v === "false") return false;
+			return undefined;
+		};
+
+		// Acceptance gate (structured contract for output verification)
+		let acceptance: AcceptanceConfig | undefined;
+		if (frontmatter.acceptance && typeof frontmatter.acceptance === "object") {
+			const a = frontmatter.acceptance as Record<string, unknown>;
+			const criteria = Array.isArray(a.criteria)
+				? (a.criteria as unknown[]).map((c) => String(c)).filter(Boolean)
+				: undefined;
+			const evidence = Array.isArray(a.evidence)
+				? (a.evidence as unknown[])
+						.filter((e): e is Record<string, unknown> => !!e && typeof e === "object")
+						.map((e) => ({
+							command: String(e.command ?? "").trim(),
+							expect: typeof e.expect === "string" ? e.expect : undefined,
+						}))
+						.filter((e) => e.command.length > 0)
+				: undefined;
+			if ((criteria?.length ?? 0) > 0 || (evidence?.length ?? 0) > 0) {
+				acceptance = {
+					criteria,
+					evidence,
+					selfRepair: toBool(a.selfRepair),
+					maxRepairAttempts: toNumber(a.maxRepairAttempts),
+				};
+			}
+		}
+
+		// "outputMode" field: only "file-only" is meaningful; everything else stays inline.
+		const outputMode = frontmatter.outputMode === "file-only" ? "file-only" : undefined;
 
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description,
 			tools: tools && tools.length > 0 ? tools : undefined,
-			model: frontmatter.model,
+			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
 			systemPrompt: body,
 			source,
 			filePath,
+			thinking: typeof frontmatter.thinking === "string" ? frontmatter.thinking : undefined,
+			maxExecutionTimeMs: toNumber(frontmatter.maxExecutionTimeMs),
+			maxTokens: toNumber(frontmatter.maxTokens),
+			fallbackModels: fallbackModels && fallbackModels.length > 0 ? fallbackModels : undefined,
+			systemPromptMode: frontmatter.systemPromptMode === "replace" ? "replace" : undefined,
+			inheritProjectContext: toBool(frontmatter.inheritProjectContext),
+			inheritSkills: toBool(frontmatter.inheritSkills),
+			outputMode,
+			acceptance,
 		});
 	}
 
@@ -126,7 +228,13 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 		for (const agent of projectAgents) agentMap.set(agent.name, agent);
 	}
 
-	return { agents: Array.from(agentMap.values()), projectAgentsDir };
+	const rawAgents = Array.from(agentMap.values());
+
+	// Apply overrides from ~/.srcode/subagent.json
+	const config = loadSubagentConfig();
+	const finalAgents = applyOverrides(rawAgents, config);
+
+	return { agents: finalAgents, projectAgentsDir };
 }
 
 export function formatAgentList(agents: AgentConfig[], maxItems: number): { text: string; remaining: number } {

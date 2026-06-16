@@ -27,6 +27,8 @@ import { type ExtensionAPI, getMarkdownTheme, withFileMutationQueue } from "@ear
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import { checkAcceptanceGate } from "./gates.ts";
+import { createWorktree, getWorktreeDiff, mergeWorktree, type WorktreeHandle } from "./worktree.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -156,6 +158,10 @@ interface SingleResult {
 	stopReason?: string;
 	errorMessage?: string;
 	step?: number;
+	label?: string;
+	phase?: string;
+	outputFile?: string;
+	contextFallback?: string;
 }
 
 interface SubagentDetails {
@@ -178,7 +184,7 @@ function getFinalOutput(messages: Message[]): string {
 }
 
 function isFailedResult(result: SingleResult): boolean {
-	return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+	return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted" || result.stopReason === "timeout" || result.stopReason === "gate_failed";
 }
 
 function getResultOutput(result: SingleResult): string {
@@ -262,6 +268,28 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
+/**
+ * Attempt to fork the current session into a new branched session file so a
+ * subagent can inherit the parent's conversation history. Returns the forked
+ * session file path, or undefined if forking isn't possible (no session
+ * manager, no leaf id, no persisted session, or the API rejects the call).
+ */
+function tryForkSession(sessionManager: any): string | undefined {
+	if (!sessionManager) return undefined;
+	try {
+		const leafId =
+			typeof sessionManager.getLeafId === "function" ? sessionManager.getLeafId() : undefined;
+		if (!leafId) return undefined;
+		// createBranchedSession is only on the full SessionManager, not the
+		// readonly view. Guard against undefined.
+		if (typeof sessionManager.createBranchedSession !== "function") return undefined;
+		const forkedPath = sessionManager.createBranchedSession(leafId);
+		return typeof forkedPath === "string" && forkedPath.length > 0 ? forkedPath : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 async function runSingleAgent(
 	defaultCwd: string,
 	agents: AgentConfig[],
@@ -272,6 +300,7 @@ async function runSingleAgent(
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	forkSessionPath?: string,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -289,9 +318,16 @@ async function runSingleAgent(
 		};
 	}
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	const args: string[] = ["--mode", "json", "-p"];
+	if (forkSessionPath) {
+		args.push("--session", forkSessionPath);
+	} else {
+		args.push("--no-session");
+	}
 	if (agent.model) args.push("--model", agent.model);
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+	if (agent.maxTokens) args.push("--max-tokens", String(agent.maxTokens));
+	if (agent.thinking) args.push("--thinking", agent.thinking);
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
@@ -327,6 +363,8 @@ async function runSingleAgent(
 
 		args.push(`Task: ${task}`);
 		let wasAborted = false;
+		let timedOut = false;
+		let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
 		const exitCode = await new Promise<number>((resolve) => {
 			const invocation = getPiInvocation(args);
@@ -336,6 +374,15 @@ async function runSingleAgent(
 				stdio: ["ignore", "pipe", "pipe"],
 			});
 			let buffer = "";
+
+			const killProc = (reason: "abort" | "timeout") => {
+				if (reason === "abort") wasAborted = true;
+				else timedOut = true;
+				proc.kill("SIGTERM");
+				setTimeout(() => {
+					if (!proc.killed) proc.kill("SIGKILL");
+				}, 5000);
+			};
 
 			const processLine = (line: string) => {
 				if (!line.trim()) return;
@@ -386,29 +433,71 @@ async function runSingleAgent(
 			});
 
 			proc.on("close", (code) => {
+				if (timeoutHandle) clearTimeout(timeoutHandle);
 				if (buffer.trim()) processLine(buffer);
 				resolve(code ?? 0);
 			});
 
 			proc.on("error", () => {
+				if (timeoutHandle) clearTimeout(timeoutHandle);
 				resolve(1);
 			});
 
 			if (signal) {
-				const killProc = () => {
-					wasAborted = true;
-					proc.kill("SIGTERM");
-					setTimeout(() => {
-						if (!proc.killed) proc.kill("SIGKILL");
-					}, 5000);
-				};
-				if (signal.aborted) killProc();
-				else signal.addEventListener("abort", killProc, { once: true });
+				if (signal.aborted) killProc("abort");
+				else signal.addEventListener("abort", () => killProc("abort"), { once: true });
+			}
+
+			if (agent.maxExecutionTimeMs && agent.maxExecutionTimeMs > 0) {
+				timeoutHandle = setTimeout(() => killProc("timeout"), agent.maxExecutionTimeMs);
 			}
 		});
 
 		currentResult.exitCode = exitCode;
+		if (timedOut) {
+			currentResult.stopReason = "timeout";
+			currentResult.errorMessage = `Agent exceeded maxExecutionTimeMs (${agent.maxExecutionTimeMs}ms)`;
+		}
 		if (wasAborted) throw new Error("Subagent was aborted");
+
+		// File-only output mode: when output exceeds the cap, persist it to a
+		// temp file and shorten the assistant text to a reference. This keeps
+		// large outputs out of the orchestrator's context window.
+		if (
+			agent.outputMode === "file-only" &&
+			!isFailedResult(currentResult)
+		) {
+			const finalOutput = getFinalOutput(currentResult.messages);
+			if (Buffer.byteLength(finalOutput, "utf8") > PER_TASK_OUTPUT_CAP) {
+				try {
+					const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "srcode-agent-output-"));
+					const safeName = agent.name.replace(/[^\w.-]+/g, "_");
+					const outFile = path.join(tmpDir, `output-${safeName}-${Date.now()}.md`);
+					await fs.promises.writeFile(outFile, finalOutput, { encoding: "utf-8", mode: 0o600 });
+					currentResult.outputFile = outFile;
+					// Replace the final assistant text with a short reference so
+					// the orchestrator sees only the file pointer and a preview.
+					const preview = finalOutput.slice(0, 2048);
+					const reference = `Output written to file (${Buffer.byteLength(finalOutput, "utf8")} bytes): ${outFile}\n\n--- Preview (first 2KB) ---\n${preview}`;
+					for (let i = currentResult.messages.length - 1; i >= 0; i--) {
+						const msg = currentResult.messages[i];
+						if (msg.role === "assistant") {
+							for (let j = msg.content.length - 1; j >= 0; j--) {
+								const part = msg.content[j];
+								if (part.type === "text") {
+									msg.content[j] = { ...part, text: reference };
+									break;
+								}
+							}
+							break;
+						}
+					}
+				} catch {
+					/* ignore — fall back to inline output */
+				}
+			}
+		}
+
 		return currentResult;
 	} finally {
 		if (tmpPromptPath)
@@ -426,16 +515,154 @@ async function runSingleAgent(
 	}
 }
 
+/**
+ * After a successful run (or after fallback retries succeed), evaluate the
+ * acceptance gate if the agent has one. On gate failure with selfRepair=true,
+ * re-invoke the agent with failure details appended to the task.
+ */
+async function checkGateAfterSuccess(
+	agent: AgentConfig | undefined,
+	result: SingleResult,
+	defaultCwd: string,
+	cwd: string | undefined,
+	agents: AgentConfig[],
+	task: string,
+	step: number | undefined,
+	signal: AbortSignal | undefined,
+	onUpdate: OnUpdateCallback | undefined,
+	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	forkSessionPath?: string,
+): Promise<SingleResult> {
+	if (!agent?.acceptance || isFailedResult(result)) return result;
+
+	const acceptance = agent.acceptance;
+	const runCwd = cwd ?? defaultCwd;
+	const gateResult = await checkAcceptanceGate(acceptance, runCwd, signal);
+	if (gateResult.passed) return result;
+
+	const summarizeFailure = () => {
+		const failed = gateResult.evidenceResults.filter((e) => !e.passed);
+		const lines: string[] = [];
+		if (gateResult.failedCriteria.length > 0) {
+			lines.push(`Failed criteria: ${gateResult.failedCriteria.join("; ")}`);
+		}
+		if (failed.length > 0) {
+			lines.push("Failed evidence:");
+			for (const e of failed) {
+				lines.push(`- $ ${e.command}\n  ${e.output.split("\n").slice(0, 5).join("\n  ")}`);
+			}
+		}
+		return lines.join("\n");
+	};
+
+	if (!acceptance.selfRepair) {
+		result.stopReason = "gate_failed";
+		result.errorMessage = `Acceptance gate failed.\n${summarizeFailure()}`;
+		return result;
+	}
+
+	const maxAttempts = acceptance.maxRepairAttempts ?? 1;
+	let lastResult = result;
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		if (signal?.aborted) break;
+		const repairTask = [
+			task,
+			"",
+			"## Acceptance gate failed (self-repair attempt " + attempt + " of " + maxAttempts + ")",
+			summarizeFailure(),
+			"",
+			"Please fix the issues above and complete the task. The same checks will run again.",
+		].join("\n");
+		const repairResult = await runSingleAgent(
+			defaultCwd,
+			agents,
+			agent.name,
+			repairTask,
+			cwd,
+			step,
+			signal,
+			onUpdate,
+			makeDetails,
+		);
+		lastResult = repairResult;
+		if (!isFailedResult(repairResult)) {
+			const recheck = await checkAcceptanceGate(acceptance, runCwd, signal);
+			if (recheck.passed) return repairResult;
+		}
+	}
+
+	lastResult.stopReason = "gate_failed";
+	lastResult.errorMessage = `Acceptance gate failed after ${maxAttempts} self-repair attempt(s).\n${summarizeFailure()}`;
+	return lastResult;
+}
+
+/**
+ * Run a single agent with fallback model retry on provider failures.
+ *
+ * Only retries when the agent has `fallbackModels` and the failure looks like
+ * a provider error (rate limit, overloaded, 503/429/529/capacity). Ordinary
+ * tool errors, timeouts, and aborts are returned as-is.
+ */
+async function runWithFallback(
+	defaultCwd: string,
+	agents: AgentConfig[],
+	agentName: string,
+	task: string,
+	cwd: string | undefined,
+	step: number | undefined,
+	signal: AbortSignal | undefined,
+	onUpdate: OnUpdateCallback | undefined,
+	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	forkSessionPath?: string,
+): Promise<SingleResult> {
+	const agent = agents.find((a) => a.name === agentName);
+	const result = await runSingleAgent(
+		defaultCwd, agents, agentName, task, cwd, step, signal, onUpdate, makeDetails, forkSessionPath,
+	);
+
+	// If the agent succeeded or has no fallbacks, return as-is.
+	if (!isFailedResult(result) || !agent?.fallbackModels?.length) {
+		// Check acceptance gate on success
+		return await checkGateAfterSuccess(agent, result, defaultCwd, cwd, agents, task, step, signal, onUpdate, makeDetails, forkSessionPath);
+	}
+
+	// Only retry on provider failures (not timeout, abort, or tool errors).
+	const isProviderError = result.stopReason === "error" &&
+		/rate[\s._-]?limit|overloaded|503|429|529|capacity|quota/i.test(result.errorMessage || "");
+	if (!isProviderError) return result;
+
+	// Try each fallback model in order.
+	for (const fallbackModel of agent.fallbackModels) {
+		if (signal?.aborted) break;
+		const fallbackAgent = { ...agent, model: fallbackModel, fallbackModels: undefined };
+		const fallbackAgents = agents.map((a) => a.name === agentName ? fallbackAgent : a);
+		const fallbackResult = await runSingleAgent(
+			defaultCwd, fallbackAgents, agentName, task, cwd, step, signal, onUpdate, makeDetails, forkSessionPath,
+		);
+		if (!isFailedResult(fallbackResult)) return fallbackResult;
+	}
+
+	// All fallbacks failed; return the original failure.
+	return result;
+}
+
 const TaskItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
 	task: Type.String({ description: "Task to delegate to the agent" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+	context: Type.Optional(StringEnum(["fresh", "fork"] as const, { description: '"fork" to inherit parent session context, "fresh" for clean context' })),
 });
 
 const ChainItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
-	task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
+	task: Type.String({ description: "Task with optional {previous} or {outputs.name} placeholders" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+	label: Type.Optional(Type.String({ description: "Human-readable step label" })),
+	model: Type.Optional(Type.String({ description: "Override agent model for this step" })),
+	output: Type.Optional(Type.String({ description: "Named output key, referenceable as {outputs.key} in later steps" })),
+	reads: Type.Optional(Type.Array(Type.String(), { description: "File paths to inject as context for this step" })),
+	phase: Type.Optional(Type.String({ description: "Logical phase (e.g., 'research', 'implement', 'verify')" })),
+	context: Type.Optional(StringEnum(["fresh", "fork"] as const, { description: '"fork" to inherit parent session context' })),
 });
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -453,6 +680,8 @@ const SubagentParams = Type.Object({
 		Type.Boolean({ description: "Prompt before running project-local agents. Default: true.", default: true }),
 	),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
+	context: Type.Optional(StringEnum(["fresh", "fork"] as const, { description: '"fork" to inherit parent session context. Default: fresh.' })),
+	isolation: Type.Optional(StringEnum(["none", "worktree"] as const, { description: '"worktree" to isolate parallel tasks in git worktrees. Default: none.', default: "none" })),
 });
 
 export default function (pi: ExtensionAPI) {
@@ -461,11 +690,25 @@ export default function (pi: ExtensionAPI) {
 		label: "Subagent",
 		description: [
 			"Delegate tasks to specialized subagents with isolated context.",
-			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
-			"Built-in agents (always available): scout, planner, worker, reviewer.",
-			"User-level overrides may live in ~/.srcode/agent/agents/<name>.md (same name = replaces built-in).",
+			"",
+			"## When to use",
+			"- Multi-phase tasks (research → plan → implement → verify) → chain mode",
+			"- 3+ independent sub-tasks that don't share files → parallel mode (one worker/reviewer per task)",
+			"- Exploration that would dominate main context (>10 file reads or >50 grep calls) → single mode (scout/worker) for context isolation",
+			"- Tasks needing an independent perspective (review, audit, second opinion) → single mode (reviewer/oracle)",
+			"- Tasks with explicit acceptance criteria (tests must pass, lint must be clean) → single mode (worker with acceptance gate)",
+			"",
+			"## When NOT to use",
+			"- Tasks under 3 file reads — direct execution is faster and cheaper",
+			"- Tasks where cross-file context is essential and can't be summarized for handoff",
+			"- Trivial edits, single-line fixes, or simple Q&A",
+			"",
+			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} and {outputs.name} placeholders).",
+			"Built-in agents: scout, planner, worker, reviewer, oracle, researcher.",
+			"Agent frontmatter supports: model, tools, thinking, maxExecutionTimeMs, maxTokens, fallbackModels, systemPromptMode, inheritProjectContext, inheritSkills, acceptance.",
+			"User-level overrides may live in ~/.srcode/agent/agents/<name>.md (same name = replaces built-in) or ~/.srcode/subagent.json (partial field overrides).",
 			'Project-local agents in .srcode/agents are opt-in: set agentScope: "both" (or "project").',
-			"Do NOT shell out to `ls` to discover agents — call this tool with an obviously wrong agent name to get the authoritative list, or just trust the four built-ins above.",
+			"Do NOT shell out to `ls` to discover agents — call this tool with an obviously wrong agent name to get the authoritative list, or just trust the six built-ins above.",
 		].join(" "),
 		parameters: SubagentParams,
 
@@ -530,10 +773,44 @@ export default function (pi: ExtensionAPI) {
 			if (params.chain && params.chain.length > 0) {
 				const results: SingleResult[] = [];
 				let previousOutput = "";
+				const outputs: Record<string, string> = {};
 
 				for (let i = 0; i < params.chain.length; i++) {
 					const step = params.chain[i];
-					const taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
+
+					// Variable substitution: {previous} and {outputs.key}
+					let taskWithContext = step.task.replace(/\{previous\}/g, previousOutput);
+					taskWithContext = taskWithContext.replace(
+						/\{outputs\.(\w+)\}/g,
+						(_, key) => outputs[key] ?? `(output "${key}" not found)`,
+					);
+
+					// Inject reads context (file contents prepended to the task)
+					if (step.reads && step.reads.length > 0) {
+						const readSections: string[] = [];
+						for (const filePath of step.reads) {
+							try {
+								const content = fs.readFileSync(filePath, "utf-8");
+								readSections.push(`--- File: ${filePath} ---\n${content}`);
+							} catch (err: any) {
+								readSections.push(`--- File: ${filePath} (could not read: ${err.message}) ---`);
+							}
+						}
+						taskWithContext = `## Context (read into prompt)\n\n${readSections.join("\n\n")}\n\n## Task\n\n${taskWithContext}`;
+					}
+
+					// Step-level model override
+					const stepAgents = step.model
+						? agents.map((a) => (a.name === step.agent ? { ...a, model: step.model } : a))
+						: agents;
+
+					// Per-step session forking, falling back to fresh context.
+					let stepForkPath: string | undefined;
+					let stepForkFallback: string | undefined;
+					if (step.context === "fork") {
+						stepForkPath = tryForkSession((ctx as any).sessionManager);
+						if (!stepForkPath) stepForkFallback = "context=fork requested but session forking unavailable; using fresh context";
+					}
 
 					// Create update callback that includes all previous results
 					const chainUpdate: OnUpdateCallback | undefined = onUpdate
@@ -550,9 +827,9 @@ export default function (pi: ExtensionAPI) {
 							}
 						: undefined;
 
-					const result = await runSingleAgent(
+					const result = await runWithFallback(
 						ctx.cwd,
-						agents,
+						stepAgents,
 						step.agent,
 						taskWithContext,
 						step.cwd,
@@ -560,7 +837,14 @@ export default function (pi: ExtensionAPI) {
 						signal,
 						chainUpdate,
 						makeDetails("chain"),
+						stepForkPath,
 					);
+
+					// Annotate the result with chain step metadata for rendering
+					if (step.label) result.label = step.label;
+					if (step.phase) result.phase = step.phase;
+					if (stepForkFallback) result.contextFallback = stepForkFallback;
+
 					results.push(result);
 
 					const isError = isFailedResult(result);
@@ -573,6 +857,11 @@ export default function (pi: ExtensionAPI) {
 						};
 					}
 					previousOutput = getFinalOutput(result.messages);
+
+					// Store named output for later substitution
+					if (step.output) {
+						outputs[step.output] = previousOutput;
+					}
 				}
 				return {
 					content: [{ type: "text", text: getFinalOutput(results[results.length - 1].messages) || "(no output)" }],
@@ -591,6 +880,37 @@ export default function (pi: ExtensionAPI) {
 						],
 						details: makeDetails("parallel")([]),
 					};
+
+				const useWorktree = params.isolation === "worktree";
+				const worktreeHandles: Array<WorktreeHandle | null> = new Array(params.tasks.length).fill(null);
+				const worktreeErrors: string[] = [];
+
+				if (useWorktree) {
+					for (let i = 0; i < params.tasks.length; i++) {
+						try {
+							const t = params.tasks[i];
+							worktreeHandles[i] = createWorktree(ctx.cwd, t.agent, i);
+						} catch (err: any) {
+							worktreeErrors.push(`task ${i} (${params.tasks[i].agent}): ${err.message || err}`);
+						}
+					}
+					if (worktreeErrors.length > 0) {
+						// Roll back any worktrees we did create before bailing.
+						for (const h of worktreeHandles) {
+							if (h) try { h.cleanup(); } catch {}
+						}
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Failed to set up git worktrees:\n${worktreeErrors.join("\n")}`,
+								},
+							],
+							details: makeDetails("parallel")([]),
+							isError: true,
+						};
+					}
+				}
 
 				// Track all results for streaming updates
 				const allResults: SingleResult[] = new Array(params.tasks.length);
@@ -621,50 +941,103 @@ export default function (pi: ExtensionAPI) {
 					}
 				};
 
-				const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
-					const result = await runSingleAgent(
-						ctx.cwd,
-						agents,
-						t.agent,
-						t.task,
-						t.cwd,
-						undefined,
-						signal,
-						// Per-task update callback
-						(partial) => {
-							if (partial.details?.results[0]) {
-								allResults[index] = partial.details.results[0];
-								emitParallelUpdate();
-							}
-						},
-						makeDetails("parallel"),
-					);
-					allResults[index] = result;
-					emitParallelUpdate();
-					return result;
-				});
+				try {
+					const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
+						// Per-task working directory: worktree dir wins over explicit cwd.
+						const handle = worktreeHandles[index];
+						const taskCwd = handle ? handle.worktreeDir : t.cwd;
 
-				const successCount = results.filter((r) => !isFailedResult(r)).length;
-				const summaries = results.map((r) => {
-					const output = truncateParallelOutput(getResultOutput(r));
-					const status = isFailedResult(r)
-						? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}`
-						: "completed";
-					return `### [${r.agent}] ${status}\n\n${output}`;
-				});
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}`,
-						},
-					],
-					details: makeDetails("parallel")(results),
-				};
+						// Per-task fork session if requested.
+						let forkPath: string | undefined;
+						let forkFallbackNote: string | undefined;
+						if (t.context === "fork") {
+							forkPath = tryForkSession((ctx as any).sessionManager);
+							if (!forkPath) forkFallbackNote = "context=fork requested but session forking unavailable; using fresh context";
+						}
+
+						const result = await runWithFallback(
+							ctx.cwd,
+							agents,
+							t.agent,
+							t.task,
+							taskCwd,
+							undefined,
+							signal,
+							// Per-task update callback
+							(partial) => {
+								if (partial.details?.results[0]) {
+									allResults[index] = partial.details.results[0];
+									emitParallelUpdate();
+								}
+							},
+							makeDetails("parallel"),
+							forkPath,
+						);
+						if (forkFallbackNote) result.contextFallback = forkFallbackNote;
+						allResults[index] = result;
+						emitParallelUpdate();
+						return result;
+					});
+
+					// Worktree merge phase (best-effort, post-completion).
+					const mergeNotes: string[] = [];
+					if (useWorktree) {
+						for (let i = 0; i < results.length; i++) {
+							const handle = worktreeHandles[i];
+							if (!handle) continue;
+							const r = results[i];
+							if (isFailedResult(r)) {
+								mergeNotes.push(`task ${i} (${r.agent}): skipped merge (task failed)`);
+								continue;
+							}
+							const diff = getWorktreeDiff(ctx.cwd, handle.branchName);
+							if (!diff.trim()) {
+								mergeNotes.push(`task ${i} (${r.agent}): no changes to merge`);
+								continue;
+							}
+							const merge = mergeWorktree(ctx.cwd, handle.branchName);
+							if (merge.success) {
+								mergeNotes.push(`task ${i} (${r.agent}): merged\n${diff.trimEnd()}`);
+							} else {
+								mergeNotes.push(`task ${i} (${r.agent}): ${merge.conflict}`);
+							}
+						}
+					}
+
+					const successCount = results.filter((r) => !isFailedResult(r)).length;
+					const summaries = results.map((r) => {
+						const output = truncateParallelOutput(getResultOutput(r));
+						const status = isFailedResult(r)
+							? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}`
+							: "completed";
+						const noteLine = r.contextFallback ? `\n_note: ${r.contextFallback}_\n` : "";
+						return `### [${r.agent}] ${status}${noteLine}\n\n${output}`;
+					});
+					let text = `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}`;
+					if (useWorktree && mergeNotes.length > 0) {
+						text += `\n\n---\n\n## Worktree merges\n\n${mergeNotes.join("\n\n")}`;
+					}
+					return {
+						content: [{ type: "text", text }],
+						details: makeDetails("parallel")(results),
+					};
+				} finally {
+					if (useWorktree) {
+						for (const h of worktreeHandles) {
+							if (h) try { h.cleanup(); } catch {}
+						}
+					}
+				}
 			}
 
 			if (params.agent && params.task) {
-				const result = await runSingleAgent(
+				let forkPath: string | undefined;
+				let forkFallbackNote: string | undefined;
+				if (params.context === "fork") {
+					forkPath = tryForkSession((ctx as any).sessionManager);
+					if (!forkPath) forkFallbackNote = "context=fork requested but session forking unavailable; using fresh context";
+				}
+				const result = await runWithFallback(
 					ctx.cwd,
 					agents,
 					params.agent,
@@ -674,7 +1047,9 @@ export default function (pi: ExtensionAPI) {
 					signal,
 					onUpdate,
 					makeDetails("single"),
+					forkPath,
 				);
+				if (forkFallbackNote) result.contextFallback = forkFallbackNote;
 				const isError = isFailedResult(result);
 				if (isError) {
 					const errorMsg = getResultOutput(result);
@@ -684,8 +1059,9 @@ export default function (pi: ExtensionAPI) {
 						isError: true,
 					};
 				}
+				const fallbackPrefix = forkFallbackNote ? `_note: ${forkFallbackNote}_\n\n` : "";
 				return {
-					content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
+					content: [{ type: "text", text: fallbackPrefix + (getFinalOutput(result.messages) || "(no output)") }],
 					details: makeDetails("single")([result]),
 				};
 			}
@@ -860,9 +1236,11 @@ export default function (pi: ExtensionAPI) {
 						const finalOutput = getFinalOutput(r.messages);
 
 						container.addChild(new Spacer(1));
+						const stepLabel = r.label ? r.label : `Step ${r.step}`;
+						const phaseTag = r.phase ? theme.fg("warning", `[${r.phase}] `) : "";
 						container.addChild(
 							new Text(
-								`${theme.fg("muted", `─── Step ${r.step}: `) + theme.fg("accent", r.agent)} ${rIcon}`,
+								`${theme.fg("muted", `─── ${stepLabel}: `) + phaseTag + theme.fg("accent", r.agent)} ${rIcon}`,
 								0,
 								0,
 							),
@@ -909,7 +1287,9 @@ export default function (pi: ExtensionAPI) {
 				for (const r of details.results) {
 					const rIcon = r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
 					const displayItems = getDisplayItems(r.messages);
-					text += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}`;
+					const stepLabel = r.label ? r.label : `Step ${r.step}`;
+					const phaseTag = r.phase ? theme.fg("warning", `[${r.phase}] `) : "";
+					text += `\n\n${theme.fg("muted", `─── ${stepLabel}: `)}${phaseTag}${theme.fg("accent", r.agent)} ${rIcon}`;
 					if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
 					else text += `\n${renderDisplayItems(displayItems, 5)}`;
 				}

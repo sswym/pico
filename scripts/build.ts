@@ -25,6 +25,13 @@
  *   │   ├── implement.md
  *   │   ├── implement-and-review.md
  *   │   └── scout-and-plan.md
+ *   ├── agents/                 # bundled subagent role definitions
+ *   │   ├── scout.md
+ *   │   ├── planner.md
+ *   │   ├── worker.md
+ *   │   ├── reviewer.md
+ *   │   ├── oracle.md
+ *   │   └── researcher.md
  *   └── skills/                 # bundled srcode skills
  *       ├── agents-init/SKILL.md
  *       ├── recap/SKILL.md
@@ -236,7 +243,19 @@ async function main() {
     "subagent workflow prompts",
   );
 
-  // ---- Phase 4: copy srcode's bundled skills ----
+  // ---- Phase 4: copy srcode's bundled agent definitions ----
+  // Bun compile does not embed .md files, and agents.ts uses import.meta.url
+  // to locate the agents/ directory. In compiled binaries import.meta.url
+  // points at /$bunfs/... which has no on-disk agents/, so we ship the role
+  // definitions next to the binary instead. agents.ts has a matching
+  // bun-binary branch that resolves to dirname(process.execPath)/agents.
+  copyDir(
+    resolve(ROOT, "src", "extensions", "subagent", "agents"),
+    join(outDir, "agents"),
+    "subagent agent definitions",
+  );
+
+  // ---- Phase 5: copy srcode's bundled skills ----
   console.log(`\n  ── Copying bundled skills ──`);
 
   copyDir(
@@ -245,7 +264,7 @@ async function main() {
     "bundled skills",
   );
 
-  // ---- Phase 5: summary ----
+  // ---- Phase 6: summary ----
   const totalSize = getDirSize(outDir);
 
   console.log(`\n  ── Build complete ──`);

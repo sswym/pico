@@ -20,13 +20,15 @@ test("subagent extension registers the 'subagent' tool", async () => {
   expect(tools.map((t) => t.name)).toContain("subagent");
 });
 
-test("discoverAgents finds the four bundled roles under user scope", () => {
+test("discoverAgents finds the six bundled roles under user scope", () => {
   const result = discoverAgents(process.cwd(), "user");
   const names = new Set(result.agents.map((a) => a.name));
   expect(names.has("scout")).toBe(true);
   expect(names.has("planner")).toBe(true);
   expect(names.has("worker")).toBe(true);
   expect(names.has("reviewer")).toBe(true);
+  expect(names.has("oracle")).toBe(true);
+  expect(names.has("researcher")).toBe(true);
 
   // Source must be "user" — bundled agents are loaded under user scope so
   // they're available without symlinking into ~/.srcode/agent.
