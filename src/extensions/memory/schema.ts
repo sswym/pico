@@ -46,7 +46,17 @@ CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
 END;
 `;
 
-export const VALID_CATEGORIES = ["user_pref", "project", "tool", "general"] as const;
+export const VALID_CATEGORIES = [
+  "user_pref",
+  "project",
+  "tool",
+  "general",
+  "failure",
+  "correction",
+  "insight",
+  "convention",
+  "tool_quirk",
+] as const;
 export type Category = (typeof VALID_CATEGORIES)[number];
 
 /** Trust adjustment per feedback action — mirrors holographic store. */
@@ -54,3 +64,27 @@ export const HELPFUL_DELTA = 0.05;
 export const UNHELPFUL_DELTA = -0.10;
 export const TRUST_MIN = 0.0;
 export const TRUST_MAX = 1.0;
+
+/** Trust penalty applied to a fact when it is corrected by a new one. */
+export const CORRECTION_DELTA = -0.30;
+/** Initial trust for a correction fact (high so it surfaces above the original). */
+export const CORRECTED_BOOST = 0.70;
+
+/** Scope constants — global facts apply everywhere; project facts are cwd-scoped. */
+export const SCOPE_GLOBAL = "global";
+export const SCOPE_PROJECT = "project";
+export const VALID_SCOPES = [SCOPE_GLOBAL, SCOPE_PROJECT] as const;
+export type Scope = (typeof VALID_SCOPES)[number];
+
+/**
+ * Migration SQL — adds columns introduced after the initial schema.
+ * Each statement is idempotent (wrapped in try/catch at call-site for
+ * ALTER TABLE, which fails if the column already exists).
+ */
+export const MIGRATIONS = [
+  "ALTER TABLE facts ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'",
+  "ALTER TABLE facts ADD COLUMN correction_of INTEGER REFERENCES facts(fact_id)",
+  "ALTER TABLE facts ADD COLUMN source TEXT NOT NULL DEFAULT 'auto'",
+  "CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope)",
+  "CREATE INDEX IF NOT EXISTS idx_facts_correction ON facts(correction_of)",
+];

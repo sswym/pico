@@ -26,29 +26,51 @@ bun run bin/srcode.ts --help     # 查看所有上游标志
 
 底层使用单个 SQLite 文件，位于 `~/.srcode/memory.db`（可通过 `$SRCODE_MEMORY_DB` 覆盖；亦可通过 `$SRCODE_HOME` 重定位整个 srcode 数据根目录）。Schema 是对 hermes-agent 全息存储 (`~/hermes-agent/plugins/memory/holographic/`) 的精简移植——包含 `category`、`tags`、`trust_score` 与 FTS5 镜像——但暂不含 HRR 层（计划在 v2 加入）。
 
+**9 类事实**（按提取优先级排列）：
+
+| 类别 | 含义 | 示例 |
+| --- | --- | --- |
+| `correction` | 纠正 agent 的错误 | "No, use pnpm not npm" |
+| `failure` | 什么行不通及原因 | "Tried localStorage for tokens — XSS vulnerability" |
+| `insight` | 从经验中学到的教训 | "remember that: graphql cache invalidation is tricky" |
+| `user_pref` | 用户偏好 | "I prefer concise output" |
+| `convention` | 项目约定 | "our convention is to use kebab-case for files" |
+| `tool_quirk` | 工具特定怪癖 | "this library doesn't support node 14" |
+| `project` | 项目决策 | "we decided to migrate to Postgres" |
+| `tool` | 工具相关事实 | "CI needs --frozen-lockfile" |
+| `general` | 通用事实 | （默认类别） |
+
+**两级作用域**：事实可设为 `global`（全局，默认）或 `project`（绑定当前工作目录）。项目级事实在跨项目搜索时不可见，项目搜索中全局事实仍可见但排名低于项目事实。
+
 模型可调用以下动作：
 
 | 动作 | 必需参数 | 用途 |
 | --- | --- | --- |
-| `add` | `content`, `category` | 存储一条持久化事实 |
-| `search` | `query` | FTS 检索，按 trust × bm25 排序 |
+| `add` | `content` | 存储一条持久化事实（可选 `category`、`scope`、`correction_of`） |
+| `search` | `query` | FTS 检索，按 trust × bm25 排序（可按 `scope`/`category` 过滤） |
 | `probe` | `entity` | 围绕实体名称的短语搜索 |
-| `list` | — | 列举所有事实 |
+| `list` | — | 列举事实（可按 `scope`/`category`/`min_trust` 过滤） |
 | `update` | `fact_id` | 编辑内容/分类/标签 |
 | `remove` | `fact_id` | 删除 |
 | `feedback` | `fact_id`, `helpful` | 信任度 ±0.05 / ±0.10 |
+
+**纠正链接**：当 `add` 时指定 `correction_of=<原始 fact_id>`，原始事实信任度 -0.30，纠正事实以 0.70 高信任值插入，确保纠正立即浮现在原始事实之上。
 
 你也可以直接通过命令驱动：
 
 ```text
 /memory list
-/memory search bun
+/memory list --scope project
+/memory search [--scope global|project] bun
 /memory add user_pref 我偏好简洁的输出
+/memory add failure --scope project localStorage tokens 有 XSS 漏洞
 /memory remove 4
 /memory clear
 ```
 
-每轮对话会向系统提示词追加一段短头部，并在用户消息命中已存储事实时插入 `## Recalled memory` 块。每轮结束后，`src/extensions/memory/extract.ts` 中的简单正则会从用户消息中提取"我偏好……"/"我们决定……"等语句并自动持久化。
+每轮对话会向系统提示词追加一段短头部，并在用户消息命中已存储事实时插入 `## Recalled memory` 块。**实时纠正检测**：`turn_end` 事件中立即匹配纠正模式并存储，无需等到会话结束。会话结束时，`src/extensions/memory/extract.ts` 中的正则引擎从用户消息中提取各类模式（偏好/决策/纠正/失败/洞察/约定/工具怪癖）并自动持久化。
+
+**敏感信息扫描**：存储前自动检测 AWS Access Key、GitHub Token、SSH Private Key、通用 API Key 等模式，匹配则拒绝存储并报错，防止密钥泄露。
 
 ### 2. 子代理（`subagent` 工具 + 工作流斜杠命令）
 
@@ -167,7 +189,7 @@ srcode/
     ├── ask.test.ts          # 8 个用例——schema 合法性、对话框分发、hasUI 回退
     ├── hooks.test.ts        # 配置加载、运行器、占位符替换
     ├── init.test.ts         # /init 提示词内容 + 命令连线
-    ├── memory.test.ts       # 9 个用例——add/search/feedback/update/remove/probe/clear/extract
+    ├── memory.test.ts       # 23 个用例——add/search/feedback/update/remove/probe/clear/extract/secrets/scope/correction
     ├── plan.test.ts         # tool_call 拦截 + ExitPlanMode 流程
     ├── skills.test.ts       # 内置技能加载并包含非空描述
     ├── subagent.test.ts     # 工厂连线、代理发现、worker 提示词
@@ -181,7 +203,7 @@ srcode/
 bun test
 ```
 
-75 个用例，完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`。
+93 个用例，完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`。
 
 ## 路线图
 

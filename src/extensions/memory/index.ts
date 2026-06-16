@@ -5,6 +5,7 @@
  *   - registers a `memory` tool (LLM-callable)
  *   - registers a `/memory` slash command (user-callable)
  *   - injects a recall block into the system prompt at the start of each turn
+ *   - detects corrections in real-time via turn_end
  *   - auto-extracts user prefs / project decisions on session shutdown
  *
  * Storage layout: ~/.srcode/memory.db (overridable via $SRCODE_MEMORY_DB,
@@ -17,10 +18,15 @@ import {
   type ExtensionAPI,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import { autoExtractFromMessages, type ExtractableMessage } from "./extract.ts";
+import {
+  autoExtractFromMessages,
+  CORRECTION_PATTERNS,
+  extractText,
+  type ExtractableMessage,
+} from "./extract.ts";
 import { formatFactLine, formatRecallBlock, systemPromptBlock } from "./prompt.ts";
 import { MemoryStore, type Fact } from "./store.ts";
-import { VALID_CATEGORIES, type Category } from "./schema.ts";
+import { CORRECTED_BOOST, SCOPE_PROJECT, VALID_CATEGORIES, type Category } from "./schema.ts";
 import { srcodeHome } from "../paths.ts";
 
 function resolveDbPath(): string {
@@ -28,6 +34,8 @@ function resolveDbPath(): string {
   if (override) return override;
   return join(srcodeHome(), "memory.db");
 }
+
+const CATEGORY_LIST = VALID_CATEGORIES.join(" | ");
 
 const MemoryParams = Type.Object({
   action: Type.Union([
@@ -43,11 +51,13 @@ const MemoryParams = Type.Object({
   query: Type.Optional(Type.String({ description: "Search query (required for search)." })),
   entity: Type.Optional(Type.String({ description: "Entity name (required for probe)." })),
   fact_id: Type.Optional(Type.Number({ description: "Target fact id (update / remove / feedback)." })),
-  category: Type.Optional(Type.String({ description: "One of: user_pref | project | tool | general." })),
+  category: Type.Optional(Type.String({ description: `One of: ${CATEGORY_LIST}.` })),
   tags: Type.Optional(Type.String({ description: "Comma-separated tags." })),
   helpful: Type.Optional(Type.Boolean({ description: "feedback: true=helpful, false=unhelpful." })),
   min_trust: Type.Optional(Type.Number({ description: "Minimum trust filter (default 0.3)." })),
   limit: Type.Optional(Type.Number({ description: "Max results (default 10)." })),
+  scope: Type.Optional(Type.String({ description: "Scope: global | project. Default: global. Project-scoped facts are isolated to the current working directory." })),
+  correction_of: Type.Optional(Type.Number({ description: "If this fact corrects a previous one, provide the original fact_id. The original's trust drops and this fact starts with high trust." })),
 });
 
 function asCategory(raw: unknown): Category | undefined {
@@ -90,44 +100,64 @@ function parseCommand(args: string): ParsedCommand {
 export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   const store = new MemoryStore(resolveDbPath());
 
+  /** Track current working directory for project-scoped memory. */
+  let currentCwd: string | null = null;
+
   // --- 1. memory tool (LLM) ------------------------------------------------
   pi.registerTool(
     defineTool({
       name: "memory",
       label: "Memory",
       description: [
-        "Long-term memory for durable user prefs, project decisions, and reusable facts.",
-        "Actions: add | search | probe | list | update | remove | feedback.",
+        "Long-term memory for durable user prefs, project decisions, failures, corrections, insights, and reusable facts.",
+        `Actions: add | search | probe | list | update | remove | feedback.`,
+        "Categories: " + CATEGORY_LIST + ".",
         "Call `search` BEFORE answering questions about the user or project.",
         "Call `add` whenever the user shares something they would expect you to remember.",
         "Call `feedback` after using a fact (helpful=true) to lift its trust score.",
+        "Use `scope=\"project\"` for facts that only apply in the current project directory.",
+        "Use `correction_of` when a new fact supersedes an older one.",
       ].join(" "),
       promptSnippet:
         "memory(action) — long-term fact store; search before answering, add proactively.",
       promptGuidelines: [
         "Call `memory(action=\"search\", query=...)` when the user asks something whose answer might depend on previously remembered preferences or project decisions.",
-        "When the user states a durable preference (\"I prefer X\", \"we use Y\", \"never Z\"), call `memory(action=\"add\")` with an appropriate category (user_pref / project / tool / general).",
+        `When the user states a durable preference (\"I prefer X\", \"we use Y\", \"never Z\", \"that didn't work\", \"actually use W instead\"), call \`memory(action=\"add\")\` with an appropriate category (${CATEGORY_LIST}).`,
         "When you cite a stored fact, mention its id like `(memory:#42)` so the user can audit or correct it.",
       ],
       parameters: MemoryParams,
-      async execute(_id, params) {
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        // Capture cwd for project-scoped memory.
+        if (ctx.cwd) currentCwd = ctx.cwd;
+
         try {
           switch (params.action) {
             case "add": {
               if (!params.content) return errorResult("'content' is required for add");
               const cat = asCategory(params.category);
               if (params.category && !cat) return errorResult(`invalid category '${params.category}'`);
-              const id = store.add(params.content, { category: cat, tags: params.tags });
+              const scope = (params.scope === "project" || params.scope === "global") ? params.scope : undefined;
+              const id = store.add(params.content, {
+                category: cat,
+                tags: params.tags,
+                scope,
+                cwd: scope === "project" ? (currentCwd ?? undefined) : undefined,
+                correctionOf: params.correction_of,
+                source: "manual",
+              });
               const fact = store.get(id);
               return jsonResult({ status: "added", fact_id: id, fact });
             }
             case "search": {
               if (!params.query) return errorResult("'query' is required for search");
               const cat = asCategory(params.category);
+              const scope = (params.scope === "project" || params.scope === "global") ? params.scope : undefined;
               const results = store.search(params.query, {
                 category: cat,
                 minTrust: params.min_trust,
                 limit: params.limit,
+                scope,
+                cwd: scope === "project" ? (currentCwd ?? undefined) : undefined,
               });
               return jsonResult({ count: results.length, results });
             }
@@ -135,19 +165,25 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               const target = params.entity ?? params.query;
               if (!target) return errorResult("'entity' is required for probe");
               const cat = asCategory(params.category);
+              const scope = (params.scope === "project" || params.scope === "global") ? params.scope : undefined;
               const results = store.probe(target, {
                 category: cat,
                 minTrust: params.min_trust,
                 limit: params.limit,
+                scope,
+                cwd: scope === "project" ? (currentCwd ?? undefined) : undefined,
               });
               return jsonResult({ count: results.length, results });
             }
             case "list": {
               const cat = asCategory(params.category);
+              const scope = (params.scope === "project" || params.scope === "global") ? params.scope : undefined;
               const results = store.list({
                 category: cat,
                 minTrust: params.min_trust,
                 limit: params.limit,
+                scope,
+                cwd: scope === "project" ? (currentCwd ?? undefined) : undefined,
               });
               return jsonResult({ count: results.length, facts: results });
             }
@@ -187,6 +223,9 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.registerCommand("memory", {
     description: "Manage long-term memory (list / add / remove / search / clear / count)",
     handler: async (args, ctx) => {
+      // Capture cwd from command context.
+      if (ctx.cwd) currentCwd = ctx.cwd;
+
       const { cmd, rest } = parseCommand(args);
       const lines: string[] = [];
 
@@ -204,10 +243,19 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         }
       };
 
+      // Parse --scope from rest arguments.
+      const parseScope = (text: string): { scope: "global" | "project" | undefined; rest: string } => {
+        const m = text.match(/--scope\s+(global|project)\s*/i);
+        if (!m) return { scope: undefined, rest: text };
+        return { scope: m[1].toLowerCase() as "global" | "project", rest: text.replace(/--scope\s+(global|project)\s*/i, "").trim() };
+      };
+
       try {
         switch (cmd) {
           case "list": {
-            renderFacts(store.list({ limit: 50 }), `Memory — ${store.count()} facts:`);
+            const { scope, rest: filterRest } = parseScope(rest);
+            const cat = asCategory(filterRest) || undefined;
+            renderFacts(store.list({ limit: 50, scope, cwd: scope === "project" ? (currentCwd ?? undefined) : undefined, category: cat }), `Memory — ${store.count()} facts:`);
             break;
           }
           case "count": {
@@ -215,24 +263,36 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             break;
           }
           case "search": {
-            if (!rest) {
-              announce("Usage: /memory search <query>");
+            const { scope, rest: queryRest } = parseScope(rest);
+            if (!queryRest) {
+              announce("Usage: /memory search [--scope global|project] <query>");
               break;
             }
-            renderFacts(store.search(rest, { limit: 20, minTrust: 0 }), `Search: ${rest}`);
+            renderFacts(store.search(queryRest, { limit: 20, minTrust: 0, scope, cwd: scope === "project" ? (currentCwd ?? undefined) : undefined }), `Search: ${queryRest}`);
             break;
           }
           case "add": {
             if (!rest) {
-              announce("Usage: /memory add [category=general] <content>");
+              announce(`Usage: /memory add [category] [--scope project] <content> (categories: ${CATEGORY_LIST})`);
               break;
             }
-            const m = rest.match(/^(user_pref|project|tool|general)\s+(.+)$/);
+            const { scope, rest: addRest } = parseScope(rest);
+            // Try to parse category prefix.
+            const m = addRest.match(/^(user_pref|project|tool|general|failure|correction|insight|convention|tool_quirk)\s+(.+)$/);
             const category = (m?.[1] ?? "general") as Category;
-            const content = m?.[2] ?? rest;
-            const id = store.add(content, { category });
-            const fact = store.get(id);
-            if (fact) renderFacts([fact], `Added:`);
+            const content = m?.[2] ?? addRest;
+            try {
+              const id = store.add(content, {
+                category,
+                scope,
+                cwd: scope === "project" ? (currentCwd ?? undefined) : undefined,
+                source: "manual",
+              });
+              const fact = store.get(id);
+              if (fact) renderFacts([fact], `Added:`);
+            } catch (err) {
+              announce(`Error: ${err instanceof Error ? err.message : String(err)}`);
+            }
             break;
           }
           case "remove":
@@ -264,9 +324,10 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           case "":
           default: {
             lines.push("Usage:");
-            lines.push("  /memory list              — list all facts");
-            lines.push("  /memory search <query>    — full-text search");
-            lines.push("  /memory add [cat] <text>  — add a fact (cat: user_pref|project|tool|general)");
+            lines.push("  /memory list [--scope global|project] [category] — list facts");
+            lines.push("  /memory search [--scope global|project] <query>  — full-text search");
+            lines.push(`  /memory add [category] [--scope project] <text>  — add a fact`);
+            lines.push(`    categories: ${CATEGORY_LIST}`);
             lines.push("  /memory remove <id>       — delete a fact");
             lines.push("  /memory clear             — wipe all memory (asks first)");
             lines.push("  /memory count             — show count + db path");
@@ -290,7 +351,12 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.on("before_agent_start", (event) => {
     try {
       const headerBlock = systemPromptBlock(store.count());
-      const recall = store.search(event.prompt, { limit: 5, minTrust: 0.3 });
+      const recall = store.search(event.prompt, {
+        limit: 5,
+        minTrust: 0.3,
+        scope: SCOPE_PROJECT,
+        cwd: currentCwd ?? undefined,
+      });
       const recallBlock = formatRecallBlock(recall);
       const extras = [headerBlock, recallBlock].filter((s) => s.length > 0).join("\n\n");
       if (!extras) return {};
@@ -300,11 +366,35 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     }
   });
 
-  // --- 4. auto-extract on shutdown ----------------------------------------
+  // --- 4. real-time correction detection -----------------------------------
+  pi.on("turn_end", (event) => {
+    try {
+      const msg = event.message;
+      if (!msg || msg.role !== "user") return;
+
+      const text = extractText(msg.content).trim();
+      if (text.length < 10) return;
+
+      // Only run correction patterns — keep per-turn overhead minimal.
+      if (!CORRECTION_PATTERNS.some((p) => p.test(text))) return;
+
+      store.add(text.slice(0, 400), {
+        category: "correction",
+        scope: currentCwd ? "project" : undefined,
+        cwd: currentCwd ?? undefined,
+        source: "correction",
+        trust: CORRECTED_BOOST,
+      });
+    } catch {
+      // best-effort — must not break the turn
+    }
+  });
+
+  // --- 5. auto-extract on shutdown ----------------------------------------
   pi.on("agent_end", (event) => {
     try {
       const messages = (event.messages ?? []) as ExtractableMessage[];
-      autoExtractFromMessages(store, messages);
+      autoExtractFromMessages(store, messages, { cwd: currentCwd ?? undefined });
     } catch {
       // best-effort
     }
