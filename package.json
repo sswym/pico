@@ -19,10 +19,10 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.79.4",
-    "@earendil-works/pi-ai": "^0.79.4",
-    "@earendil-works/pi-coding-agent": "^0.79.4",
-    "@earendil-works/pi-tui": "^0.79.4",
+    "@earendil-works/pi-agent-core": "^0.79.6",
+    "@earendil-works/pi-ai": "^0.79.6",
+    "@earendil-works/pi-coding-agent": "^0.79.6",
+    "@earendil-works/pi-tui": "^0.79.6",
     "ignore": "^7.0.5",
     "node-html-parser": "^7.1.0"
   }
