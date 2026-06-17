@@ -141,7 +141,9 @@ subagent(chain=[
 
 ### 8. 权限系统（`~/.srcode/permissions.json` + `<仓库>/.srcode/permissions.json`）
 
-基于 `tool_call` 事件的工具调用前置权限网关。配置按用户级 → 项目级 → 会话级合并；规则语法兼容 Claude Code 的 `ToolName` / `ToolName(content)` 格式，例如 `Bash(npm:*)`、`Edit(./src/**)`。默认模式下，`read`/`grep`/`find`/`ls` 自动允许，`bash`/`edit`/`write` 等高影响工具在无匹配规则时会弹出 TUI 审批。
+基于 `tool_call` 事件的工具调用前置权限网关。配置按用户级 → 项目级 → 会话级合并；规则语法兼容 Claude Code 的 `ToolName` / `ToolName(content)` 格式，例如 `Bash(npm:*)`、`Edit(./src/**)`。
+
+默认模式 `default` 下，`read` / `grep` / `find` / `ls` 被视为低风险只读工具，在没有命中显式 `deny` / `ask` 规则时会自动允许；`bash` / `edit` / `write` 以及其他自定义工具在无匹配 `allow` 规则时会弹出 TUI 审批。显式规则优先级为 `deny > ask > allow`，因此低风险自动允许不会覆盖用户写下的黑名单或强制询问规则。
 
 ```json
 {
@@ -155,7 +157,16 @@ subagent(chain=[
 }
 ```
 
-`defaultMode` 支持 `default`、`acceptEdits`、`plan`、`bypassPermissions`、`dontAsk`。`/permissions` 可查看当前规则，`/permissions clear-session` 清除本会话临时允许规则。
+`defaultMode` 支持 `default`、`acceptEdits`、`plan`、`bypassPermissions`、`dontAsk`。`/permissions` 可查看当前规则，`/permissions clear-session` 清除本会话临时允许规则。也可在当前会话临时切换模式：
+
+```text
+/permissions mode                  # 查看当前权限模式
+/permissions mode acceptEdits      # 本会话切到 acceptEdits
+/permissions mode bypassPermissions
+/permissions mode dontAsk
+/permissions mode default-config   # 清除本会话覆盖，回到配置文件 defaultMode
+/permissions cycle                 # 在 default → acceptEdits → bypassPermissions → dontAsk 间循环
+```
 
 ### 9. 钩子（`~/.srcode/hooks.json` + `<仓库>/.srcode/hooks.json`）
 

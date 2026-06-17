@@ -1,11 +1,12 @@
 import { loadPermissionConfig } from "./config.ts";
 import { permissionRuleValueToString } from "./parser.ts";
-import type {
-  LoadedPermissionConfig,
-  PermissionBehavior,
-  PermissionMode,
-  PermissionRule,
-  PermissionRuleValue,
+import {
+  PERMISSION_MODES,
+  type LoadedPermissionConfig,
+  type PermissionBehavior,
+  type PermissionMode,
+  type PermissionRule,
+  type PermissionRuleValue,
 } from "./schema.ts";
 
 export class PermissionStore {
@@ -16,6 +17,7 @@ export class PermissionStore {
     additionalDirectories: [],
   };
   private sessionRules: PermissionRule[] = [];
+  private modeOverride: PermissionMode | undefined;
 
   reload(cwd: string): void {
     this.loaded = loadPermissionConfig(cwd);
@@ -42,7 +44,32 @@ export class PermissionStore {
   }
 
   defaultMode(): PermissionMode {
+    return this.modeOverride ?? this.loaded.defaultMode;
+  }
+
+  configuredMode(): PermissionMode {
     return this.loaded.defaultMode;
+  }
+
+  modeIsOverridden(): boolean {
+    return this.modeOverride !== undefined;
+  }
+
+  setMode(mode: PermissionMode): void {
+    this.modeOverride = mode;
+  }
+
+  clearModeOverride(): void {
+    this.modeOverride = undefined;
+  }
+
+  cycleMode(): PermissionMode {
+    const cycle: PermissionMode[] = PERMISSION_MODES.filter((mode): mode is PermissionMode => mode !== "plan");
+    const current = this.defaultMode();
+    const index = cycle.indexOf(current);
+    const next = cycle[(index + 1) % cycle.length] ?? "default";
+    this.modeOverride = next;
+    return next;
   }
 
   additionalDirectories(): string[] {

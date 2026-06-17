@@ -25,3 +25,8 @@ process.env.PI_CODING_AGENT_DIR ??= agentDir;
 process.env.PI_CODING_AGENT_SESSION_DIR ??= sessionDir;
 process.env.SRCODE_CODING_AGENT_DIR ??= agentDir;
 process.env.SRCODE_CODING_AGENT_SESSION_DIR ??= sessionDir;
+
+// Upstream pi checks https://pi.dev/api/latest-version against the runtime
+// package version. srcode is a wrapper with its own release cadence, so that
+// check reports misleading "srcode update" prompts when only pi changed.
+process.env.PI_SKIP_VERSION_CHECK ??= "1";

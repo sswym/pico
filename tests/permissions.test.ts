@@ -134,13 +134,15 @@ function makeFakePi(): FakePi & {
 }
 
 function makeCtx(select: (title: string, options: string[]) => Promise<string | undefined>, hasUI = true) {
+  const notifications: Array<{ message: string; type?: string }> = [];
   return {
     cwd: workdir,
     hasUI,
     signal: undefined,
+    notifications,
     ui: {
       select,
-      notify: () => {},
+      notify: (message: string, type?: string) => notifications.push({ message, type }),
     },
   };
 }
@@ -167,4 +169,41 @@ test("permissions extension supports Yes and session allow", async () => {
     throw new Error("should not prompt after session allow");
   }));
   expect(second).toEqual({});
+});
+
+test("/permissions mode sets and clears session mode override", async () => {
+  const pi = makeFakePi();
+  const store = new PermissionStore();
+  const factory = createPermissionsExtension({ cwd: () => workdir, store });
+  factory(pi as any);
+  const command = pi.commands.get("permissions")!;
+  const ctx = makeCtx(async () => "Yes");
+
+  await command.handler("mode bypassPermissions", ctx);
+  expect(store.defaultMode()).toBe("bypassPermissions");
+  expect(ctx.notifications.at(-1)?.message).toContain("bypassPermissions");
+
+  await command.handler("mode default-config", ctx);
+  expect(store.defaultMode()).toBe("default");
+  expect(store.modeIsOverridden()).toBe(false);
+});
+
+test("/permissions cycle changes mode used by tool decisions", async () => {
+  const pi = makeFakePi();
+  const store = new PermissionStore();
+  const factory = createPermissionsExtension({ cwd: () => workdir, store });
+  factory(pi as any);
+  const command = pi.commands.get("permissions")!;
+  const handler = pi.handlers.tool_call![0]!;
+  const ctx = makeCtx(async () => {
+    throw new Error("bypass mode should not prompt");
+  });
+
+  await command.handler("cycle", ctx);
+  expect(store.defaultMode()).toBe("acceptEdits");
+  await command.handler("cycle", ctx);
+  expect(store.defaultMode()).toBe("bypassPermissions");
+
+  const result = await handler({ type: "tool_call", toolName: "bash", input: { command: "echo hi" } }, ctx);
+  expect(result).toEqual({});
 });
