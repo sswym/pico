@@ -139,7 +139,25 @@ subagent(chain=[
 
 多阶段引导式工作流：询问需要设置什么，可选派出 `scout` 子代理做代码库侦察，通过 `askUserQuestion` 填补信息缺口，然后编写极简的 **AGENTS.md**（以及可选的 AGENTS.local.md），并建议技能/钩子。**srcode 永远不会写入 CLAUDE.md**——这是写死在提示词中的硬规则。
 
-### 8. 钩子（`~/.srcode/hooks.json` + `<仓库>/.srcode/hooks.json`）
+### 8. 权限系统（`~/.srcode/permissions.json` + `<仓库>/.srcode/permissions.json`）
+
+基于 `tool_call` 事件的工具调用前置权限网关。配置按用户级 → 项目级 → 会话级合并；规则语法兼容 Claude Code 的 `ToolName` / `ToolName(content)` 格式，例如 `Bash(npm:*)`、`Edit(./src/**)`。默认模式下，`read`/`grep`/`find`/`ls` 自动允许，`bash`/`edit`/`write` 等高影响工具在无匹配规则时会弹出 TUI 审批。
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(npm:*)", "Read(./src/**)"],
+    "deny": ["Bash(rm -rf:*)", "Edit(/etc/**)"],
+    "ask": ["Write(./dist/**)"],
+    "defaultMode": "default",
+    "additionalDirectories": ["~/projects/notes"]
+  }
+}
+```
+
+`defaultMode` 支持 `default`、`acceptEdits`、`plan`、`bypassPermissions`、`dontAsk`。`/permissions` 可查看当前规则，`/permissions clear-session` 清除本会话临时允许规则。
+
+### 9. 钩子（`~/.srcode/hooks.json` + `<仓库>/.srcode/hooks.json`）
 
 基于文件的 Shell 钩子，支持 `PreToolUse` / `PostToolUse` / `PreSessionEnd` / `PostUserMessage` 事件。项目级条目按 `(event, tool, command)` 覆盖用户级。占位符：`$FILE`（工具参数）、`$TOOL`（工具名）、`$TURN`（轮次索引）。默认超时 30 秒（最大 120 秒）；`blocking: true` 的 PreToolUse 失败会中止工具调用。
 
@@ -152,11 +170,11 @@ subagent(chain=[
 }
 ```
 
-### 9. Vibe 编码系统提示词
+### 10. Vibe 编码系统提示词
 
 `src/prompts/vibe-system.md` 会被追加到每条系统提示词末尾。四条规则——*先思考再编码、用最少的代码解决问题、手术式修改、目标驱动执行*——从 `~/.claude/CLAUDE.md` 中提炼。目标是让 srcode 先问后猜、不重构相邻代码、并将每行 diff 追溯到明确需求。
 
-### 10. 内置技能（`src/skills/`）
+### 11. 内置技能（`src/skills/`）
 
 三个 `SKILL.md` 技能通过 `--skill <bundled-skills-dir>` 自动加载：
 
@@ -177,6 +195,7 @@ srcode/
 │   │   ├── hooks/      # 配置加载 + 沙箱运行器 + 事件连线
 │   │   ├── init/       # /init 提示词（AGENTS.md，绝不写 CLAUDE.md）
 │   │   ├── memory/     # bun:sqlite + FTS5 长期记忆
+│   │   ├── permissions/# tool_call 权限规则、审批与 /permissions
 │   │   ├── plan/       # EnterPlanMode / ExitPlanMode + tool_call 拦截
 │   │   ├── subagent/   # 源自 pi-coding-agent 示例 + memory 钩子
 │   │   ├── todo/       # todoWrite 工具 + /todo 命令 + 按会话存储
@@ -190,6 +209,7 @@ srcode/
     ├── hooks.test.ts        # 配置加载、运行器、占位符替换
     ├── init.test.ts         # /init 提示词内容 + 命令连线
     ├── memory.test.ts       # 23 个用例——add/search/feedback/update/remove/probe/clear/extract/secrets/scope/correction
+    ├── permissions.test.ts   # 规则解析、匹配、决策、扩展拦截
     ├── plan.test.ts         # tool_call 拦截 + ExitPlanMode 流程
     ├── skills.test.ts       # 内置技能加载并包含非空描述
     ├── subagent.test.ts     # 工厂连线、代理发现、worker 提示词
@@ -203,7 +223,7 @@ srcode/
 bun test
 ```
 
-93 个用例，完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`。
+102 个用例，完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`。
 
 ## 路线图
 

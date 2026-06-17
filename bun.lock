@@ -9,6 +9,7 @@
         "@earendil-works/pi-ai": "^0.79.4",
         "@earendil-works/pi-coding-agent": "^0.79.4",
         "@earendil-works/pi-tui": "^0.79.4",
+        "ignore": "^7.0.5",
         "node-html-parser": "^7.1.0",
       },
       "devDependencies": {

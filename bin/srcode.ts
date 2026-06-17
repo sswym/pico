@@ -31,6 +31,7 @@ import { askExtension } from "../src/extensions/ask/index.ts";
 import { initExtension } from "../src/extensions/init/index.ts";
 import { logoExtension } from "../src/extensions/logo/index.ts";
 import { memoryExtension } from "../src/extensions/memory/index.ts";
+import { permissionsExtension } from "../src/extensions/permissions/index.ts";
 import { planExtension } from "../src/extensions/plan/index.ts";
 import subagentExtension from "../src/extensions/subagent/index.ts";
 import { todoExtension } from "../src/extensions/todo/index.ts";
@@ -108,7 +109,20 @@ function withBundledSkills(rawArgs: string[]): string[] {
   return [...rawArgs, "--skill", skillsDir];
 }
 
-const args = withBundledSkills(withBundledPromptTemplates(process.argv.slice(2)));
+const rawArgv = process.argv.slice(2);
+
+// Top-level subcommand: `srcode gateway ...`. Routed before pi-coding-agent's
+// main() so the long-poll daemon doesn't inherit TUI-bound flags. This
+// mirrors how pi handles `install`/`config` internally — argv short-circuit,
+// run handler, exit.
+if (rawArgv[0] === "gateway") {
+  const { runGateway } = await import("../src/gateway/cli.ts");
+  process.exitCode = await runGateway(rawArgv.slice(1));
+  // Don't fall through to main() — gateway is a standalone daemon.
+  process.exit(process.exitCode ?? 0);
+}
+
+const args = withBundledSkills(withBundledPromptTemplates(rawArgv));
 
 // Override process.title so dev-mode runs show "srcode" instead of "pi".
 // In compiled-binary mode, this is handled by piConfig.name in build/package.json.
@@ -125,6 +139,7 @@ await main(args, {
     initExtension,
     planExtension,
     webExtension,
+    permissionsExtension,
     hooksExtension,
   ],
 });
