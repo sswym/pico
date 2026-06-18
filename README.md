@@ -168,6 +168,8 @@ subagent(chain=[
 /permissions cycle                 # 在 default → acceptEdits → bypassPermissions → dontAsk 间循环
 ```
 
+**快捷键**：`Shift+Tab` 循环切换权限模式（默认 `default` → `acceptEdits` → `bypassPermissions` → `dontAsk`），底部状态栏会显示当前模式。思考深度（thinking level）可通过 `/settings` 命令设置。
+
 ### 9. 钩子（`~/.srcode/hooks.json` + `<仓库>/.srcode/hooks.json`）
 
 基于文件的 Shell 钩子，支持 `PreToolUse` / `PostToolUse` / `PreSessionEnd` / `PostUserMessage` 事件。项目级条目按 `(event, tool, command)` 覆盖用户级。占位符：`$FILE`（工具参数）、`$TOOL`（工具名）、`$TURN`（轮次索引）。默认超时 30 秒（最大 120 秒）；`blocking: true` 的 PreToolUse 失败会中止工具调用。

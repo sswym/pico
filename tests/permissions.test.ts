@@ -112,23 +112,28 @@ test("decidePermission turns ask into deny in dontAsk mode and accepts edits ins
 interface FakePi {
   handlers: Record<string, Array<(event: any, ctx: any) => any>>;
   commands: Map<string, any>;
+  shortcuts: Map<string, any>;
   messages: any[];
 }
 
 function makeFakePi(): FakePi & {
   on: (event: string, handler: (event: any, ctx: any) => any) => void;
   registerCommand: (name: string, opts: any) => void;
+  registerShortcut: (key: string, opts: any) => void;
   sendMessage: (msg: any) => void;
 } {
   const handlers: FakePi["handlers"] = {};
   const commands = new Map<string, any>();
+  const shortcuts = new Map<string, any>();
   const messages: any[] = [];
   return {
     handlers,
     commands,
+    shortcuts,
     messages,
     on: (event, handler) => { (handlers[event] ??= []).push(handler); },
     registerCommand: (name, opts) => commands.set(name, opts),
+    registerShortcut: (key, opts) => shortcuts.set(key, opts),
     sendMessage: (msg) => messages.push(msg),
   };
 }
@@ -206,4 +211,17 @@ test("/permissions cycle changes mode used by tool decisions", async () => {
 
   const result = await handler({ type: "tool_call", toolName: "bash", input: { command: "echo hi" } }, ctx);
   expect(result).toEqual({});
+});
+
+test("shift+tab shortcut is registered for permission mode cycling", async () => {
+  const pi = makeFakePi();
+  const store = new PermissionStore();
+  const factory = createPermissionsExtension({ cwd: () => workdir, store });
+  factory(pi as any);
+  const shortcut = (pi as any).shortcuts.get("shift+tab");
+  expect(shortcut).toBeDefined();
+  expect(shortcut.description).toBe("Cycle permission mode");
+
+  await shortcut.handler(makeCtx(async () => "Yes"));
+  expect(store.defaultMode()).toBe("acceptEdits");
 });

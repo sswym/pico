@@ -14,6 +14,7 @@
  * which makes pi's config.js read SRCODE_CODING_AGENT_DIR instead of
  * PI_CODING_AGENT_DIR — so we set both names to be safe across modes.
  */
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -30,3 +31,16 @@ process.env.SRCODE_CODING_AGENT_SESSION_DIR ??= sessionDir;
 // package version. srcode is a wrapper with its own release cadence, so that
 // check reports misleading "srcode update" prompts when only pi changed.
 process.env.PI_SKIP_VERSION_CHECK ??= "1";
+
+// Disable the upstream shift+tab → cycle thinking level shortcut so srcode
+// can repurpose shift+tab for permission-mode cycling. Thinking level
+// remains settable via /settings. We only write the keybindings file if it
+// doesn't already exist — users who have customised their keybindings are
+// left alone.
+{
+  const keybindingsPath = join(agentDir, "keybindings.json");
+  if (!existsSync(keybindingsPath)) {
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(keybindingsPath, JSON.stringify({ "app.thinking.cycle": [] }, null, 2) + "\n");
+  }
+}

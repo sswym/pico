@@ -144,6 +144,15 @@ export function createPermissionsExtension(deps: { store?: PermissionStore; cwd?
         }
       },
     });
+
+    pi.registerShortcut("shift+tab", {
+      description: "Cycle permission mode",
+      handler: (ctx) => {
+        store.reload(ctx.cwd || cwdFn());
+        store.cycleMode();
+        notifyMode(ctx, store);
+      },
+    });
   };
 }
 
