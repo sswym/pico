@@ -13,6 +13,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { applyOverrides, loadSubagentConfig } from "./config.ts";
+import { getEmbeddedContent, getEmbeddedKeys } from "../embedded-assets.ts";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -60,12 +61,117 @@ const BUILTIN_AGENTS_DIR = resolveBuiltinAgentsDir();
  * (see scripts/build.ts), so we fall back to `<execDir>/agents` there.
  */
 function resolveBuiltinAgentsDir(): string {
+	// In embedded (compiled-binary) mode there is no on-disk agents/ dir —
+	// agents are loaded from the embedded asset map instead.
+	if (getEmbeddedKeys("agents/").length > 0) {
+		return ""; // sentinel: will use loadEmbeddedAgents()
+	}
 	const url = import.meta.url;
 	const isBunBinary = url.includes("$bunfs") || url.includes("~BUN") || url.includes("%7EBUN");
 	if (isBunBinary) {
 		return path.join(path.dirname(process.execPath), "agents");
 	}
 	return path.join(path.dirname(fileURLToPath(url)), "agents");
+}
+
+/**
+ * Load agents from the embedded asset map (compiled-binary mode).
+ * Uses the same frontmatter parsing logic as loadAgentsFromDir.
+ */
+function loadEmbeddedAgents(): AgentConfig[] {
+	const agents: AgentConfig[] = [];
+	const keys = getEmbeddedKeys("agents/");
+	for (const key of keys) {
+		if (!key.endsWith(".md")) continue;
+		const content = getEmbeddedContent(key);
+		if (!content) continue;
+
+		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
+
+		if (typeof frontmatter.name !== "string" || typeof frontmatter.description !== "string") {
+			continue;
+		}
+
+		const tools =
+			typeof frontmatter.tools === "string"
+				? frontmatter.tools
+						.split(",")
+						.map((t) => t.trim())
+						.filter(Boolean)
+				: undefined;
+
+		const fallbackModels =
+			typeof frontmatter.fallbackModels === "string"
+				? frontmatter.fallbackModels
+						.split(",")
+						.map((m) => m.trim())
+						.filter(Boolean)
+				: Array.isArray(frontmatter.fallbackModels)
+					? (frontmatter.fallbackModels as unknown[]).map((m) => String(m).trim()).filter(Boolean)
+					: undefined;
+
+		const toNumber = (v: unknown): number | undefined => {
+			if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+			if (typeof v === "string") {
+				const n = Number(v);
+				if (Number.isFinite(n) && n > 0) return n;
+			}
+			return undefined;
+		};
+		const toBool = (v: unknown): boolean | undefined => {
+			if (typeof v === "boolean") return v;
+			if (v === "true") return true;
+			if (v === "false") return false;
+			return undefined;
+		};
+
+		let acceptance: AcceptanceConfig | undefined;
+		if (frontmatter.acceptance && typeof frontmatter.acceptance === "object") {
+			const a = frontmatter.acceptance as Record<string, unknown>;
+			const criteria = Array.isArray(a.criteria)
+				? (a.criteria as unknown[]).map((c) => String(c)).filter(Boolean)
+				: undefined;
+			const evidence = Array.isArray(a.evidence)
+				? (a.evidence as unknown[])
+						.filter((e): e is Record<string, unknown> => !!e && typeof e === "object")
+						.map((e) => ({
+							command: String(e.command ?? "").trim(),
+							expect: typeof e.expect === "string" ? e.expect : undefined,
+						}))
+						.filter((e) => e.command.length > 0)
+				: undefined;
+			if ((criteria?.length ?? 0) > 0 || (evidence?.length ?? 0) > 0) {
+				acceptance = {
+					criteria,
+					evidence,
+					selfRepair: toBool(a.selfRepair),
+					maxRepairAttempts: toNumber(a.maxRepairAttempts),
+				};
+			}
+		}
+
+		const outputMode = frontmatter.outputMode === "file-only" ? "file-only" : undefined;
+
+		agents.push({
+			name: frontmatter.name,
+			description: frontmatter.description,
+			tools: tools && tools.length > 0 ? tools : undefined,
+			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
+			systemPrompt: body,
+			source: "user",
+			filePath: `<embedded>/${key}`,
+			thinking: typeof frontmatter.thinking === "string" ? frontmatter.thinking : undefined,
+			maxExecutionTimeMs: toNumber(frontmatter.maxExecutionTimeMs),
+			maxTokens: toNumber(frontmatter.maxTokens),
+			fallbackModels: fallbackModels && fallbackModels.length > 0 ? fallbackModels : undefined,
+			systemPromptMode: frontmatter.systemPromptMode === "replace" ? "replace" : undefined,
+			inheritProjectContext: toBool(frontmatter.inheritProjectContext),
+			inheritSkills: toBool(frontmatter.inheritSkills),
+			outputMode,
+			acceptance,
+		});
+	}
+	return agents;
 }
 
 function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
@@ -211,7 +317,8 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 
 	// Builtins are loaded first under the "user" scope; same-named entries from
 	// ~/.srcode/agent/agents/ replace them via Map.set().
-	const builtinAgents = scope === "project" ? [] : loadAgentsFromDir(BUILTIN_AGENTS_DIR, "user");
+	// In embedded mode (BUILTIN_AGENTS_DIR === ""), load from the asset map.
+	const builtinAgents = scope === "project" ? [] : BUILTIN_AGENTS_DIR === "" ? loadEmbeddedAgents() : loadAgentsFromDir(BUILTIN_AGENTS_DIR, "user");
 	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
 	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
 

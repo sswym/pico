@@ -10,36 +10,14 @@
  * Output layout (e.g., build/):
  *   build/
  *   ├── srcode                  # compiled binary (srcode.exe on Windows)
- *   ├── package.json            # generated package.json (sets APP_NAME=srcode)
- *   ├── theme/                  # built-in theme files
- *   │   ├── dark.json
- *   │   └── light.json
- *   ├── export-html/            # HTML export templates
- *   │   ├── template.css
- *   │   ├── template.html
- *   │   ├── template.js
- *   │   └── vendor/
- *   ├── assets/                 # interactive assets
- *   │   └── clankolas.png
- *   ├── prompts/                # bundled subagent workflow prompts
- *   │   ├── implement.md
- *   │   ├── implement-and-review.md
- *   │   └── scout-and-plan.md
- *   ├── agents/                 # bundled subagent role definitions
- *   │   ├── scout.md
- *   │   ├── planner.md
- *   │   ├── worker.md
- *   │   ├── reviewer.md
- *   │   ├── oracle.md
- *   │   └── researcher.md
- *   └── skills/                 # bundled srcode skills
- *       ├── agents-init/SKILL.md
- *       ├── recap/SKILL.md
- *       └── verify/SKILL.md
+ *   └── package.json            # generated package.json (sets APP_NAME=srcode)
+ *
+ * All runtime assets (agents, prompts, skills, themes, export-html templates,
+ * images) are embedded directly into the binary via src/generated/embedded-assets.ts.
  */
 
-import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { dirname, join, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
@@ -49,6 +27,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PI_DIST = resolve(ROOT, "node_modules", "@earendil-works", "pi-coding-agent", "dist");
 const PI_PKG = resolve(ROOT, "node_modules", "@earendil-works", "pi-coding-agent", "package.json");
+const GENERATED_DIR = resolve(ROOT, "src", "generated");
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -99,56 +78,142 @@ function getFileSize(p: string): number {
   }
 }
 
-function readDirRecursive(dir: string): string[] {
-  const result: string[] = [];
-  const stack = [dir];
-  while (stack.length > 0) {
-    const current = stack.pop()!;
-    try {
-      const entries = Array.from(readdirSync(current, { withFileTypes: true }));
-      for (const entry of entries) {
-        const full = join(current, entry.name);
-        if (entry.isDirectory()) {
-          stack.push(full);
-        } else {
-          result.push(full);
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-  return result;
-}
-
-function getDirSize(dir: string): number {
-  let total = 0;
-  try {
-    const entries = readDirRecursive(dir);
-    for (const entry of entries) {
-      total += getFileSize(entry);
-    }
-  } catch {
-    /* ignore */
-  }
-  return total;
-}
-
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function copyDir(src: string, dest: string, description: string) {
-  if (!existsSync(src)) {
-    console.warn(`  ⚠  ${description}: source not found at ${src}`);
-    return;
+// ---------------------------------------------------------------------------
+// Embedded asset generation
+// ---------------------------------------------------------------------------
+
+/** Escape a string for embedding inside a JS template literal. */
+function escapeTemplateLiteral(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
+}
+
+/** Recursively collect all files under dir, returning absolute paths. */
+function collectFiles(dir: string): string[] {
+  const result: string[] = [];
+  const stack = [dir];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    try {
+      for (const entry of readdirSync(current, { withFileTypes: true })) {
+        const full = join(current, entry.name);
+        if (entry.isDirectory()) stack.push(full);
+        else if (entry.isFile()) result.push(full);
+      }
+    } catch { /* ignore */ }
   }
-  mkdirSync(dest, { recursive: true });
-  cpSync(src, dest, { recursive: true, force: true });
-  const size = getDirSize(dest);
-  console.log(`  ✓  ${description} (${formatSize(size)})`);
+  return result;
+}
+
+/**
+ * Generate src/generated/embedded-assets.ts — a module that bundles every
+ * runtime resource into a single Record<string, string> so the compiled
+ * binary is fully self-contained.
+ */
+function generateEmbeddedAssets() {
+  console.log(`  ── Generating embedded assets ──`);
+  mkdirSync(GENERATED_DIR, { recursive: true });
+
+  const entries: Array<{ key: string; value: string; binary?: boolean }> = [];
+
+  // 1. srcode agents
+  const agentsDir = resolve(ROOT, "src", "extensions", "subagent", "agents");
+  if (existsSync(agentsDir)) {
+    for (const f of readdirSync(agentsDir, { withFileTypes: true })) {
+      if (f.isFile() && f.name.endsWith(".md")) {
+        const content = readFileSync(join(agentsDir, f.name), "utf-8");
+        entries.push({ key: `agents/${f.name}`, value: content });
+      }
+    }
+  }
+
+  // 2. srcode prompts
+  const promptsDir = resolve(ROOT, "src", "extensions", "subagent", "prompts");
+  if (existsSync(promptsDir)) {
+    for (const f of readdirSync(promptsDir, { withFileTypes: true })) {
+      if (f.isFile() && f.name.endsWith(".md")) {
+        const content = readFileSync(join(promptsDir, f.name), "utf-8");
+        entries.push({ key: `prompts/${f.name}`, value: content });
+      }
+    }
+  }
+
+  // 3. srcode skills (recursive — preserves subdirectory structure)
+  const skillsDir = resolve(ROOT, "src", "skills");
+  if (existsSync(skillsDir)) {
+    for (const abs of collectFiles(skillsDir)) {
+      const rel = relative(skillsDir, abs);
+      const content = readFileSync(abs, "utf-8");
+      entries.push({ key: `skills/${rel}`, value: content });
+    }
+  }
+
+  // 4. pi theme JSONs
+  const themeSrc = join(PI_DIST, "modes", "interactive", "theme");
+  for (const name of ["dark.json", "light.json"]) {
+    const p = join(themeSrc, name);
+    if (existsSync(p)) {
+      entries.push({ key: `theme/${name}`, value: readFileSync(p, "utf-8") });
+    }
+  }
+
+  // 5. pi export-html templates + vendor JS
+  const exportHtmlSrc = join(PI_DIST, "core", "export-html");
+  for (const name of ["template.html", "template.css", "template.js"]) {
+    const p = join(exportHtmlSrc, name);
+    if (existsSync(p)) {
+      entries.push({ key: `export-html/${name}`, value: readFileSync(p, "utf-8") });
+    }
+  }
+  const vendorSrc = join(exportHtmlSrc, "vendor");
+  if (existsSync(vendorSrc)) {
+    for (const f of readdirSync(vendorSrc, { withFileTypes: true })) {
+      if (f.isFile()) {
+        const p = join(vendorSrc, f.name);
+        entries.push({ key: `export-html/vendor/${f.name}`, value: readFileSync(p, "utf-8") });
+      }
+    }
+  }
+
+  // 6. pi assets (binary — base64)
+  const assetsSrc = join(PI_DIST, "modes", "interactive", "assets");
+  if (existsSync(assetsSrc)) {
+    for (const f of readdirSync(assetsSrc, { withFileTypes: true })) {
+      if (f.isFile()) {
+        const buf = readFileSync(join(assetsSrc, f.name));
+        entries.push({ key: `assets/${f.name}`, value: buf.toString("base64"), binary: true });
+      }
+    }
+  }
+
+  // Generate the TypeScript module
+  const lines: string[] = [
+    "// AUTO-GENERATED by scripts/build.ts — do not edit manually.",
+    "",
+    "/** Map of resource path → content. Binary assets are base64-encoded. */",
+    "export const EMBEDDED: Record<string, string> = {",
+  ];
+
+  for (const { key, value, binary } of entries) {
+    if (binary) {
+      // base64 — safe to embed directly (no escaping needed)
+      lines.push(`  ${JSON.stringify(key)}: ${JSON.stringify(value)},`);
+    } else {
+      lines.push(`  ${JSON.stringify(key)}: \`${escapeTemplateLiteral(value)}\`,`);
+    }
+  }
+
+  lines.push("};", "");
+
+  const outPath = join(GENERATED_DIR, "embedded-assets.ts");
+  writeFileSync(outPath, lines.join("\n"));
+  const totalSize = entries.reduce((sum, e) => sum + e.value.length, 0);
+  console.log(`  ✓  embedded-assets.ts (${entries.length} entries, ${formatSize(totalSize)})`);
 }
 
 // ---------------------------------------------------------------------------
@@ -169,10 +234,22 @@ async function main() {
   console.log(`  Entry:     ${entrypoint}`);
   console.log("");
 
+  // ---- Phase 0: generate embedded assets module ----
+  generateEmbeddedAssets();
+
   // ---- Phase 1: compile binary ----
-  console.log(`  ── Compiling binary ──`);
+  console.log(`\n  ── Compiling binary ──`);
 
   mkdirSync(outDir, { recursive: true });
+
+  // Clean old asset directories from previous builds (they are now embedded)
+  for (const oldDir of ["agents", "assets", "export-html", "prompts", "skills", "theme"]) {
+    const p = join(outDir, oldDir);
+    if (existsSync(p)) {
+      const { rmSync } = await import("node:fs");
+      rmSync(p, { recursive: true, force: true });
+    }
+  }
 
   const buildArgs = [
     "build",
@@ -199,8 +276,8 @@ async function main() {
   const binarySize = getFileSize(binaryPath);
   console.log(`  ✓  Binary: ${binaryName} (${formatSize(binarySize)})`);
 
-  // ---- Phase 2: copy pi runtime assets ----
-  console.log(`\n  ── Copying runtime assets ──`);
+  // ---- Phase 2: generate pi package.json ----
+  console.log(`\n  ── Generating pi package.json ──`);
 
   if (existsSync(PI_PKG)) {
     // Generate a custom package.json so pi's config.js reads APP_NAME="srcode"
@@ -216,61 +293,13 @@ async function main() {
     console.log(`  ✓  custom package.json (${formatSize(getFileSize(join(outDir, "package.json")))})`);
   }
 
-  copyDir(
-    join(PI_DIST, "modes", "interactive", "theme"),
-    join(outDir, "theme"),
-    "theme files",
-  );
-
-  copyDir(
-    join(PI_DIST, "core", "export-html"),
-    join(outDir, "export-html"),
-    "export-html templates",
-  );
-
-  copyDir(
-    join(PI_DIST, "modes", "interactive", "assets"),
-    join(outDir, "assets"),
-    "interactive assets",
-  );
-
-  // ---- Phase 3: copy srcode's bundled prompts ----
-  console.log(`\n  ── Copying bundled prompts ──`);
-
-  copyDir(
-    resolve(ROOT, "src", "extensions", "subagent", "prompts"),
-    join(outDir, "prompts"),
-    "subagent workflow prompts",
-  );
-
-  // ---- Phase 4: copy srcode's bundled agent definitions ----
-  // Bun compile does not embed .md files, and agents.ts uses import.meta.url
-  // to locate the agents/ directory. In compiled binaries import.meta.url
-  // points at /$bunfs/... which has no on-disk agents/, so we ship the role
-  // definitions next to the binary instead. agents.ts has a matching
-  // bun-binary branch that resolves to dirname(process.execPath)/agents.
-  copyDir(
-    resolve(ROOT, "src", "extensions", "subagent", "agents"),
-    join(outDir, "agents"),
-    "subagent agent definitions",
-  );
-
-  // ---- Phase 5: copy srcode's bundled skills ----
-  console.log(`\n  ── Copying bundled skills ──`);
-
-  copyDir(
-    resolve(ROOT, "src", "skills"),
-    join(outDir, "skills"),
-    "bundled skills",
-  );
-
-  // ---- Phase 6: summary ----
-  const totalSize = getDirSize(outDir);
+  // ---- Phase 3: summary ----
+  const totalSize = binarySize + getFileSize(join(outDir, "package.json"));
 
   console.log(`\n  ── Build complete ──`);
   console.log(`  Output:  ${outDir}`);
   console.log(`  Binary:  ${binaryPath}`);
-  console.log(`  Total:   ${formatSize(totalSize)}`);
+  console.log(`  Total:   ${formatSize(totalSize)} (single-file binary + package.json)`);
   console.log("");
 
   // Quick smoke test
