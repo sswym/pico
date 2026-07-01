@@ -37,6 +37,7 @@ import { permissionsExtension } from "../src/extensions/permissions/index.ts";
 import { planExtension } from "../src/extensions/plan/index.ts";
 import subagentExtension from "../src/extensions/subagent/index.ts";
 import { todoExtension } from "../src/extensions/todo/index.ts";
+import { languageExtension } from "../src/extensions/language.ts";
 import { vibeExtension } from "../src/extensions/vibe.ts";
 import { webExtension } from "../src/extensions/web/index.ts";
 import { hooksExtension } from "../src/extensions/hooks/index.ts";
@@ -178,6 +179,7 @@ process.title = "srcode";
 await main(args, {
   extensionFactories: [
     vibeExtension,
+    languageExtension,
     logoExtension,
     memoryExtension,
     subagentExtension,
