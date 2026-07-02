@@ -37,12 +37,18 @@ import { resolveFormattingOptions } from "./format-options.ts";
 
 const TEXT: "text" = "text";
 
-function ok(text: string) {
-  return { content: [{ type: TEXT, text }], details: undefined };
+interface LspDetails {
+  serverName?: string;
+  action?: string;
+  success: boolean;
 }
 
-function fail(text: string) {
-  return { content: [{ type: TEXT, text }], details: undefined, isError: true };
+function ok(text: string, details?: LspDetails) {
+  return { content: [{ type: TEXT, text }], details: details ?? { success: true } };
+}
+
+function fail(text: string, details?: LspDetails) {
+  return { content: [{ type: TEXT, text }], details: details ?? { success: false }, isError: true };
 }
 
 // ── Type guards ───────────────────────────────────────────────────────────
@@ -244,7 +250,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             const openCount = client.getAllDiagnostics().size;
             lines.push(`  ${name} v${ver} — ${client.status} (${openCount} files with diagnostics)`);
           }
-          return ok(`Active language servers:\n${lines.join("\n")}`);
+          return ok(`Active language servers:\n${lines.join("\n")}`, { action: "status", success: true });
         }
 
         // ── Actions that need a running server ──────────────────────────
@@ -255,7 +261,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           await stopServer(state);
           const refreshed = await ensureServer(state, ctx.cwd);
           if (!refreshed) return fail("Failed to restart language server.");
-          return ok(`Restarted ${refreshed.serverName} v${refreshed.serverInfo.version ?? "unknown"}`);
+          return ok(`Restarted ${refreshed.serverName} v${refreshed.serverInfo.version ?? "unknown"}`, { serverName: refreshed.serverName, action: "reload", success: true });
         }
 
         if (action === "capabilities") {
@@ -265,7 +271,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             if (value === true) lines.push(`  ${key}: supported`);
             else if (typeof value === "object" && value !== null) lines.push(`  ${key}: ${JSON.stringify(value)}`);
           }
-          return ok(`Capabilities of ${client.serverName}:\n${lines.join("\n")}`);
+          return ok(`Capabilities of ${client.serverName}:\n${lines.join("\n")}`, { serverName: client.serverName, action: "capabilities", success: true });
         }
 
         if (action === "request") {
@@ -434,7 +440,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           }
         } catch (err) {
           const msg = err instanceof LspError ? err.message : err instanceof Error ? err.message : String(err);
-          return fail(`LSP ${action} failed: ${msg}`);
+          return fail(`LSP ${action} failed: ${msg}`, { serverName: client.serverName, action, success: false });
         }
       },
     }),
@@ -494,6 +500,14 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     } catch {
       // Silently ignore writethrough failures
     }
+  });
+
+  // ── Startup warmup ──────────────────────────────────────────────────────
+
+  pi.on("session_start", async (_event, ctx) => {
+    // Fire-and-forget: start the language server in the background so the
+    // first lsp tool call doesn't pay the cold-start penalty.
+    ensureServer(state, ctx.cwd).catch(() => {});
   });
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
