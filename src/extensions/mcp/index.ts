@@ -57,9 +57,43 @@ interface ServerFailure {
 type ServerEntry = ServerStatus | ServerFailure;
 
 export const mcpExtension: ExtensionFactory = async (pi: ExtensionAPI) => {
+  const entries: ServerEntry[] = [];
+
+  // ── Register /mcp command BEFORE async server connections ──────────────
+
+  pi.registerCommand("mcp", {
+    description: "List connected MCP servers and their tools",
+    handler: async (_args, ctx) => {
+      const connected = entries.filter((e): e is ServerStatus => !e.error);
+      const failed = entries.filter((e): e is ServerFailure => !!e.error);
+
+      if (entries.length === 0) {
+        ctx.ui.notify("No MCP servers configured.", "info");
+        return;
+      }
+
+      const lines: string[] = [];
+      lines.push(`MCP Servers (${connected.length} connected, ${failed.length} failed):\n`);
+
+      for (const entry of entries) {
+        if (!("serverName" in entry)) {
+          lines.push(`  ✗ ${entry.id} — FAILED: ${entry.error}`);
+        } else {
+          lines.push(`  ✓ ${entry.id} (${entry.serverName} ${entry.serverVersion}) — ${entry.toolCount} tools`);
+          for (const name of entry.toolNames) {
+            lines.push(`      ${name}`);
+          }
+        }
+      }
+
+      ctx.ui.notify(lines.join("\n"), failed.length > 0 ? "warning" : "info");
+    },
+  });
+
+  // ── Connect to MCP servers (async, after command registration) ─────────
+
   const cwd = process.cwd();
   const servers = loadMcpConfig(cwd);
-  const entries: ServerEntry[] = [];
 
   for (const [id, config] of Object.entries(servers)) {
     let handle: McpServerHandle | undefined;
@@ -128,37 +162,6 @@ export const mcpExtension: ExtensionFactory = async (pi: ExtensionAPI) => {
       entries.push({ id, error: msg });
     }
   }
-
-  // ── /mcp slash command ─────────────────────────────────────────────────
-
-  pi.registerCommand("mcp", {
-    description: "List connected MCP servers and their tools",
-    handler: async (_args, ctx) => {
-      const connected = entries.filter((e): e is ServerStatus => !e.error);
-      const failed = entries.filter((e): e is ServerFailure => !!e.error);
-
-      if (entries.length === 0) {
-        ctx.ui.notify("No MCP servers configured.", "info");
-        return;
-      }
-
-      const lines: string[] = [];
-      lines.push(`MCP Servers (${connected.length} connected, ${failed.length} failed):\n`);
-
-      for (const entry of entries) {
-        if (!("serverName" in entry)) {
-          lines.push(`  ✗ ${entry.id} — FAILED: ${entry.error}`);
-        } else {
-          lines.push(`  ✓ ${entry.id} (${entry.serverName} ${entry.serverVersion}) — ${entry.toolCount} tools`);
-          for (const name of entry.toolNames) {
-            lines.push(`      ${name}`);
-          }
-        }
-      }
-
-      ctx.ui.notify(lines.join("\n"), failed.length > 0 ? "warning" : "info");
-    },
-  });
 
   // Cleanup on shutdown
   pi.on("session_shutdown", () => {
