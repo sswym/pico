@@ -36,3 +36,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # generated (build-time)
 src/generated/
+
+# OMC plugin state
+.omc/
+
+# Codegraph index
+.codegraph/
