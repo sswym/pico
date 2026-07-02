@@ -41,6 +41,7 @@ import { languageExtension } from "../src/extensions/language.ts";
 import { vibeExtension } from "../src/extensions/vibe.ts";
 import { webExtension } from "../src/extensions/web/index.ts";
 import { hooksExtension } from "../src/extensions/hooks/index.ts";
+import { mcpExtension } from "../src/extensions/mcp/index.ts";
 import { getEmbeddedContent, getEmbeddedKeys } from "../src/extensions/embedded-assets.ts";
 
 /**

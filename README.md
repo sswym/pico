@@ -1,6 +1,6 @@
 # srcode
 
-> 带长期记忆、子代理委派、任务追踪、结构化用户提问、规划模式、网页抓取/搜索、`/init`、钩子系统与 Vibe 编码系统提示词的 Vibe 编码代理。
+> 带长期记忆、子代理委派、任务追踪、结构化用户提问、规划模式、网页抓取/搜索、MCP 服务器集成、`/init`、钩子系统与 Vibe 编码系统提示词的 Vibe 编码代理。
 
 ## 安装与运行
 
@@ -197,6 +197,39 @@ subagent(chain=[
 
 `~/.srcode/agent/skills/` 中的用户技能按名称覆盖内置技能。
 
+### 12. MCP 服务器集成（`mcp__*` 工具）
+
+srcode 支持连接外部 MCP（Model Context Protocol）服务器，自动发现并注册其工具为 LLM 可调用的内置工具。兼容 Claude Code 的 `mcpServers` 配置格式。
+
+**配置方式**，双层合并（项目覆盖家目录）：
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "env": {}
+    }
+  }
+}
+```
+
+| 层级 | 路径 | 说明 |
+|------|------|------|
+| 全局 | `~/.srcode/mcp-servers.json` | 所有项目共享 |
+| 项目 | `<cwd>/.srcode/mcp-servers.json` | 覆盖同名 server |
+
+**工具命名规则**：`mcp__<服务器名>__<工具名>`，与权限系统的 `mcp__` 前缀匹配兼容。
+
+**行为**：
+
+- 启动时异步连接所有配置的 MCP 服务器，调用 `initialize` + `tools/list` 发现工具
+- 每个 MCP 工具注册为一个独立的 pi 工具，LLM 可直接调用
+- 工具调用通过 JSON-RPC 2.0 stdio 转发至 MCP 服务器
+- 单服务器故障不影响其他服务器，超时 30 秒
+- 会话结束时自动清理子进程
+
 ## 项目结构
 
 ```
@@ -207,6 +240,7 @@ srcode/
 │   │   ├── ask/        # askUserQuestion 工具（schema、提示词、对话框分发）
 │   │   ├── hooks/      # 配置加载 + 沙箱运行器 + 事件连线
 │   │   ├── init/       # /init 提示词（AGENTS.md，绝不写 CLAUDE.md）
+│   │   ├── mcp/        # MCP 客户端（types, config, client, 扩展工厂）
 │   │   ├── memory/     # bun:sqlite + FTS5 长期记忆
 │   │   ├── permissions/# tool_call 权限规则、审批与 /permissions
 │   │   ├── plan/       # EnterPlanMode / ExitPlanMode + tool_call 拦截
@@ -218,25 +252,25 @@ srcode/
 │   ├── skills/{verify,recap,agents-init}/SKILL.md
 │   └── types/markdown.d.ts
 └── tests/
-    ├── ask.test.ts          # 8 个用例——schema 合法性、对话框分发、hasUI 回退
-    ├── hooks.test.ts        # 配置加载、运行器、占位符替换
-    ├── init.test.ts         # /init 提示词内容 + 命令连线
-    ├── memory.test.ts       # 23 个用例——add/search/feedback/update/remove/probe/clear/extract/secrets/scope/correction
-    ├── permissions.test.ts   # 规则解析、匹配、决策、扩展拦截
-    ├── plan.test.ts         # tool_call 拦截 + ExitPlanMode 流程
-    ├── skills.test.ts       # 内置技能加载并包含非空描述
-    ├── subagent.test.ts     # 工厂连线、代理发现、worker 提示词
-    ├── todo.test.ts         # 9 个用例——id 分配、折叠、不变量
-    └── web.test.ts          # 缓存命中、搜索解析、allowed_domains
+    ├── mcp/             # MCP 客户端单元测试
+    ├── ask.test.ts      # 8 个用例——schema 合法性、对话框分发、hasUI 回退
+    ├── hooks.test.ts    # 配置加载、运行器、占位符替换
+    ├── init.test.ts     # /init 提示词内容 + 命令连线
+    ├── memory.test.ts   # 23 个用例——add/search/feedback/update/remove/probe/clear/extract/secrets/scope/correction
+    ├── permissions.test.ts # 规则解析、匹配、决策、扩展拦截
+    ├── plan.test.ts     # tool_call 拦截 + ExitPlanMode 流程
+    ├── skills.test.ts   # 内置技能加载并包含非空描述
+    ├── subagent.test.ts # 工厂连线、代理发现、worker 提示词
+    ├── todo.test.ts     # 9 个用例——id 分配、折叠、不变量
+    └── web.test.ts      # 缓存命中、搜索解析、allowed_domains
 ```
-
 ## 测试
 
 ```bash
 bun test
 ```
 
-102 个用例，完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`。
+121 个用例，完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`。
 
 ## 路线图
 
