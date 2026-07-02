@@ -256,11 +256,13 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         // ── Actions that need a running server ──────────────────────────
         const client = await ensureServer(state, ctx.cwd);
         if (!client) return fail("No language server available for this project.");
+        ctx.ui.setStatus("lsp", `LSP: ${client.serverName} ${client.serverInfo.version ?? ""}`.trim());
 
         if (action === "reload") {
           await stopServer(state);
           const refreshed = await ensureServer(state, ctx.cwd);
           if (!refreshed) return fail("Failed to restart language server.");
+          ctx.ui.setStatus("lsp", `LSP: ${refreshed.serverName} ${refreshed.serverInfo.version ?? ""}`.trim());
           return ok(`Restarted ${refreshed.serverName} v${refreshed.serverInfo.version ?? "unknown"}`, { serverName: refreshed.serverName, action: "reload", success: true });
         }
 
@@ -505,14 +507,18 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // ── Startup warmup ──────────────────────────────────────────────────────
 
   pi.on("session_start", async (_event, ctx) => {
-    // Fire-and-forget: start the language server in the background so the
-    // first lsp tool call doesn't pay the cold-start penalty.
-    ensureServer(state, ctx.cwd).catch(() => {});
+    // Fire-and-forget: start the language server in the background.
+    ensureServer(state, ctx.cwd).then((client) => {
+      if (client) {
+        ctx.ui.setStatus("lsp", `LSP: ${client.serverName} ${client.serverInfo.version ?? ""}`.trim());
+      }
+    }).catch(() => {});
   });
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (_event, ctx) => {
+    ctx.ui.setStatus("lsp", undefined);
     await stopServer(state);
   });
 };
