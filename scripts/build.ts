@@ -132,7 +132,7 @@ function generateEmbeddedAssets() {
     }
   }
 
-  // 2. srcode prompts
+  // 2. srcode subagent prompts
   const promptsDir = resolve(ROOT, "src", "extensions", "subagent", "prompts");
   if (existsSync(promptsDir)) {
     for (const f of readdirSync(promptsDir, { withFileTypes: true })) {
@@ -141,6 +141,13 @@ function generateEmbeddedAssets() {
         entries.push({ key: `prompts/${f.name}`, value: content });
       }
     }
+  }
+
+  // 3. srcode init prompt
+  const initPromptPath = resolve(ROOT, "src", "extensions", "init", "prompt.md");
+  if (existsSync(initPromptPath)) {
+    const content = readFileSync(initPromptPath, "utf-8");
+    entries.push({ key: "init/prompt.md", value: content });
   }
 
   // 3. srcode skills (recursive — preserves subdirectory structure)
