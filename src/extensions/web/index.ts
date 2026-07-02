@@ -3,7 +3,7 @@
  *
  * Registers two tools:
  *   - webFetch  — fetch a URL, return simplified Markdown (15-min cache).
- *   - webSearch — query the web (DDG by default; Tavily when env opts in).
+ *   - webSearch — query the web (Exa MCP by default; Tavily when env opts in).
  *
  * Both are explicit network egress points; the prompt copy makes that
  * boundary visible to the model so it doesn't reach for them on internal
@@ -94,11 +94,11 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       name: "webSearch",
       label: "Web Search",
       description:
-        "Search the public web. Default provider is DuckDuckGo (HTML scrape, no key). " +
-        "Set SRCODE_SEARCH_PROVIDER=tavily plus TAVILY_API_KEY to use Tavily instead. " +
-        "Performs network egress; not cached.",
+        "Search the public web. Default provider is Exa MCP (public, no key). " +
+        "When TAVILY_API_KEY is available, Exa + Tavily are merged (hybrid mode). " +
+        "Set SRCODE_SEARCH_PROVIDER=exa or =tavily to force a single provider.",
       promptSnippet:
-        "webSearch — query the public web (DuckDuckGo default; Tavily via env). Returns title/url/snippet triples.",
+        "webSearch — query the public web (Exa + Tavily hybrid by default; set SRCODE_SEARCH_PROVIDER to override). Returns title/url/snippet triples.",
       parameters: WebSearchParams,
       async execute(_id, params, signal) {
         try {

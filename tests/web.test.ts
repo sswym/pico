@@ -4,7 +4,7 @@
  * fetch() is mocked by swapping globalThis.fetch in afterEach so other suites
  * don't see our stubs.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { LRU } from "../src/extensions/web/cache.ts";
 import {
   clearWebFetchCache,
@@ -14,7 +14,8 @@ import {
 } from "../src/extensions/web/fetch.ts";
 import {
   filterDomains,
-  parseDuckDuckGoHtml,
+  parseExaResponse,
+  parseExaTextResults,
   webSearch,
   type SearchResult,
 } from "../src/extensions/web/search.ts";
@@ -151,25 +152,122 @@ describe("fetchAndConvert", () => {
   });
 });
 
-describe("parseDuckDuckGoHtml", () => {
-  test("extracts at least one result from a hand-written DDG payload", () => {
-    const html = `
-      <html><body>
-        <div class="result results_links">
-          <h2><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa&rut=x">First Hit</a></h2>
-          <a class="result__snippet" href="https://example.com/a">First snippet text here</a>
-        </div>
-        <div class="result results_links">
-          <h2><a class="result__a" href="https://other.test/page">Second Hit</a></h2>
-          <a class="result__snippet">Second snippet</a>
-        </div>
-      </body></html>`;
-    const results = parseDuckDuckGoHtml(html);
-    expect(results.length).toBeGreaterThanOrEqual(2);
+describe("parseExaResponse", () => {
+  test("parses plain JSON-RPC response", () => {
+    const json = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { content: [{ type: "text", text: "hello" }] },
+    });
+    const parsed = parseExaResponse(json);
+    expect(parsed.result).toBeDefined();
+    expect(parsed.error).toBeUndefined();
+  });
+
+  test("parses SSE-wrapped response", () => {
+    const sse =
+      "event: message\ndata: " +
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [{ type: "text", text: "hello" }] },
+      }) +
+      "\n";
+    const parsed = parseExaResponse(sse);
+    expect(parsed.result).toBeDefined();
+  });
+
+  test("parses multiple SSE events (takes first data: line)", () => {
+    const event1 = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [] } });
+    const event2 = JSON.stringify({ jsonrpc: "2.0", id: 2, result: { content: [] } });
+    const sse = `event: message\ndata: ${event1}\n\nevent: message\ndata: ${event2}\n`;
+    const parsed = parseExaResponse(sse);
+    expect(parsed.result).toBeDefined();
+  });
+
+  test("detects JSON-RPC error", () => {
+    const json = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      error: { code: -32601, message: "Method not found" },
+    });
+    const parsed = parseExaResponse(json);
+    expect(parsed.error).toBeDefined();
+    expect(parsed.error!.code).toBe(-32601);
+  });
+
+  test("throws on garbage input", () => {
+    expect(() => parseExaResponse("not json")).toThrow();
+  });
+});
+
+describe("parseExaTextResults", () => {
+  const sample =
+    "Title: First Hit\n" +
+    "URL: https://example.com/a\n" +
+    "Published: N/A\n" +
+    "Author: N/A\n" +
+    "Highlights:\n" +
+    "> First snippet text here\n" +
+    "...\n" +
+    "---\n" +
+    "Title: Second Hit\n" +
+    "URL: https://other.test/page\n" +
+    "Published: 2025-01-15\n" +
+    "Author: Someone\n" +
+    "Highlights:\n" +
+    "Second snippet longer text\n" +
+    "...\n" +
+    "---\n" +
+    "Title: Third Hit\n" +
+    "URL: https://example.org/third\n" +
+    "Highlights:\n" +
+    "Third result description";
+
+  test("extracts all results", () => {
+    const results = parseExaTextResults(sample);
+    expect(results.length).toBe(3);
+  });
+
+  test("parses title, url, and snippet correctly", () => {
+    const results = parseExaTextResults(sample);
     expect(results[0]!.title).toBe("First Hit");
     expect(results[0]!.url).toBe("https://example.com/a");
     expect(results[0]!.snippet).toContain("First snippet");
+    expect(results[1]!.title).toBe("Second Hit");
     expect(results[1]!.url).toBe("https://other.test/page");
+    expect(results[1]!.snippet).toContain("Second snippet");
+  });
+
+  test("handles missing Highlights gracefully", () => {
+    const text = "Title: No highlights\nURL: https://x.test/\nPublished: N/A\n";
+    const results = parseExaTextResults(text);
+    expect(results.length).toBe(1);
+    expect(results[0]!.snippet).toBe("");
+  });
+
+  test("strips blockquote markers from snippet", () => {
+    const text =
+      "Title: Quote\nURL: https://x.test/\nHighlights:\n" +
+      "> quoted line 1\n" +
+      "> quoted line 2\n" +
+      "...";
+    const results = parseExaTextResults(text);
+    expect(results[0]!.snippet).not.toContain(">");
+    expect(results[0]!.snippet).toContain("quoted line 1");
+    expect(results[0]!.snippet).toContain("quoted line 2");
+  });
+
+  test("skips blocks missing Title or URL", () => {
+    const text =
+      "Title: Only title\nURL: https://a.test/\nHighlights:\nx\n" +
+      "---\n" +
+      "URL: https://no-title.test/\nHighlights:\ny\n" +
+      "---\n" +
+      "Title: Missing url\nHighlights:\nz\n";
+    const results = parseExaTextResults(text);
+    expect(results.length).toBe(1);
+    expect(results[0]!.title).toBe("Only title");
   });
 });
 
@@ -203,18 +301,26 @@ describe("filterDomains", () => {
 });
 
 describe("webSearch end-to-end (mocked)", () => {
-  test("DuckDuckGo path, allowed_domains filter applied", async () => {
-    const html = `
-      <div class="result">
-        <a class="result__a" href="https://allowed.test/a">Allowed</a>
-        <a class="result__snippet">good</a>
-      </div>
-      <div class="result">
-        <a class="result__a" href="https://denied.test/b">Denied</a>
-        <a class="result__snippet">bad</a>
-      </div>`;
-    globalThis.fetch = (async () =>
-      new Response(html, { status: 200, statusText: "OK", headers: { "content-type": "text/html" } })) as unknown as typeof fetch;
+  const exaResponse = (text: string) =>
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { content: [{ type: "text", text }] },
+    });
+
+  test("Exa path, allowed_domains filter applied", async () => {
+    const exaText =
+      "Title: Allowed\nURL: https://allowed.test/a\nHighlights:\ngood\n" +
+      "---\n" +
+      "Title: Denied\nURL: https://denied.test/b\nHighlights:\nbad\n";
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      expect(JSON.parse(String(init.body)).params.name).toBe("web_search_exa");
+      return new Response(exaResponse(exaText), {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
 
     const results = await webSearch(
       { query: "x", allowed_domains: ["allowed.test"] },
@@ -225,14 +331,38 @@ describe("webSearch end-to-end (mocked)", () => {
   });
 
   test("max_results clamps the returned set", async () => {
-    const blocks = Array.from({ length: 5 }, (_, i) =>
-      `<div class="result"><a class="result__a" href="https://h${i}.test/p">T${i}</a><a class="result__snippet">s${i}</a></div>`,
-    ).join("");
+    const blocks = Array.from(
+      { length: 5 },
+      (_, i) =>
+        `Title: T${i}\nURL: https://h${i}.test/p\nHighlights:\ns${i}\n`,
+    ).join("---\n");
     globalThis.fetch = (async () =>
-      new Response(blocks, { status: 200, statusText: "OK", headers: { "content-type": "text/html" } })) as unknown as typeof fetch;
+      new Response(exaResponse(blocks), {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
 
     const results = await webSearch({ query: "x", max_results: 2 }, { env: {} });
     expect(results.length).toBe(2);
+  });
+
+  test("Exa path respects max_results through clamp", async () => {
+    const blocks = Array.from(
+      { length: 30 },
+      (_, i) =>
+        `Title: T${i}\nURL: https://h${i}.test/p\nHighlights:\ns${i}\n`,
+    ).join("---\n");
+    globalThis.fetch = (async () =>
+      new Response(exaResponse(blocks), {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+
+    // clamp(30, 1, 25) => 25, but Exa only sees 25 via max param.
+    const results = await webSearch({ query: "x", max_results: 30 }, { env: {} });
+    expect(results.length).toBeLessThanOrEqual(25);
   });
 
   test("Tavily path is taken when env opts in", async () => {
@@ -256,5 +386,48 @@ describe("webSearch end-to-end (mocked)", () => {
     expect(seenUrl).toBe("https://api.tavily.com/search");
     expect(results[0]!.url).toBe("https://t.test/x");
     expect(results[0]!.snippet).toBe("snippet body");
+  });
+
+  test("Hybrid path queries both Exa and Tavily, dedups by URL", async () => {
+    let callCount = 0;
+    globalThis.fetch = (async (url: string) => {
+      callCount++;
+      if (url === "https://api.tavily.com/search") {
+        return new Response(
+          JSON.stringify({
+            results: [
+              { title: "Tavily Hit", url: "https://tavily.test/a", content: "tavily snippet" },
+              { title: "Dup", url: "https://shared.test/dup", content: "dup from tavily" },
+            ],
+          }),
+          { status: 200, statusText: "OK", headers: { "content-type": "application/json" } },
+        );
+      }
+      // Exa MCP
+      const exaText =
+        "Title: Exa Hit\nURL: https://exa.test/b\nHighlights:\nexa snippet\n" +
+        "---\n" +
+        "Title: Dup\nURL: https://shared.test/dup\nHighlights:\ndup from exa\n";
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: { content: [{ type: "text", text: exaText }] },
+        }),
+        { status: 200, statusText: "OK", headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    const results = await webSearch(
+      { query: "hello" },
+      { env: { tavilyKey: "k" } }, // no provider set → hybrid
+    );
+    expect(callCount).toBe(2);
+    // 3 unique results across both providers (one URL duplicated)
+    expect(results.length).toBe(3);
+    const urls = results.map((r) => r.url);
+    expect(urls).toContain("https://exa.test/b");
+    expect(urls).toContain("https://tavily.test/a");
+    expect(urls).toContain("https://shared.test/dup");
   });
 });

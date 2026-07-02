@@ -1,12 +1,16 @@
 /**
- * webSearch tool — DuckDuckGo HTML scrape, with optional Tavily fallback.
+ * webSearch tool — Exa MCP API, with optional Tavily merge.
  *
- * The default provider hits the no-JS DDG endpoint and parses `.result__a` /
- * `.result__snippet`. It's fragile but free and needs no API key. When
- * `SRCODE_SEARCH_PROVIDER=tavily` and `TAVILY_API_KEY` are both set we POST
- * to api.tavily.com instead.
+ * The default provider calls the Exa MCP endpoint (public, no API key needed)
+ * via JSON-RPC 2.0. Exa returns clean, semantically-ranked results with
+ * title/URL/highlights.
+ *
+ * When `TAVILY_API_KEY` is available (from settings.json or environment),
+ * the default mode is **hybrid**: Exa + Tavily are queried in parallel and
+ * results are merged with URL-based dedup, giving broader coverage.
+ *
+ * Set `SRCODE_SEARCH_PROVIDER=exa` or `=tavily` to force a single provider.
  */
-import { HTMLElement, parse as parseHTML } from "node-html-parser";
 
 export interface SearchResult {
   title: string;
@@ -29,6 +33,7 @@ export interface SearchOptions {
 }
 
 const DEFAULT_MAX = 10;
+const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
 
 export async function webSearch(input: SearchInput, opts: SearchOptions = {}): Promise<SearchResult[]> {
   const env = opts.env ?? {
@@ -36,12 +41,16 @@ export async function webSearch(input: SearchInput, opts: SearchOptions = {}): P
     tavilyKey: process.env.TAVILY_API_KEY,
   };
   const max = clamp(input.max_results ?? DEFAULT_MAX, 1, 25);
+  const provider = env.provider?.toLowerCase();
 
   let raw: SearchResult[];
-  if (env.provider?.toLowerCase() === "tavily" && env.tavilyKey) {
+  if (provider === "tavily" && env.tavilyKey) {
     raw = await tavilySearch(input.query, max, env.tavilyKey, opts);
+  } else if (provider === "exa" || !env.tavilyKey) {
+    raw = await exaSearch(input.query, max, opts);
   } else {
-    raw = await duckduckgoSearch(input.query, opts);
+    // Hybrid: both Exa and Tavily in parallel, merge & dedup by URL
+    raw = await hybridSearch(input.query, max, env.tavilyKey, opts);
   }
 
   return filterDomains(raw, input.allowed_domains, input.blocked_domains).slice(0, max);
@@ -51,64 +60,162 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
-async function duckduckgoSearch(query: string, opts: SearchOptions): Promise<SearchResult[]> {
+// ─── Exa MCP ────────────────────────────────────────────────────────────────
+
+const EXA_FETCH_UA = "srcode/0.2";
+
+async function exaSearch(query: string, max: number, opts: SearchOptions): Promise<SearchResult[]> {
   const fetcher = opts.fetcher ?? globalThis.fetch;
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const response = await fetcher(url, {
+  const response = await fetcher(EXA_MCP_URL, {
+    method: "POST",
     headers: {
-      "User-Agent": "srcode/0.2",
-      Accept: "text/html, */*",
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "User-Agent": EXA_FETCH_UA,
     },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "web_search_exa",
+        arguments: { query, numResults: max },
+      },
+    }),
     signal: opts.signal,
   });
-  const body = await response.text();
-  return parseDuckDuckGoHtml(body);
+
+  if (!response.ok) {
+    throw new Error(`Exa search failed: ${response.status} ${response.statusText}`);
+  }
+
+  const raw = await response.text();
+  const parsed = parseExaResponse(raw);
+
+  if (parsed.error) {
+    throw new Error(`Exa search error [${parsed.error.code ?? "?"}]: ${parsed.error.message ?? "unknown"}`);
+  }
+
+  const content = parsed.result?.content;
+  if (!content || !Array.isArray(content)) {
+    throw new Error("Exa search: unexpected response structure (missing result.content)");
+  }
+
+  // content is an array of { type: "text", text: "..." }
+  const text = content
+    .filter((c: { type?: string; text?: string }) => c.type === "text" && c.text)
+    .map((c: { text: string }) => c.text)
+    .join("\n");
+
+  return parseExaTextResults(text);
 }
 
 /**
- * Pull `.result` blocks out of a DDG HTML page. Exported for tests.
+ * Parse an Exa MCP response, handling both plain JSON and SSE-wrapped formats.
  */
-export function parseDuckDuckGoHtml(html: string): SearchResult[] {
-  const root = parseHTML(html);
+export function parseExaResponse(raw: string): { result?: unknown; error?: { code?: number; message?: string } } {
+  // Try plain JSON first.
+  try {
+    return JSON.parse(raw) as { result?: unknown; error?: { code?: number; message?: string } };
+  } catch {
+    // SSE format — look for `data: <json>` lines.
+    for (const line of raw.split("\n")) {
+      if (line.startsWith("data: ")) {
+        try {
+          return JSON.parse(line.slice(6)) as { result?: unknown; error?: { code?: number; message?: string } };
+        } catch {
+          // Keep trying other data: lines.
+        }
+      }
+    }
+    throw new Error("Exa response is neither plain JSON nor SSE format");
+  }
+}
+
+/**
+ * Parse Exa's formatted text results into structured SearchResult[].
+ *
+ * Exa returns blocks like:
+ *   Title: ...
+ *   URL: ...
+ *   Published: ...
+ *   Author: ...
+ *   Highlights:
+ *   > ...
+ *   ---
+ */
+export function parseExaTextResults(text: string): SearchResult[] {
   const results: SearchResult[] = [];
-  // DDG wraps each hit in `.result` with a `.result__a` anchor and
-  // `.result__snippet` body. Some skins use `.result__title > a`.
-  const blocks = root.querySelectorAll(".result, .results_links");
+  // Split on the separator line (possibly with surrounding whitespace).
+  const blocks = text.split(/\n?---\n?/);
+
   for (const block of blocks) {
-    const anchor = block.querySelector(".result__a") as HTMLElement | null;
-    if (!anchor) continue;
-    const rawHref = anchor.getAttribute("href") ?? "";
-    const url = unwrapDuckDuckGoUrl(rawHref);
-    if (!url) continue;
-    const snippet = block.querySelector(".result__snippet")?.textContent?.trim() ?? "";
+    const trimmed = block.trim();
+    if (!trimmed) continue;
+
+    const title = extractField(trimmed, "Title");
+    const url = extractField(trimmed, "URL");
+    if (!title || !url) continue;
+
+    // Snippet: extract the Highlights section (everything after "Highlights:").
+    let snippet = "";
+    const hlMatch = trimmed.match(/^Highlights:\n([\s\S]*)$/m);
+    if (hlMatch) {
+      snippet = hlMatch[1]!
+        .replace(/^>\s*/gm, "")           // Remove blockquote markers
+        .replace(/\s*\n\s*/g, " ")         // Collapse newlines within
+        .replace(/\.\.\.$/, "")            // Trim trailing ellipsis
+        .trim();
+    }
+
     results.push({
-      title: anchor.textContent.trim(),
-      url,
-      snippet: snippet.replace(/\s+/g, " "),
+      title: title.trim(),
+      url: url.trim(),
+      snippet,
     });
   }
+
   return results;
 }
 
-/**
- * DDG wraps the real URL in `/l/?uddg=<encoded>&...`. Unwrap to the original
- * destination so domain filters and the LLM see the real host.
- */
-function unwrapDuckDuckGoUrl(href: string): string | undefined {
-  if (!href) return undefined;
-  let url = href;
-  if (url.startsWith("//")) url = "https:" + url;
-  try {
-    const parsed = new URL(url, "https://duckduckgo.com");
-    if (/duckduckgo\.com$/.test(parsed.hostname) && parsed.pathname.startsWith("/l/")) {
-      const target = parsed.searchParams.get("uddg");
-      if (target) return decodeURIComponent(target);
-    }
-    return parsed.toString();
-  } catch {
-    return undefined;
-  }
+/** Extract the value of a named field (e.g. "Title: ...") from a block of text. */
+function extractField(text: string, field: string): string | undefined {
+  const re = new RegExp(`^${field}:\\s*(.+)$`, "m");
+  const m = text.match(re);
+  return m ? m[1]!.trim() : undefined;
 }
+
+// ─── Hybrid search ─────────────────────────────────────────────────────────
+
+/**
+ * Query Exa and Tavily in parallel, then merge results with URL-based
+ * dedup. If one provider fails, the other's results still come through.
+ */
+async function hybridSearch(
+  query: string,
+  max: number,
+  tavilyKey: string,
+  opts: SearchOptions,
+): Promise<SearchResult[]> {
+  const [exaResults, tavilyResults] = await Promise.all([
+    exaSearch(query, max, opts).catch(() => [] as SearchResult[]),
+    tavilySearch(query, max, tavilyKey, opts).catch(() => [] as SearchResult[]),
+  ]);
+
+  // Merge with URL dedup, preserving interleaved ordering.
+  const seen = new Set<string>();
+  const merged: SearchResult[] = [];
+  for (const r of [...exaResults, ...tavilyResults]) {
+    const key = r.url.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(r);
+    }
+  }
+  return merged;
+}
+
+// ─── Tavily fallback ────────────────────────────────────────────────────────
 
 interface TavilyAPIResult {
   title?: string;
@@ -145,6 +252,8 @@ async function tavilySearch(
   }));
 }
 
+// ─── Shared domain filtering ───────────────────────────────────────────────
+
 export function filterDomains(
   results: SearchResult[],
   allowed: string[] | undefined,
@@ -172,6 +281,8 @@ function hostMatches(host: string, pattern: string): boolean {
   const p = pattern.toLowerCase().replace(/^\./, "");
   return host === p || host.endsWith("." + p);
 }
+
+// ─── Formatting ─────────────────────────────────────────────────────────────
 
 export function formatSearchResults(query: string, results: SearchResult[]): string {
   if (results.length === 0) {
