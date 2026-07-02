@@ -13,6 +13,8 @@
  *   2. Tool execute: forward arguments to the MCP server via tools/call.
  *   3. Session shutdown: close all MCP server processes.
  *
+ * Slash command: /mcp — list connected servers and their tools.
+ *
  * Config files (JSON, Claude Code compatible):
  *   ~/.srcode/mcp-servers.json      — home-wide
  *   <cwd>/.srcode/mcp-servers.json  — project-specific (overrides home)
@@ -36,11 +38,28 @@ import {
 } from "./client.ts";
 import type { McpServerHandle } from "./types.ts";
 
+interface ServerStatus {
+  id: string;
+  serverName: string;
+  serverVersion: string;
+  toolCount: number;
+  toolNames: string[];
+  handle: McpServerHandle;
+  error?: undefined;
+}
+
+interface ServerFailure {
+  id: string;
+  error: string;
+  handle?: undefined;
+}
+
+type ServerEntry = ServerStatus | ServerFailure;
 
 export const mcpExtension: ExtensionFactory = async (pi: ExtensionAPI) => {
   const cwd = process.cwd();
   const servers = loadMcpConfig(cwd);
-  const handles: McpServerHandle[] = [];
+  const entries: ServerEntry[] = [];
 
   for (const [id, config] of Object.entries(servers)) {
     let handle: McpServerHandle | undefined;
@@ -52,8 +71,10 @@ export const mcpExtension: ExtensionFactory = async (pi: ExtensionAPI) => {
       const { name: serverName, version: serverVersion } = initResult.serverInfo;
       console.error(`[mcp] Connected "${id}" (${serverName} ${serverVersion}) — ${tools.length} tools`);
 
+      const toolNames: string[] = [];
       for (const tool of tools) {
         const piToolName = `mcp__${id}__${tool.name}`;
+        toolNames.push(piToolName);
         const schema = tool.inputSchema ?? { type: "object" as const, properties: {} };
 
         pi.registerTool(
@@ -99,20 +120,52 @@ export const mcpExtension: ExtensionFactory = async (pi: ExtensionAPI) => {
         );
       }
 
-      handles.push(handle);
+      entries.push({ id, serverName, serverVersion, toolCount: tools.length, toolNames, handle });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[mcp] Failed to connect "${id}": ${msg}`);
       if (handle) closeMcpServer(handle);
+      entries.push({ id, error: msg });
     }
   }
 
+  // ── /mcp slash command ─────────────────────────────────────────────────
+
+  pi.registerCommand("mcp", {
+    description: "List connected MCP servers and their tools",
+    handler: async (_args, ctx) => {
+      const connected = entries.filter((e): e is ServerStatus => !e.error);
+      const failed = entries.filter((e): e is ServerFailure => !!e.error);
+
+      if (entries.length === 0) {
+        ctx.ui.notify("No MCP servers configured.", "info");
+        return;
+      }
+
+      const lines: string[] = [];
+      lines.push(`MCP Servers (${connected.length} connected, ${failed.length} failed):\n`);
+
+      for (const entry of entries) {
+        if (!("serverName" in entry)) {
+          lines.push(`  ✗ ${entry.id} — FAILED: ${entry.error}`);
+        } else {
+          lines.push(`  ✓ ${entry.id} (${entry.serverName} ${entry.serverVersion}) — ${entry.toolCount} tools`);
+          for (const name of entry.toolNames) {
+            lines.push(`      ${name}`);
+          }
+        }
+      }
+
+      ctx.ui.notify(lines.join("\n"), failed.length > 0 ? "warning" : "info");
+    },
+  });
+
   // Cleanup on shutdown
   pi.on("session_shutdown", () => {
-    for (const h of handles) {
-      closeMcpServer(h);
+    for (const entry of entries) {
+      if (entry.handle) closeMcpServer(entry.handle);
     }
-    handles.length = 0;
+    entries.length = 0;
   });
 };
 
