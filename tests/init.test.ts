@@ -1,38 +1,89 @@
 /**
- * Smoke tests for the /init extension.
+ * Tests for the /init extension with the redesigned markdown prompt.
  *
- * The interactive multi-phase logic runs inside the LLM, so unit-testable
- * surface is small: the prompt's content guarantees and the command-
- * registration wiring.
+ * The prompt.md is a concise markdown file with frontmatter that replaces
+ * the old verbose prompt.ts. These tests verify:
+ *   - Frontmatter parsing (name, description, thinking-level)
+ *   - Content guarantees (AGENTS.md focus, no CLAUDE.md recommendation)
+ *   - Command-registration wiring
  */
 import { expect, test } from "bun:test";
 import { initExtension } from "../src/extensions/init/index.ts";
-import { INIT_PROMPT } from "../src/extensions/init/prompt.ts";
 
-test("INIT_PROMPT centres on AGENTS.md and never recommends CLAUDE.md", () => {
-  // The prompt should reference AGENTS.md repeatedly across phases.
-  const agentsMdHits = (INIT_PROMPT.match(/AGENTS\.md/g) ?? []).length;
+// Bun imports markdown with { type: "text" } as a plain string
+import PROMPT_MD from "../src/extensions/init/prompt.md" with { type: "text" };
+
+/**
+ * Minimal frontmatter parser for testing purposes.
+ */
+function parseFrontmatter(content: string): Record<string, unknown> | null {
+  const match = content.match(/^---\n([\s\S]*?)\n---\n/);
+  if (!match) return null;
+  const fm: Record<string, unknown> = {};
+  for (const line of match[1]!.split("\n")) {
+    const sep = line.indexOf(": ");
+    if (sep > 0) {
+      const key = line.slice(0, sep).trim();
+      const value: unknown = line.slice(sep + 2).trim();
+      fm[key] = value;
+    }
+  }
+  return fm;
+}
+
+// ---------------------------------------------------------------------------
+// Frontmatter tests
+// ---------------------------------------------------------------------------
+
+test("prompt.md has valid frontmatter with name and description", () => {
+  const fm = parseFrontmatter(PROMPT_MD);
+  expect(fm).not.toBeNull();
+  expect(fm!.name).toBe("init");
+  expect(typeof fm!.description).toBe("string");
+  expect((fm!.description as string).length).toBeGreaterThan(0);
+});
+
+test("prompt.md has thinking-level medium", () => {
+  const fm = parseFrontmatter(PROMPT_MD);
+  expect(fm).not.toBeNull();
+  expect(fm!["thinking-level"]).toBe("medium");
+});
+
+// ---------------------------------------------------------------------------
+// Content guarantee tests
+// ---------------------------------------------------------------------------
+
+test("prompt.md centres on AGENTS.md and never recommends CLAUDE.md", () => {
+  const agentsMdHits = (PROMPT_MD.match(/AGENTS\.md/g) ?? []).length;
   expect(agentsMdHits).toBeGreaterThanOrEqual(3);
 
-  // CLAUDE.md may appear up to 3 times in the prompt body:
-  //   1) Phase 2 sweep checklist (so scouts notice an existing CLAUDE.md
-  //      authored before the user moved to AGENTS.md)
-  //   2-3) the explicit forbid-rule at the bottom (mentions CLAUDE.md twice
-  //      in one sentence: "uses AGENTS.md, never CLAUDE.md. Do NOT write a
-  //      CLAUDE.md file …")
-  const claudeMdHits = (INIT_PROMPT.match(/CLAUDE\.md/g) ?? []).length;
-  expect(claudeMdHits).toBeLessThanOrEqual(3);
+  // CLAUDE.md appears in the scan checklist (existing AGENTS.md/CLAUDE.md)
+  // and the forbid directive (绝不用 CLAUDE.md) — both legitimate.
+  const claudeMdHits = (PROMPT_MD.match(/CLAUDE\.md/g) ?? []).length;
+  expect(claudeMdHits).toBeLessThanOrEqual(2);
 
-  // We must instruct the model to use srcode's lower-camel tool name.
-  expect(INIT_PROMPT).toContain("askUserQuestion");
-
-  // .claude/rules/ should not leak through — we use .srcode/.
-  expect(INIT_PROMPT).not.toContain(".claude/rules");
-
-  // skills go under .srcode/skills/, not .claude/skills/
-  expect(INIT_PROMPT).toContain(".srcode/skills");
-  expect(INIT_PROMPT).not.toContain(".claude/skills");
+  // Must explicitly forbid CLAUDE.md.
+  expect(PROMPT_MD).toMatch(/绝不用|never|禁止|don.*t.*CLAUDE/i);
 });
+
+test("prompt.md contains structure, directives, and output sections", () => {
+  expect(PROMPT_MD).toContain("<structure>");
+  expect(PROMPT_MD).toContain("<directives>");
+  expect(PROMPT_MD).toContain("<output>");
+});
+
+test("prompt.md references parallel scanning", () => {
+  expect(PROMPT_MD).toMatch(/并行|parallel/i);
+});
+
+test("prompt.md does not use askUserQuestion (automatic mode)", () => {
+  // The minimalist oh-my-pi style prompt does not interactively ask the user.
+  expect(PROMPT_MD).not.toMatch(/askUserQuestion|askUser/i);
+});
+
+// ---------------------------------------------------------------------------
+// Extension wiring tests
+// ---------------------------------------------------------------------------
 
 test("initExtension registers exactly the /init command", async () => {
   const tools: Array<{ name: string }> = [];
@@ -67,5 +118,5 @@ test("/init handler enqueues the prompt as a user message", async () => {
   };
   await initExtension(fakePi);
   await registered.handler("");
-  expect(lastUserMessage).toBe(INIT_PROMPT);
+  expect(lastUserMessage).toBe(PROMPT_MD);
 });
