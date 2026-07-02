@@ -15,19 +15,15 @@ import {
   type ExtensionAPI,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import {
-  LspClient,
-  positionToLsp,
-  uriToPath,
-  LspError,
-} from "./client.ts";
+import { positionToLsp, uriToPath, LspError } from "./client.ts";
 import type { Location, Position } from "./types.ts";
+import { loadConfig } from "./config.ts";
 import {
   createLspManager,
   ensureServer,
   stopServer,
   syncDocument,
-  detectServer,
+  getActiveClients,
   formatHoverResult,
   formatLocations,
   formatDiagnosticsForFile,
@@ -233,18 +229,21 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
         // ── Actions that don't need a running server ────────────────────
         if (action === "status") {
-          const detection = detectServer(ctx.cwd);
-          if (!detection) return ok("No language server detected for this project.");
-          if (!state.client) return ok(`Server: ${detection.config.language} (not started yet)`);
-          const client = state.client;
-          const info = client.serverInfo;
-          const name = info.name ?? detection.config.language;
-          const ver = info.version ?? "unknown";
-          const openCount = state.openDocuments.size;
-          const capKeys = Object.keys(client.capabilities).filter(
-            (k) => client.capabilities[k] === true || typeof client.capabilities[k] === "object",
-          );
-          return ok(`Server: ${name} v${ver}\nStatus: ${client.status}\nOpen documents: ${openCount}\nCapabilities: ${capKeys.join(", ")}`);
+          if (!state.config) state.config = loadConfig(ctx.cwd);
+          const serverNames = Object.keys(state.config.servers);
+          if (serverNames.length === 0) return ok("No language servers configured for this project.");
+          const active = getActiveClients(state);
+          if (active.length === 0) {
+            return ok(`Configured servers: ${serverNames.join(", ")}\nNo servers started yet.`);
+          }
+          const lines: string[] = [];
+          for (const [name, client] of active) {
+            const info = client.serverInfo;
+            const ver = info.version ?? "unknown";
+            const openCount = client.getAllDiagnostics().size;
+            lines.push(`  ${name} v${ver} — ${client.status} (${openCount} files with diagnostics)`);
+          }
+          return ok(`Active language servers:\n${lines.join("\n")}`);
         }
 
         // ── Actions that need a running server ──────────────────────────

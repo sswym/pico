@@ -1,80 +1,14 @@
 /**
- * LspManager — language server lifecycle + auto-detection.
+ * LspManager — multi-server lifecycle + document sync.
  *
- * Detects the project language from workspace files, spawns the matching
- * language server on demand, and manages document sync via tool_call events.
+ * Uses config.ts to discover and route servers. Each server is spawned lazily
+ * when first needed. Supports multiple concurrent servers per file type.
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, extname } from "node:path";
-import type { ServerConfig } from "./types.ts";
+import type { LspServerConfig } from "./config.ts";
+import { loadConfig, getServersForFile, resolveCommand } from "./config.ts";
 import { LspClient, locationToDisplay, lspPositionToDisplay, LspError } from "./client.ts";
-
-// ── Server detection ─────────────────────────────────────────────────────
-
-const SERVER_CONFIGS: ServerConfig[] = [
-  {
-    language: "typescript",
-    extensions: ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
-    command: "typescript-language-server",
-    args: ["--stdio"],
-    initializationOptions: {
-      preferences: {
-        includeInlayParameterNameHints: "all",
-        includeInlayVariableTypeHints: true,
-        includeInlayFunctionLikeReturnTypeHints: true,
-      },
-    },
-  },
-  {
-    language: "python",
-    extensions: ["py", "pyi"],
-    command: "pyright-langserver",
-    args: ["--stdio"],
-  },
-  {
-    language: "rust",
-    extensions: ["rs"],
-    command: "rust-analyzer",
-  },
-];
-
-interface DetectionResult {
-  config: ServerConfig;
-  root: string;
-}
-
-/** Detect which server to use based on workspace files. */
-export function detectServer(workspaceRoot: string): DetectionResult | null {
-  if (
-    existsSync(join(workspaceRoot, "tsconfig.json")) ||
-    existsSync(join(workspaceRoot, "package.json"))
-  ) {
-    const tsConfig = SERVER_CONFIGS.find((c) => c.language === "typescript")!;
-    return { config: tsConfig, root: workspaceRoot };
-  }
-  if (existsSync(join(workspaceRoot, "Cargo.toml"))) {
-    const rustConfig = SERVER_CONFIGS.find((c) => c.language === "rust")!;
-    return { config: rustConfig, root: workspaceRoot };
-  }
-  if (
-    existsSync(join(workspaceRoot, "pyproject.toml")) ||
-    existsSync(join(workspaceRoot, "pyrightconfig.json")) ||
-    existsSync(join(workspaceRoot, "setup.py"))
-  ) {
-    const pyConfig = SERVER_CONFIGS.find((c) => c.language === "python")!;
-    return { config: pyConfig, root: workspaceRoot };
-  }
-  return null;
-}
-
-/** Guess language ID from file extension. */
-export function languageIdFromExtension(filePath: string): string {
-  const ext = extname(filePath).replace(".", "").toLowerCase();
-  for (const config of SERVER_CONFIGS) {
-    if (config.extensions.includes(ext)) return config.language;
-  }
-  return "unknown";
-}
 
 // ── Type guards for Hover contents ────────────────────────────────────────
 
@@ -231,88 +165,218 @@ export function formatDocumentSymbols(symbols: DocumentSymbolFlat[]): string {
   return `Symbols (${symbols.length}):\n${lines.join("\n")}`;
 }
 
-// ── LspManager ───────────────────────────────────────────────────────────
+// ── Multi-server manager ──────────────────────────────────────────────────
+
+interface ManagedServer {
+  name: string;
+  config: LspServerConfig;
+  client: LspClient;
+  initializing: Promise<void> | null;
+  openDocuments: Map<string, { uri: string; languageId: string }>;
+}
 
 export interface LspManagerState {
-  client: LspClient | null;
-  detection: DetectionResult | null;
-  openDocuments: Map<string, { uri: string; languageId: string }>;
-  initializing: Promise<void> | null;
+  config: ReturnType<typeof loadConfig> | null;
+  servers: Map<string, ManagedServer>;
+  configured: boolean;
 }
 
 export function createLspManager(): LspManagerState {
   return {
-    client: null,
-    detection: null,
-    openDocuments: new Map(),
-    initializing: null,
+    config: null,
+    servers: new Map(),
+    configured: false,
   };
 }
 
-/** Lazily start the server for the workspace. */
+/** Get or start the primary (non-linter) server for a file. */
 export async function ensureServer(
   state: LspManagerState,
   workspaceRoot: string,
 ): Promise<LspClient | null> {
-  if (state.client?.ready) return state.client;
-  if (state.initializing) {
-    await state.initializing;
-    return state.client;
+  // Ensure config is loaded
+  if (!state.config) {
+    state.config = loadConfig(workspaceRoot);
+    state.configured = true;
   }
 
-  const detection = detectServer(workspaceRoot);
-  if (!detection) return null;
+  // Find the first ready or startable server for any file in this project
+  // We pick the first server whose rootMarkers match
+  for (const [name, serverConfig] of Object.entries(state.config.servers)) {
+    if (serverConfig.disabled) continue;
+    if (serverConfig.isLinter) continue; // Skip linters for primary
+    const managed = state.servers.get(name);
+    if (managed?.client.ready) return managed.client;
+  }
 
-  state.detection = detection;
-  state.client = new LspClient(detection.config);
+  // No server ready — start the first matching one
+  for (const [name, serverConfig] of Object.entries(state.config.servers)) {
+    if (serverConfig.disabled) continue;
+    if (serverConfig.isLinter) continue;
 
-  state.initializing = (async () => {
+    const client = new LspClient(
+      { language: name, extensions: serverConfig.fileTypes, command: serverConfig.command, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
+      name,
+    );
+
+    const managed: ManagedServer = {
+      name,
+      config: serverConfig,
+      client,
+      initializing: null,
+      openDocuments: new Map(),
+    };
+
+    state.servers.set(name, managed);
+
+    managed.initializing = (async () => {
+      try {
+        const resolvedCommand = resolveCommand(serverConfig.command, workspaceRoot) ?? serverConfig.command;
+        managed.client = new LspClient(
+          { language: name, extensions: serverConfig.fileTypes, command: resolvedCommand, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
+          name,
+        );
+      } catch (err) {
+        const msg = err instanceof LspError ? err.message : String(err);
+        console.error(`[lsp] Failed to start ${name}:`, msg);
+        state.servers.delete(name);
+      } finally {
+        managed.initializing = null;
+      }
+    })();
+
+    await managed.initializing;
+    if (managed.client.ready) return managed.client;
+  }
+
+  return null;
+}
+
+/** Get a specific server by name. */
+export async function ensureNamedServer(
+  state: LspManagerState,
+  name: string,
+  workspaceRoot: string,
+): Promise<LspClient | null> {
+  if (!state.config) {
+    state.config = loadConfig(workspaceRoot);
+    state.configured = true;
+  }
+
+  const serverConfig = state.config.servers[name];
+  if (!serverConfig || serverConfig.disabled) return null;
+
+  const managed = state.servers.get(name);
+  if (managed?.client.ready) return managed.client;
+  if (managed?.initializing) {
+    await managed.initializing;
+    return managed.client.ready ? managed.client : null;
+  }
+
+  // Start this server
+  const client = new LspClient(
+    { language: name, extensions: serverConfig.fileTypes, command: serverConfig.command, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
+    name,
+  );
+
+  const newManaged: ManagedServer = {
+    name,
+    config: serverConfig,
+    client,
+    initializing: null,
+    openDocuments: new Map(),
+  };
+
+  state.servers.set(name, newManaged);
+
+  newManaged.initializing = (async () => {
     try {
-      await state.client!.initialize(detection.root);
+      await newManaged.client.initialize(workspaceRoot);
     } catch (err) {
       const msg = err instanceof LspError ? err.message : String(err);
-      console.error(`[lsp] Failed to start ${detection.config.language} server:`, msg);
-      state.client = null;
+      console.error(`[lsp] Failed to start ${name}:`, msg);
+      state.servers.delete(name);
     } finally {
-      state.initializing = null;
+      newManaged.initializing = null;
     }
   })();
 
-  await state.initializing;
-  return state.client;
+  await newManaged.initializing;
+  return newManaged.client.ready ? newManaged.client : null;
 }
 
-/** Shut down the managed server. */
+/** Shut down all managed servers. */
 export async function stopServer(state: LspManagerState): Promise<void> {
-  if (!state.client) return;
-  for (const [, doc] of state.openDocuments) {
-    state.client.didClose(doc.uri);
+  for (const [, managed] of state.servers) {
+    for (const [, doc] of managed.openDocuments) {
+      managed.client.didClose(doc.uri);
+    }
+    managed.openDocuments.clear();
+    await managed.client.shutdown();
   }
-  state.openDocuments.clear();
-  await state.client.shutdown();
-  state.client = null;
-  state.detection = null;
+  state.servers.clear();
+  state.config = null;
+  state.configured = false;
+}
+
+/** Get all ready clients. */
+export function getActiveClients(state: LspManagerState): Array<[string, LspClient]> {
+  const result: Array<[string, LspClient]> = [];
+  for (const [name, managed] of state.servers) {
+    if (managed.client.ready) result.push([name, managed.client]);
+  }
+  return result;
+}
+
+/** Get servers that handle a specific file. */
+export function getServersForFilePath(
+  state: LspManagerState,
+  filePath: string,
+): Array<[string, ManagedServer]> {
+  if (!state.config) return [];
+  const matchingNames = getServersForFile(state.config, filePath).map(([n]) => n);
+  const result: Array<[string, ManagedServer]> = [];
+  for (const name of matchingNames) {
+    const managed = state.servers.get(name);
+    if (managed) result.push([name, managed]);
+  }
+  return result;
 }
 
 /**
- * Ensure the server knows about a file and return its URI.
- * Reads the file from disk.
+ * Ensure a server knows about a file and return its URI.
+ * Picks the primary (non-linter) server for the file.
  */
 export function syncDocument(
   state: LspManagerState,
   filePath: string,
 ): string | null {
-  const client = state.client;
-  if (!client?.ready) return null;
-
   const absPath = filePath.startsWith("/") ? filePath : join(process.cwd(), filePath);
-  const langId = languageIdFromExtension(absPath);
 
-  if (!client.config.extensions.includes(extname(absPath).replace(".", "").toLowerCase())) {
-    return null;
+  // Find the best server for this file
+  for (const [, managed] of state.servers) {
+    if (!managed.client.ready) continue;
+    if (managed.config.isLinter) continue; // Prefer primary servers
+    const ext = extname(absPath).replace(".", "").toLowerCase();
+    const dotExt = `.${ext}`;
+    if (!managed.config.fileTypes.includes(dotExt)) continue;
+    return syncDocumentToServer(managed, absPath);
   }
 
-  const existing = state.openDocuments.get(absPath);
+  // Fallback: any ready server that handles this file type
+  for (const [, managed] of state.servers) {
+    if (!managed.client.ready) continue;
+    const ext = extname(absPath).replace(".", "").toLowerCase();
+    const dotExt = `.${ext}`;
+    if (!managed.config.fileTypes.includes(dotExt)) continue;
+    return syncDocumentToServer(managed, absPath);
+  }
+
+  return null;
+}
+
+function syncDocumentToServer(managed: ManagedServer, absPath: string): string | null {
+  const existing = managed.openDocuments.get(absPath);
   if (existing) return existing.uri;
 
   let text: string;
@@ -322,7 +386,27 @@ export function syncDocument(
     return null;
   }
 
-  const uri = client.ensureOpen(absPath, text, langId);
-  state.openDocuments.set(absPath, { uri, languageId: langId });
+  const langId = guessLanguageId(absPath);
+  const uri = managed.client.ensureOpen(absPath, text, langId);
+  managed.openDocuments.set(absPath, { uri, languageId: langId });
   return uri;
 }
+
+function guessLanguageId(filePath: string): string {
+  const ext = extname(filePath).replace(".", "").toLowerCase();
+  const map: Record<string, string> = {
+    ts: "typescript", tsx: "typescriptreact", js: "javascript", jsx: "javascriptreact",
+    mjs: "javascript", cjs: "javascript", py: "python", rs: "rust", go: "go",
+    java: "java", kt: "kotlin", scala: "scala", hs: "haskell", ml: "ocaml",
+    ex: "elixir", exs: "elixir", rb: "ruby", php: "php", cs: "csharp",
+    lua: "lua", nix: "nix", zig: "zig", sh: "shellscript", bash: "shellscript",
+    yaml: "yaml", yml: "yaml", json: "json", toml: "toml", sql: "sql",
+    swift: "swift", dart: "dart", c: "c", cpp: "cpp", h: "c", hpp: "cpp",
+    vue: "vue", svelte: "svelte", css: "css", scss: "scss", html: "html",
+    graphql: "graphql", prisma: "prisma", tf: "terraform",
+  };
+  return map[ext] ?? ext;
+}
+
+// Backwards-compatible re-export for index.ts
+export { loadConfig } from "./config.ts";
