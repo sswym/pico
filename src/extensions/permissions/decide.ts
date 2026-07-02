@@ -5,7 +5,7 @@ import { ruleMatchesInput } from "./match.ts";
 import type { PermissionDecision, PermissionMode, PermissionRule } from "./schema.ts";
 import type { PermissionStore } from "./store.ts";
 
-const LOW_RISK_TOOLS = new Set(["read", "grep", "find", "ls"]);
+const LOW_RISK_TOOLS = new Set(["read", "grep", "find", "ls", "lsp"]);
 const EDIT_TOOLS = new Set(["edit", "write", "NotebookEdit"]);
 
 function ruleReason(behavior: "allow" | "deny" | "ask", rule: PermissionRule): string {

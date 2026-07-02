@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join, extname } from "node:path";
 import type { LspServerConfig } from "./config.ts";
-import { loadConfig, getServersForFile, resolveCommand } from "./config.ts";
+import { loadConfig, getServersForFile, detectServers, resolveCommand } from "./config.ts";
 import { LspClient, locationToDisplay, lspPositionToDisplay, LspError } from "./client.ts";
 
 // ── Type guards for Hover contents ────────────────────────────────────────
@@ -209,9 +209,9 @@ export async function ensureServer(
     if (managed?.client.ready) return managed.client;
   }
 
-  // No server ready — start the first matching one
-  for (const [name, serverConfig] of Object.entries(state.config.servers)) {
-    if (serverConfig.disabled) continue;
+  // No server ready — start the first matching one (filtered by rootMarkers)
+  const matching = detectServers(state.config, workspaceRoot);
+  for (const [name, serverConfig] of matching) {
     if (serverConfig.isLinter) continue;
 
     const client = new LspClient(
@@ -236,6 +236,7 @@ export async function ensureServer(
           { language: name, extensions: serverConfig.fileTypes, command: resolvedCommand, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
           name,
         );
+        await managed.client.initialize(workspaceRoot);
       } catch (err) {
         const msg = err instanceof LspError ? err.message : String(err);
         console.error(`[lsp] Failed to start ${name}:`, msg);
