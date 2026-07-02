@@ -61,6 +61,10 @@ const IS_BUN_BINARY =
  * injection, or null if not in embedded mode.
  */
 function prepareEmbeddedRuntime(): { promptsDir: string; skillsDir: string } | null {
+  // Only extract embedded assets when running as a compiled binary.
+  // In source mode, node_modules provides everything — stale generated
+  // files from a previous build must not trigger temp-dir extraction.
+  if (!IS_BUN_BINARY) return null;
   const allKeys = getEmbeddedKeys("");
   if (allKeys.length === 0) return null;
 
