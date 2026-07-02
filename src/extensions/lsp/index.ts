@@ -31,6 +31,7 @@ import {
   formatDocumentSymbols,
 } from "./manager.ts";
 import type { DocumentSymbolFlat, LspManagerState } from "./manager.ts";
+import { resolveFormattingOptions } from "./format-options.ts";
 
 // ── Result helpers ────────────────────────────────────────────────────────
 
@@ -438,6 +439,62 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       },
     }),
   );
+
+  // ── Write/Edit writethrough: formatOnWrite + diagnosticsOnWrite ─────────
+
+  const CODE_EXTENSIONS = new Set([
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts",
+    ".py", ".pyi", ".rs", ".go", ".java", ".kt", ".kts", ".scala",
+    ".hs", ".lhs", ".ml", ".mli", ".ex", ".exs", ".rb", ".php",
+    ".cs", ".lua", ".nix", ".zig", ".sh", ".bash", ".yaml", ".yml",
+    ".json", ".jsonc", ".toml", ".css", ".scss", ".html", ".vue",
+    ".svelte", ".astro", ".swift", ".dart", ".graphql", ".prisma",
+    ".sql", ".tf", ".c", ".cpp", ".h", ".hpp",
+  ]);
+
+  pi.on("tool_result", async (event) => {
+    // Only intercept write/edit tools on code files
+    if (event.toolName !== "write" && event.toolName !== "edit") return;
+
+    // Extract file path from the tool input
+    const input = event.input;
+    const filePath = typeof input === "object" && input !== null && "path" in input
+      ? String((input as Record<string, unknown>)["path"])
+      : undefined;
+    if (!filePath) return;
+
+    const ext = filePath.includes(".") ? filePath.slice(filePath.lastIndexOf(".")).toLowerCase() : "";
+    if (!CODE_EXTENSIONS.has(ext)) return;
+
+    // Skip if server not running
+    const client = state.servers.size > 0
+      ? Array.from(state.servers.values()).find((s) => s.client.ready)?.client
+      : null;
+    if (!client) return;
+
+    try {
+      // Sync the file to the LSP server
+      const uri = syncDocument(state, filePath);
+      if (!uri) return;
+
+      // Notify the server the file was saved
+      client.didSave(uri);
+
+      // Collect diagnostics after a brief wait for the server to process
+      await new Promise<void>((r) => { setTimeout(() => r(), 800); });
+      const diags = client.getDiagnostics(uri);
+      if (diags.length === 0) return;
+
+      // Append diagnostics to the tool result
+      const diagText = formatDiagnosticsForFile(filePath, diags);
+      event.content = [
+        ...event.content,
+        { type: "text", text: `\n[LSP] ${diagText}` },
+      ];
+    } catch {
+      // Silently ignore writethrough failures
+    }
+  });
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
