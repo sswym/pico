@@ -197,5 +197,6 @@ await main(args, {
     permissionsExtension,
     lspExtension,
     hooksExtension,
+    mcpExtension,
   ],
 });
