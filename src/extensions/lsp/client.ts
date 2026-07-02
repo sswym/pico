@@ -7,18 +7,24 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type {
+  CodeAction,
+  CodeActionContext,
   Diagnostic,
   DocumentSymbol,
+  FileRenameEvent,
+  FormattingOptions,
   Hover,
   InitializeParams,
   InitializeResult,
   Location,
+  LocationLink,
   Position,
   PublishDiagnosticsParams,
   ServerCapabilities,
   ServerConfig,
   SymbolInformation,
   TextDocumentItem,
+  WorkspaceEdit,
   WorkspaceSymbol,
 } from "./types.ts";
 
@@ -30,7 +36,6 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
-/** Structured error for LSP request failures. */
 export class LspError extends Error {
   constructor(
     message: string,
@@ -47,7 +52,6 @@ export class LspError extends Error {
 const HEADER_SEP = Buffer.from("\r\n\r\n");
 const CONTENT_LENGTH_RE = /^Content-Length:\s*(\d+)/i;
 
-/** Accumulates raw bytes and yields complete JSON-RPC message bodies. */
 class FramedReader {
   private buf = Buffer.alloc(0);
 
@@ -63,7 +67,7 @@ class FramedReader {
       if (!match?.[1]) break;
       const len = parseInt(match[1], 10);
       const bodyStart = sepIdx + HEADER_SEP.length;
-      if (this.buf.length < bodyStart + len) break; // incomplete body
+      if (this.buf.length < bodyStart + len) break;
       bodies.push(this.buf.subarray(bodyStart, bodyStart + len));
       this.buf = this.buf.subarray(bodyStart + len);
     }
@@ -75,17 +79,17 @@ class FramedReader {
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
-export interface DiagnosticsHandler {
-  (uri: string, diagnostics: Diagnostic[]): void;
-}
+export type DiagnosticsHandler = (uri: string, diagnostics: Diagnostic[]) => void;
 
-/**
- * One language-server process.  Call {@link initialize} after construction;
- * the client is unusable until that promise resolves.
- */
+/** The lifecycle state of a language server. */
+export type LspServerStatus = "starting" | "ready" | "stopped" | "error";
+
 export class LspClient {
   readonly config: ServerConfig;
+  readonly serverName: string;
   capabilities: ServerCapabilities = {};
+  serverInfo: { name?: string; version?: string } = {};
+  status: LspServerStatus = "stopped";
 
   private process: ChildProcess | null = null;
   private reader = new FramedReader();
@@ -96,8 +100,9 @@ export class LspClient {
   private emitter = new EventEmitter();
   private _ready = false;
 
-  constructor(config: ServerConfig) {
+  constructor(config: ServerConfig, serverName?: string) {
     this.config = config;
+    this.serverName = serverName ?? config.language;
   }
 
   get ready(): boolean {
@@ -118,10 +123,15 @@ export class LspClient {
     return this.diagnostics.get(uri) ?? [];
   }
 
+  /** Get all cached diagnostics as a map. */
+  getAllDiagnostics(): Map<string, Diagnostic[]> {
+    return this.diagnostics;
+  }
+
   // ── Lifecycle ─────────────────────────────────────────────────────────
 
-  /** Spawn the server, perform `initialize`, send `initialized`. */
   async initialize(workspaceRoot: string): Promise<InitializeResult> {
+    this.status = "starting";
     const args = this.config.args ?? [];
     this.process = spawn(this.config.command, args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -129,15 +139,15 @@ export class LspClient {
     });
 
     this.process.stdout!.on("data", (chunk: Buffer) => this.onStdout(chunk));
-    this.process.stderr?.on("data", (_chunk: Buffer) => {
-      // Silence stderr — servers often log noisy debug info.
-    });
+    this.process.stderr?.on("data", (_chunk: Buffer) => {});
     this.process.on("exit", (code) => {
       this._ready = false;
+      this.status = "stopped";
       this.rejectAll(new LspError(`Server exited with code ${code}`));
     });
     this.process.on("error", (err) => {
       this._ready = false;
+      this.status = "error";
       this.rejectAll(new LspError(`Server process error: ${err.message}`));
     });
 
@@ -147,12 +157,17 @@ export class LspClient {
       capabilities: {
         textDocument: {
           hover: { contentFormat: ["markdown", "plaintext"] },
-          definition: {},
+          definition: { linkSupport: true },
+          typeDefinition: { linkSupport: true },
+          implementation: { linkSupport: true },
           references: {},
           documentSymbol: { hierarchicalDocumentSymbolSupport: true },
+          codeAction: { codeActionLiteralSupport: { codeActionKind: { valueSet: [] } } },
+          rename: {},
+          formatting: {},
           publishDiagnostics: {},
         },
-        workspace: { symbol: {} },
+        workspace: { symbol: {}, workspaceEdit: { documentChanges: true } },
       },
       workspaceFolders: [{ uri: `file://${workspaceRoot}`, name: workspaceRoot }],
       initializationOptions: this.config.initializationOptions,
@@ -160,35 +175,33 @@ export class LspClient {
 
     const result = await this.request<InitializeResult>("initialize", params);
     this.capabilities = result.capabilities;
+    this.serverInfo = result.serverInfo ?? {};
 
     this.notify("initialized", {});
     this._ready = true;
+    this.status = "ready";
     return result;
   }
 
-  /** Gracefully shut down the server. */
   async shutdown(): Promise<void> {
     if (!this.process) return;
     try {
       await this.request("shutdown", null);
       this.notify("exit", null);
-    } catch {
-      // Best-effort — server may already be dead.
-    }
+    } catch {}
     this.process.kill();
     this.process = null;
     this._ready = false;
+    this.status = "stopped";
     this.rejectAll(new LspError("Client shut down"));
   }
 
   // ── Text document operations ──────────────────────────────────────────
 
-  /** Tell the server we opened a document. */
   didOpen(doc: TextDocumentItem): void {
     this.notify("textDocument/didOpen", { textDocument: doc });
   }
 
-  /** Tell the server the full content of a document changed. */
   didChange(uri: string, version: number, text: string): void {
     this.notify("textDocument/didChange", {
       textDocument: { uri, version },
@@ -196,12 +209,14 @@ export class LspClient {
     });
   }
 
-  /** Tell the server we closed a document. */
   didClose(uri: string): void {
     this.notify("textDocument/didClose", { textDocument: { uri } });
   }
 
-  /** Ensure the server has the latest content of a file. */
+  didSave(uri: string): void {
+    this.notify("textDocument/didSave", { textDocument: { uri } });
+  }
+
   ensureOpen(filePath: string, text: string, languageId: string): string {
     const uri = pathToUri(filePath);
     this.didOpen({ uri, languageId, version: 1, text });
@@ -210,60 +225,97 @@ export class LspClient {
 
   // ── LSP requests ──────────────────────────────────────────────────────
 
-  async textDocumentHover(
-    uri: string,
-    position: Position,
-  ): Promise<Hover | null> {
-    const result = await this.request<Hover | null>("textDocument/hover", {
+  async textDocumentHover(uri: string, position: Position): Promise<Hover | null> {
+    return this.request<Hover | null>("textDocument/hover", {
       textDocument: { uri },
       position,
     });
-    return result;
   }
 
-  async textDocumentDefinition(
+  async textDocumentDefinition(uri: string, position: Position): Promise<Location | Location[] | LocationLink[] | null> {
+    return this.request("textDocument/definition", {
+      textDocument: { uri },
+      position,
+    });
+  }
+
+  async textDocumentTypeDefinition(uri: string, position: Position): Promise<Location | Location[] | LocationLink[] | null> {
+    return this.request("textDocument/typeDefinition", {
+      textDocument: { uri },
+      position,
+    });
+  }
+
+  async textDocumentImplementation(uri: string, position: Position): Promise<Location | Location[] | LocationLink[] | null> {
+    return this.request("textDocument/implementation", {
+      textDocument: { uri },
+      position,
+    });
+  }
+
+  async textDocumentReferences(uri: string, position: Position): Promise<Location[] | null> {
+    return this.request<Location[] | null>("textDocument/references", {
+      textDocument: { uri },
+      position,
+      context: { includeDeclaration: true },
+    });
+  }
+
+  async textDocumentDocumentSymbol(uri: string): Promise<DocumentSymbol[] | SymbolInformation[] | null> {
+    return this.request("textDocument/documentSymbol", { textDocument: { uri } });
+  }
+
+  async workspaceSymbol(query: string): Promise<WorkspaceSymbol[] | null> {
+    return this.request<WorkspaceSymbol[] | null>("workspace/symbol", { query });
+  }
+
+  async textDocumentCodeAction(
     uri: string,
-    position: Position,
-  ): Promise<Location | Location[] | null> {
-    const result = await this.request<Location | Location[] | null>(
-      "textDocument/definition",
-      { textDocument: { uri }, position },
-    );
-    return result;
+    range: { start: Position; end: Position },
+    context: CodeActionContext,
+  ): Promise<CodeAction[] | null> {
+    return this.request<CodeAction[] | null>("textDocument/codeAction", {
+      textDocument: { uri },
+      range,
+      context,
+    });
   }
 
-  async textDocumentReferences(
-    uri: string,
-    position: Position,
-  ): Promise<Location[] | null> {
-    const result = await this.request<Location[] | null>(
-      "textDocument/references",
-      {
-        textDocument: { uri },
-        position,
-        context: { includeDeclaration: true },
-      },
-    );
-    return result;
+  async codeActionResolve(action: CodeAction): Promise<CodeAction> {
+    return this.request<CodeAction>("codeAction/resolve", action);
   }
 
-  async textDocumentDocumentSymbol(
-    uri: string,
-  ): Promise<DocumentSymbol[] | SymbolInformation[] | null> {
-    const result = await this.request<
-      DocumentSymbol[] | SymbolInformation[] | null
-    >("textDocument/documentSymbol", { textDocument: { uri } });
-    return result;
+  async textDocumentRename(uri: string, position: Position, newName: string): Promise<WorkspaceEdit | null> {
+    return this.request<WorkspaceEdit | null>("textDocument/rename", {
+      textDocument: { uri },
+      position,
+      newName,
+    });
   }
 
-  async workspaceSymbol(
-    query: string,
-  ): Promise<WorkspaceSymbol[] | null> {
-    const result = await this.request<WorkspaceSymbol[] | null>(
-      "workspace/symbol",
-      { query },
-    );
-    return result;
+  async workspaceWillRenameFiles(files: FileRenameEvent[]): Promise<WorkspaceEdit | null> {
+    return this.request<WorkspaceEdit | null>("workspace/willRenameFiles", { files });
+  }
+
+  async workspaceDidRenameFiles(files: FileRenameEvent[]): Promise<void> {
+    this.notify("workspace/didRenameFiles", { files });
+  }
+
+  async textDocumentFormatting(uri: string, options: FormattingOptions): Promise<Array<{ range: { start: Position; end: Position }; newText: string }> | null> {
+    return this.request("textDocument/formatting", {
+      textDocument: { uri },
+      options,
+    });
+  }
+
+  /** Invoke an arbitrary LSP method. */
+  async rawRequest(method: string, params: unknown): Promise<unknown> {
+    return this.request(method, params);
+  }
+
+  /** Send an arbitrary LSP notification. */
+  rawNotify(method: string, params: unknown): void {
+    this.notify(method, params);
   }
 
   // ── JSON-RPC transport ────────────────────────────────────────────────
@@ -302,19 +354,14 @@ export class LspClient {
       try {
         msg = JSON.parse(body.toString("utf8")) as Record<string, unknown>;
       } catch {
-        continue; // malformed — skip
-      }
-      if ("id" in msg && "method" in msg) {
-        // server-to-client request — we don't expect these; ignore
         continue;
       }
+      if ("id" in msg && "method" in msg) continue;
       if ("id" in msg) {
-        // response
         this.handleResponse(
           msg as { id: number; result?: unknown; error?: { code: number; message: string; data?: unknown } },
         );
       } else if ("method" in msg) {
-        // notification
         this.handleNotification(msg as { method: string; params?: unknown });
       }
     }
@@ -369,7 +416,6 @@ export function uriToPath(uri: string): string {
 }
 
 export function positionToLsp(line: number, character: number): Position {
-  // User-facing: 1-based lines. LSP: 0-based.
   return { line: Math.max(0, line - 1), character: Math.max(0, character) };
 }
 

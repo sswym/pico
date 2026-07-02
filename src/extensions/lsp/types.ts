@@ -30,9 +30,7 @@ export type JsonRpcMessage = JsonRpcRequest | JsonRpcNotification | JsonRpcRespo
 // ── LSP basic structures ──────────────────────────────────────────────────
 
 export interface Position {
-  /** 0-based line. */
   line: number;
-  /** 0-based UTF-16 character offset. */
   character: number;
 }
 
@@ -44,6 +42,13 @@ export interface Range {
 export interface Location {
   uri: string;
   range: Range;
+}
+
+export interface LocationLink {
+  originSelectionRange?: Range;
+  targetUri: string;
+  targetRange: Range;
+  targetSelectionRange: Range;
 }
 
 export interface TextDocumentIdentifier {
@@ -156,15 +161,103 @@ export interface WorkspaceSymbol {
   containerName?: string;
 }
 
+// ── Code Action ───────────────────────────────────────────────────────────
+
+export enum CodeActionKind {
+  QuickFix = "quickfix",
+  Refactor = "refactor",
+  RefactorExtract = "refactor.extract",
+  RefactorInline = "refactor.inline",
+  RefactorRewrite = "refactor.rewrite",
+  Source = "source",
+  SourceOrganizeImports = "source.organizeImports",
+  SourceFixAll = "source.fixAll",
+}
+
+export interface CodeActionContext {
+  diagnostics: Diagnostic[];
+  only?: string[];
+}
+
+export interface CodeAction {
+  title: string;
+  kind?: string;
+  diagnostics?: Diagnostic[];
+  edit?: WorkspaceEdit;
+  command?: Command;
+  isPreferred?: boolean;
+}
+
+export interface Command {
+  title: string;
+  command: string;
+  arguments?: unknown[];
+}
+
+// ── Workspace Edit ────────────────────────────────────────────────────────
+
+export interface TextEdit {
+  range: Range;
+  newText: string;
+}
+
+export interface WorkspaceEdit {
+  changes?: Record<string, TextEdit[]>;
+  documentChanges?: Array<TextDocumentEdit | CreateFile | RenameFile | DeleteFile>;
+}
+
+export interface TextDocumentEdit {
+  textDocument: VersionedTextDocumentIdentifier;
+  edits: TextEdit[];
+}
+
+export interface CreateFile {
+  kind: "create";
+  uri: string;
+}
+
+export interface RenameFile {
+  kind: "rename";
+  oldUri: string;
+  newUri: string;
+}
+
+export interface DeleteFile {
+  kind: "delete";
+  uri: string;
+}
+
+// ── Formatting ────────────────────────────────────────────────────────────
+
+export interface FormattingOptions {
+  tabSize: number;
+  insertSpaces: boolean;
+  trimTrailingWhitespace?: boolean;
+  insertFinalNewline?: boolean;
+  trimFinalNewlines?: boolean;
+}
+
+// ── File Event ────────────────────────────────────────────────────────────
+
+export interface FileRenameEvent {
+  oldUri: string;
+  newUri: string;
+}
+
 // ── Initialize ────────────────────────────────────────────────────────────
 
 export interface ServerCapabilities {
   textDocumentSync?: number | { openClose?: boolean; change?: number };
   hoverProvider?: boolean;
   definitionProvider?: boolean;
+  typeDefinitionProvider?: boolean;
+  implementationProvider?: boolean;
   referencesProvider?: boolean;
   documentSymbolProvider?: boolean;
   workspaceSymbolProvider?: boolean;
+  codeActionProvider?: boolean | { codeActionKinds?: string[] };
+  renameProvider?: boolean;
+  documentFormattingProvider?: boolean;
   [key: string]: unknown;
 }
 
@@ -184,14 +277,9 @@ export interface InitializeParams {
 // ── Server config ─────────────────────────────────────────────────────────
 
 export interface ServerConfig {
-  /** Language identifier (e.g. "typescript", "python", "rust"). */
   language: string;
-  /** File extensions this server handles (without dot). */
   extensions: string[];
-  /** Command to spawn the server process. */
   command: string;
-  /** Arguments for the server process. */
   args?: string[];
-  /** Optional initializationOptions sent during `initialize`. */
   initializationOptions?: unknown;
 }
