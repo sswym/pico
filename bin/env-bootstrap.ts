@@ -13,8 +13,11 @@
  * In compiled-binary mode, the embedded package.json sets piConfig.name="srcode"
  * which makes pi's config.js read SRCODE_CODING_AGENT_DIR instead of
  * PI_CODING_AGENT_DIR — so we set both names to be safe across modes.
+ *
+ * Also hydrates env vars from settings.json so API keys like TAVILY_API_KEY
+ * stored in settings are available at startup.
  */
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -31,6 +34,23 @@ process.env.SRCODE_CODING_AGENT_SESSION_DIR ??= sessionDir;
 // package version. srcode is a wrapper with its own release cadence, so that
 // check reports misleading "srcode update" prompts when only pi changed.
 process.env.PI_SKIP_VERSION_CHECK ??= "1";
+
+// Hydrate env vars from settings.json (keys under the "env" stanza).
+const settingsPath = join(agentDir, "settings.json");
+try {
+  const raw = readFileSync(settingsPath, "utf-8");
+  const settings = JSON.parse(raw);
+  const envVars = settings.env;
+  if (envVars && typeof envVars === "object" && !Array.isArray(envVars)) {
+    for (const [key, value] of Object.entries(envVars)) {
+      if (typeof value === "string" && !(key in process.env)) {
+        process.env[key] = value;
+      }
+    }
+  }
+} catch {
+  // settings.json doesn't exist or is invalid — no env vars to hydrate.
+}
 
 // Disable the upstream shift+tab → cycle thinking level shortcut so srcode
 // can repurpose shift+tab for permission-mode cycling. Thinking level
