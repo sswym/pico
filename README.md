@@ -1,6 +1,6 @@
 # srcode
 
-> 带长期记忆、子代理委派、任务追踪、结构化用户提问、规划模式、网页抓取/搜索、MCP 服务器集成、`/init`、钩子系统与 Vibe 编码系统提示词的 Vibe 编码代理。
+> 带长期记忆、子代理委派、任务追踪、结构化用户提问、规划模式、网页抓取/搜索、MCP 服务器集成、LSP 代码智能、`/init`、钩子系统与 Vibe 编码系统提示词的 Vibe 编码代理。
 
 ## 安装与运行
 
@@ -143,7 +143,7 @@ subagent(chain=[
 
 基于 `tool_call` 事件的工具调用前置权限网关。配置按用户级 → 项目级 → 会话级合并；规则语法兼容 Claude Code 的 `ToolName` / `ToolName(content)` 格式，例如 `Bash(npm:*)`、`Edit(./src/**)`。
 
-默认模式 `default` 下，`read` / `grep` / `find` / `ls` 被视为低风险只读工具，在没有命中显式 `deny` / `ask` 规则时会自动允许；`bash` / `edit` / `write` 以及其他自定义工具在无匹配 `allow` 规则时会弹出 TUI 审批。显式规则优先级为 `deny > ask > allow`，因此低风险自动允许不会覆盖用户写下的黑名单或强制询问规则。
+默认模式 `default` 下，`read` / `grep` / `find` / `ls` / `lsp` 被视为低风险只读工具，在没有命中显式 `deny` / `ask` 规则时会自动允许；`bash` / `edit` / `write` 以及其他自定义工具在无匹配 `allow` 规则时会弹出 TUI 审批。显式规则优先级为 `deny > ask > allow`，因此低风险自动允许不会覆盖用户写下的黑名单或强制询问规则。
 
 ```json
 {
@@ -230,6 +230,49 @@ srcode 支持连接外部 MCP（Model Context Protocol）服务器，自动发�
 - 单服务器故障不影响其他服务器，超时 30 秒
 - 会话结束时自动清理子进程
 
+### 13. LSP 代码智能（`lsp` 工具）
+
+通过 Language Server Protocol 为 LLM 提供精确的代码智能。支持 13 种操作，自动检测并启动对应的语言服务器。
+
+**支持的操作**：
+
+| 操作 | 用途 | 需要位置参数 |
+|------|------|-------------|
+| `hover` | 类型信息和文档 | ✓ |
+| `definition` | 跳转到定义 | ✓ |
+| `type_definition` | 跳转到类型定义 | ✓ |
+| `implementation` | 查找接口的具体实现 | ✓ |
+| `references` | 查找所有引用 | ✓ |
+| `diagnostics` | 获取错误/警告（文件级或工作区级） | 可选 |
+| `symbols` | 文件符号列表或工作区符号搜索 | 可选 |
+| `code_actions` | 列出/应用代码修复、重构、导入建议 | ✓ |
+| `rename` | 跨文件符号重命名 | ✓ |
+| `capabilities` | 显示语言服务器能力 | — |
+| `status` | 显示服务器状态 | — |
+| `reload` | 重启语言服务器 | — |
+| `request` | 原始 LSP 请求（逃生舱） | — |
+
+**示例**：
+
+```text
+lsp(action="hover", file="src/index.ts", line=10, character=5)
+lsp(action="definition", file="src/index.ts", line=10, symbol="LspClient")
+lsp(action="references", file="src/index.ts", line=10, symbol="LspClient")
+lsp(action="diagnostics", file="src/index.ts")
+lsp(action="symbols", file="src/index.ts")
+lsp(action="rename", file="src/index.ts", line=10, symbol="oldName", newName="newName")
+```
+
+**自动检测**：根据工作区文件自动选择语言服务器（`tsconfig.json` → `typescript-language-server`，`Cargo.toml` → `rust-analyzer`，`pyproject.toml` → `pyright` 等）。惰性启动，`session_shutdown` 时关闭。
+
+**45+ 语言支持**：TypeScript、JavaScript、Python、Rust、Go、Java、Kotlin、Scala、Haskell、OCaml、Elixir、Ruby、PHP、C#、Lua、Nix、Zig、Bash、YAML、TOML、SQL、Terraform、Docker、Prisma、GraphQL、Swift、Dart、CSS、HTML、JSON、Vue、Svelte、Astro、Tailwind、Deno、Biome、ESLint 等。
+
+**配置系统**：三层合并——内置 defaults.json → `~/.srcode/lsp.json`（用户级）→ `.srcode/lsp.json`（项目级）。支持 `fileTypes`、`rootMarkers`、`initOptions`、`settings` 配置。本地二进制解析优先检查 `node_modules/.bin/`、`.venv/bin/`、`vendor/bundle/bin/`。
+
+**Write/Edit 联动**：编辑代码文件后，LSP 自动同步文件内容、通知服务器重新分析、收集诊断信息并追加到工具结果。`.editorconfig` 解析支持自动格式化。
+
+**TUI 状态栏**：服务器启动后，状态栏显示当前活跃的语言服务器名称和版本。
+
 ## 项目结构
 
 ```
@@ -240,6 +283,7 @@ srcode/
 │   │   ├── ask/        # askUserQuestion 工具（schema、提示词、对话框分发）
 │   │   ├── hooks/      # 配置加载 + 沙箱运行器 + 事件连线
 │   │   ├── init/       # /init 提示词（AGENTS.md，绝不写 CLAUDE.md）
+│   │   ├── lsp/        # LSP 代码智能（types, client, config, manager, format-options, index）
 │   │   ├── mcp/        # MCP 客户端（types, config, client, 扩展工厂）
 │   │   ├── memory/     # bun:sqlite + FTS5 长期记忆
 │   │   ├── permissions/# tool_call 权限规则、审批与 /permissions
@@ -264,6 +308,7 @@ srcode/
     ├── todo.test.ts     # 9 个用例——id 分配、折叠、不变量
     └── web.test.ts      # 缓存命中、搜索解析、allowed_domains
 ```
+
 ## 测试
 
 ```bash
@@ -278,3 +323,4 @@ bun test
 - `/vibe` 斜杠命令，用于即时切换系统提示词块。
 - 子代理：可选共享单个 SQLite WAL 与主会话，使子进程的 `memory(add)` 立即可见（目前 FTS 读取在轮次间获取，因为每个子进程打开同一文件）。
 - 成本追踪器（v0.2 跳过——pi 已显示上下文百分比）。
+- LSP 增强：references 重试机制、诊断版本跟踪、多服务器并发诊断合并。
