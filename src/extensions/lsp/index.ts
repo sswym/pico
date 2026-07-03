@@ -8,14 +8,15 @@
  * Lazy server startup on first call. Graceful degradation when no server available.
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, basename } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
   defineTool,
   type ExtensionAPI,
+  type ExtensionContext,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import { positionToLsp, uriToPath, LspError } from "./client.ts";
+import { positionToLsp, uriToPath, LspError, COMMAND_NOT_FOUND } from "./client.ts";
 import type { Location, Position } from "./types.ts";
 import { loadConfig } from "./config.ts";
 import {
@@ -32,6 +33,7 @@ import {
 } from "./manager.ts";
 import type { DocumentSymbolFlat, LspManagerState } from "./manager.ts";
 import { resolveFormattingOptions } from "./format-options.ts";
+import { getInstallHint, installServer, formatInstallHint } from "./install.ts";
 
 // ── Result helpers ────────────────────────────────────────────────────────
 
@@ -218,6 +220,40 @@ function applyWorkspaceEdit(edit: { changes?: Record<string, Array<{ range: { st
 export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   const state: LspManagerState = createLspManager();
 
+  /**
+   * Try to start an LSP server. If the binary is missing (ENOENT),
+   * prompt the user to auto-install and retry once.
+   */
+  async function ensureServerWithInstall(
+    workspaceRoot: string,
+    ctx: ExtensionContext,
+  ) {
+    try {
+      return await ensureServer(state, workspaceRoot);
+    } catch (err) {
+      if (!(err instanceof LspError) || err.errorCode !== COMMAND_NOT_FOUND) throw err;
+      const fullCmd = err.message.match(/"(.+?)"/)?.[1];
+      const cmd = fullCmd ? basename(fullCmd) : null;
+      const hint = cmd ? getInstallHint(cmd) : null;
+      if (!hint) {
+        ctx.ui.notify(formatInstallHint(fullCmd ?? "unknown"), "warning");
+        return null;
+      }
+      const doInstall = await ctx.ui.confirm(
+        `Install LSP server "${cmd}"?`,
+        `Command "${cmd}" not found. Install with:\n  ${hint.command}\n\nProceed?`,
+      );
+      if (!doInstall) return null;
+      const result = await installServer(cmd!);
+      if (!result.ok) {
+        ctx.ui.notify(`Installation failed:\n${result.output}`, "error");
+        return null;
+      }
+      ctx.ui.notify(`Installed ${cmd}. Starting language server…`, "info");
+      return await ensureServer(state, workspaceRoot);
+    }
+  }
+
   pi.registerTool(
     defineTool({
       name: "lsp",
@@ -245,8 +281,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           }
           const lines: string[] = [];
           for (const [name, client] of active) {
-            const info = client.serverInfo;
-            const ver = info.version ?? "unknown";
+            const ver = client.displayVersion || "unknown";
             const openCount = client.getAllDiagnostics().size;
             lines.push(`  ${name} v${ver} — ${client.status} (${openCount} files with diagnostics)`);
           }
@@ -254,16 +289,16 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         }
 
         // ── Actions that need a running server ──────────────────────────
-        const client = await ensureServer(state, ctx.cwd);
+        const client = await ensureServerWithInstall(ctx.cwd, ctx);
         if (!client) return fail("No language server available for this project.");
-        ctx.ui.setStatus("lsp", `LSP: ${client.serverName} ${client.serverInfo.version ?? ""}`.trim());
+        ctx.ui.setStatus("lsp", `LSP: ${client.serverName} ${client.displayVersion}`.trim());
 
         if (action === "reload") {
           await stopServer(state);
-          const refreshed = await ensureServer(state, ctx.cwd);
+          const refreshed = await ensureServerWithInstall(ctx.cwd, ctx);
           if (!refreshed) return fail("Failed to restart language server.");
-          ctx.ui.setStatus("lsp", `LSP: ${refreshed.serverName} ${refreshed.serverInfo.version ?? ""}`.trim());
-          return ok(`Restarted ${refreshed.serverName} v${refreshed.serverInfo.version ?? "unknown"}`, { serverName: refreshed.serverName, action: "reload", success: true });
+          ctx.ui.setStatus("lsp", `LSP: ${refreshed.serverName} ${refreshed.displayVersion}`.trim());
+          return ok(`Restarted ${refreshed.serverName} v${refreshed.displayVersion || "unknown"}`, { serverName: refreshed.serverName, action: "reload", success: true });
         }
 
         if (action === "capabilities") {
@@ -507,10 +542,10 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // ── Startup warmup ──────────────────────────────────────────────────────
 
   pi.on("session_start", async (_event, ctx) => {
-    // Fire-and-forget: start the language server in the background.
-    ensureServer(state, ctx.cwd).then((client) => {
+    // Start the language server in the background; offer install if binary is missing.
+    ensureServerWithInstall(ctx.cwd, ctx).then((client) => {
       if (client) {
-        ctx.ui.setStatus("lsp", `LSP: ${client.serverName} ${client.serverInfo.version ?? ""}`.trim());
+        ctx.ui.setStatus("lsp", `LSP: ${client.serverName} ${client.displayVersion}`.trim());
       }
     }).catch(() => {});
   });

@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join, extname } from "node:path";
 import type { LspServerConfig } from "./config.ts";
 import { loadConfig, getServersForFile, detectServers, resolveCommand } from "./config.ts";
-import { LspClient, locationToDisplay, lspPositionToDisplay, LspError } from "./client.ts";
+import { LspClient, locationToDisplay, lspPositionToDisplay, LspError, COMMAND_NOT_FOUND } from "./client.ts";
 
 // ── Type guards for Hover contents ────────────────────────────────────────
 
@@ -189,7 +189,13 @@ export function createLspManager(): LspManagerState {
   };
 }
 
-/** Get or start the primary (non-linter) server for a file. */
+/**
+ * Get or start the primary (non-linter) server for a file.
+ *
+ * Throws LspError with errorCode "command-not-found" when the binary doesn't
+ * exist (ENOENT), so callers can offer to install it.
+ * Returns null when no server can be started for other reasons.
+ */
 export async function ensureServer(
   state: LspManagerState,
   workspaceRoot: string,
@@ -238,6 +244,11 @@ export async function ensureServer(
         );
         await managed.client.initialize(workspaceRoot);
       } catch (err) {
+        // Propagate command-not-found so callers can offer to install.
+        if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) {
+          state.servers.delete(name);
+          throw err;
+        }
         const msg = err instanceof LspError ? err.message : String(err);
         console.error(`[lsp] Failed to start ${name}:`, msg);
         state.servers.delete(name);
@@ -246,7 +257,12 @@ export async function ensureServer(
       }
     })();
 
-    await managed.initializing;
+    try {
+      await managed.initializing;
+    } catch (err) {
+      // Re-throw command-not-found for the caller to handle.
+      if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) throw err;
+    }
     if (managed.client.ready) return managed.client;
   }
 
@@ -294,6 +310,10 @@ export async function ensureNamedServer(
     try {
       await newManaged.client.initialize(workspaceRoot);
     } catch (err) {
+      if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) {
+        state.servers.delete(name);
+        throw err;
+      }
       const msg = err instanceof LspError ? err.message : String(err);
       console.error(`[lsp] Failed to start ${name}:`, msg);
       state.servers.delete(name);
@@ -302,7 +322,11 @@ export async function ensureNamedServer(
     }
   })();
 
-  await newManaged.initializing;
+  try {
+    await newManaged.initializing;
+  } catch (err) {
+    if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) throw err;
+  }
   return newManaged.client.ready ? newManaged.client : null;
 }
 

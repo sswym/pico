@@ -36,11 +36,15 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+/** Error codes for programmatic error handling. */
+export const COMMAND_NOT_FOUND = "command-not-found";
+
 export class LspError extends Error {
   constructor(
     message: string,
     public readonly code?: number,
     public readonly data?: unknown,
+    public readonly errorCode?: string,
   ) {
     super(message);
     this.name = "LspError";
@@ -89,6 +93,19 @@ export class LspClient {
   readonly serverName: string;
   capabilities: ServerCapabilities = {};
   serverInfo: { name?: string; version?: string } = {};
+  /** Extracted short version for status display. */
+  get displayVersion(): string {
+    const raw = this.serverInfo.version;
+    if (!raw) return "";
+    try {
+      const obj = JSON.parse(raw);
+      // gopls puts the real version in Main.Version
+      if (obj.Main?.Version && obj.Main.Version !== "(devel)") return obj.Main.Version;
+      if (obj.version) return obj.version;
+    } catch {}
+    // Not JSON or no known field — return as-is, but truncate long strings
+    return raw.length > 32 ? raw.slice(0, 29) + "…" : raw;
+  }
   status: LspServerStatus = "stopped";
 
   private process: ChildProcess | null = null;
@@ -133,23 +150,48 @@ export class LspClient {
   async initialize(workspaceRoot: string): Promise<InitializeResult> {
     this.status = "starting";
     const args = this.config.args ?? [];
-    this.process = spawn(this.config.command, args, {
+    const child = spawn(this.config.command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: workspaceRoot,
     });
+    this.process = child;
 
-    this.process.stdout!.on("data", (chunk: Buffer) => this.onStdout(chunk));
-    this.process.stderr?.on("data", (_chunk: Buffer) => {});
-    this.process.on("exit", (code) => {
+    // Detect ENOENT (binary not found) quickly via a race against the
+    // initialize request. Node fires "error" asynchronously; we race it
+    // against a short timeout so the user isn't stuck for 30s.
+    const spawnReady = new Promise<Error | null>((resolve) => {
+      let settled = false;
+      child.on("error", (err: Error) => {
+        this._ready = false;
+        this.status = "error";
+        this.rejectAll(new LspError(`Server process error: ${err.message}`));
+        if (!settled) { settled = true; resolve(err); }
+      });
+      // If no error within 50ms, the binary exists and process started.
+      setTimeout(() => { if (!settled) { settled = true; resolve(null); } }, 50);
+    });
+
+    child.stdout!.on("data", (chunk: Buffer) => this.onStdout(chunk));
+    child.stderr?.on("data", (_chunk: Buffer) => {});
+    child.on("exit", (code) => {
       this._ready = false;
       this.status = "stopped";
       this.rejectAll(new LspError(`Server exited with code ${code}`));
     });
-    this.process.on("error", (err) => {
-      this._ready = false;
-      this.status = "error";
-      this.rejectAll(new LspError(`Server process error: ${err.message}`));
-    });
+
+    const err = await spawnReady;
+    if (err) {
+      const errno = err as NodeJS.ErrnoException;
+      if (errno.code === "ENOENT") {
+        throw new LspError(
+          `Command "${this.config.command}" not found (ENOENT)`,
+          undefined,
+          undefined,
+          COMMAND_NOT_FOUND,
+        );
+      }
+      throw new LspError(`Failed to start server: ${err.message}`);
+    }
 
     const params: InitializeParams = {
       processId: process.pid,
