@@ -182,6 +182,8 @@ const args = withBundledSkills(
 // In compiled-binary mode, this is handled by piConfig.name in build/package.json.
 process.title = "srcode";
 
+console.clear();
+
 await main(args, {
   extensionFactories: [
     vibeExtension,
