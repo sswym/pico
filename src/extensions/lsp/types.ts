@@ -214,17 +214,20 @@ export interface TextDocumentEdit {
 export interface CreateFile {
   kind: "create";
   uri: string;
+  options?: { overwrite?: boolean; ignoreIfExists?: boolean };
 }
 
 export interface RenameFile {
   kind: "rename";
   oldUri: string;
   newUri: string;
+  options?: { overwrite?: boolean; ignoreIfExists?: boolean };
 }
 
 export interface DeleteFile {
   kind: "delete";
   uri: string;
+  options?: { recursive?: boolean; ignoreIfNotExists?: boolean };
 }
 
 // ── Formatting ────────────────────────────────────────────────────────────
@@ -239,10 +242,36 @@ export interface FormattingOptions {
 
 // ── File Event ────────────────────────────────────────────────────────────
 
+export interface FileRename {
+  oldUri: string;
+  newUri: string;
+}
+
 export interface FileRenameEvent {
   oldUri: string;
   newUri: string;
 }
+
+export interface WillRenameFilesParams {
+  files: FileRename[];
+}
+
+export interface DidRenameFilesParams {
+  files: FileRename[];
+}
+
+export interface WorkspaceSymbolParams {
+  query: string;
+}
+
+export interface ApplyResult {
+  ok: boolean;
+  fileCount: number;
+  messages: string[];
+  error?: string;
+}
+
+export type DocumentChange = TextDocumentEdit | CreateFile | DeleteFile | RenameFile;
 
 // ── Initialize ────────────────────────────────────────────────────────────
 
