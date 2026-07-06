@@ -31,14 +31,12 @@ export function applyTextEditsToString(content: string, edits: TextEdit[]): stri
   for (let i = 0; i < sorted.length - 1; i++) {
     const current = sorted[i]!;
     const next = sorted[i + 1]!;
-    const currentEnd = current.range.end;
-    const nextStart = next.range.start;
+    const currentStart = current.range.start;
+    const nextEnd = next.range.end;
     if (
-      nextStart.line > currentEnd.line ||
-      (nextStart.line === currentEnd.line && nextStart.character >= currentEnd.character)
+      nextEnd.line > currentStart.line ||
+      (nextEnd.line === currentStart.line && nextEnd.character > currentStart.character)
     ) {
-      // no overlap
-    } else {
       throw new Error("Overlapping text edits");
     }
   }

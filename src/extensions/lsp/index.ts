@@ -7,7 +7,7 @@
  *
  * Lazy server startup on first call. Graceful degradation when no server available.
  */
-import { readFileSync, renameSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { dirname, basename } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
@@ -34,7 +34,8 @@ import {
 import type { DocumentSymbolFlat, LspManagerState } from "./manager.ts";
 import { resolveFormattingOptions } from "./format-options.ts";
 import { getInstallHint, installServer, formatInstallHint } from "./install.ts";
-import { applyWorkspaceEdit } from "./edits.ts";
+import { applyWorkspaceEdit, applyTextEditsToString } from "./edits.ts";
+import { DiagnosticsLedger } from "./diagnostics-ledger.ts";
 
 // ── Result helpers ────────────────────────────────────────────────────────
 
@@ -174,6 +175,7 @@ function resolveSymbolColumn(filePath: string, line: number, symbol: string, occ
 
 export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   const state: LspManagerState = createLspManager();
+  const ledger = new DiagnosticsLedger();
 
   /**
    * Try to start an LSP server. If the binary is missing (ENOENT),
@@ -510,12 +512,22 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     ".svelte", ".astro", ".swift", ".dart", ".graphql", ".prisma",
     ".sql", ".tf", ".c", ".cpp", ".h", ".hpp",
   ]);
+  const LSP_READONLY_ACTIONS: Record<string, true> = {
+    hover: true, definition: true, type_definition: true, implementation: true,
+    references: true, diagnostics: true, symbols: true, status: true, capabilities: true,
+  };
+
+  pi.on("tool_call", async (event) => {
+    if (event.toolName !== "lsp") return;
+    const action = String((event.input as Record<string, unknown>)?.action ?? "").toLowerCase();
+    if (LSP_READONLY_ACTIONS[action]) return;
+    // Write-tier actions (rename, rename_file, code_actions(apply), reload, request)
+    // go through srcode's permission system by default
+  });
 
   pi.on("tool_result", async (event) => {
-    // Only intercept write/edit tools on code files
     if (event.toolName !== "write" && event.toolName !== "edit") return;
 
-    // Extract file path from the tool input
     const input = event.input;
     const filePath = typeof input === "object" && input !== null && "path" in input
       ? String((input as Record<string, unknown>)["path"])
@@ -525,31 +537,52 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     const ext = filePath.includes(".") ? filePath.slice(filePath.lastIndexOf(".")).toLowerCase() : "";
     if (!CODE_EXTENSIONS.has(ext)) return;
 
-    // Skip if server not running
     const client = state.servers.size > 0
       ? Array.from(state.servers.values()).find((s) => s.client.ready)?.client
       : null;
     if (!client) return;
 
     try {
-      // Sync the file to the LSP server
       const uri = syncDocument(state, filePath);
       if (!uri) return;
 
-      // Notify the server the file was saved
+      // Format-on-write
+      try {
+        const formatOpts = resolveFormattingOptions(filePath);
+        const edits = await client.textDocumentFormatting(uri, formatOpts);
+        if (edits && edits.length > 0) {
+          const currentContent = readFileSync(filePath, "utf8");
+          const formatted = applyTextEditsToString(currentContent, edits);
+          if (formatted !== currentContent) {
+            writeFileSync(filePath, formatted, "utf8");
+            syncDocument(state, filePath);
+          }
+        }
+      } catch {
+        // Format failure is non-fatal
+      }
+
       client.didSave(uri);
 
-      // Collect diagnostics after a brief wait for the server to process
-      await new Promise<void>((r) => { setTimeout(() => r(), 800); });
-      const diags = client.getDiagnostics(uri);
-      if (diags.length === 0) return;
+      // Deferred diagnostics: 500ms inline, then 25s background
+      const diags = await client.waitForDiagnostics(uri, 500);
+      let finalDiags = diags;
+      if (!finalDiags || finalDiags.length === 0) {
+        const deferredSignal = AbortSignal.timeout(25_000);
+        finalDiags = await client.waitForDiagnostics(uri, 25_000, deferredSignal);
+      }
 
-      // Append diagnostics to the tool result
-      const diagText = formatDiagnosticsForFile(filePath, diags);
-      event.content = [
-        ...event.content,
-        { type: "text", text: `\n[LSP] ${diagText}` },
-      ];
+      if (finalDiags && finalDiags.length > 0) {
+        const diagText = formatDiagnosticsForFile(filePath, finalDiags);
+        const messages = diagText.split("\n").filter(Boolean);
+        const freshMessages = ledger.reduce(filePath, messages);
+        if (freshMessages.length > 0) {
+          event.content = [
+            ...event.content,
+            { type: "text", text: `\n[LSP] ${freshMessages.join("\n")}` },
+          ];
+        }
+      }
     } catch {
       // Silently ignore writethrough failures
     }
@@ -558,6 +591,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // ── Startup warmup ──────────────────────────────────────────────────────
 
   pi.on("session_start", async (_event, ctx) => {
+    ledger.clear();
     // Start the language server in the background; offer install if binary is missing.
     ensureServerWithInstall(ctx.cwd, ctx).then((client) => {
       if (client) {
