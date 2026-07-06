@@ -33,7 +33,6 @@ import { askExtension } from "../src/extensions/ask/index.ts";
 import { initExtension } from "../src/extensions/init/index.ts";
 import { logoExtension } from "../src/extensions/logo/index.ts";
 import { memoryExtension } from "../src/extensions/memory/index.ts";
-import { permissionsExtension } from "../src/extensions/permissions/index.ts";
 import { planExtension } from "../src/extensions/plan/index.ts";
 import subagentExtension from "../src/extensions/subagent/index.ts";
 import { todoExtension } from "../src/extensions/todo/index.ts";
@@ -196,7 +195,6 @@ await main(args, {
     initExtension,
     planExtension,
     webExtension,
-    permissionsExtension,
     lspExtension,
     hooksExtension,
     mcpExtension,

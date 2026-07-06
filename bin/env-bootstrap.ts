@@ -17,7 +17,7 @@
  * Also hydrates env vars from settings.json so API keys like TAVILY_API_KEY
  * stored in settings are available at startup.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -52,15 +52,3 @@ try {
   // settings.json doesn't exist or is invalid — no env vars to hydrate.
 }
 
-// Disable the upstream shift+tab → cycle thinking level shortcut so srcode
-// can repurpose shift+tab for permission-mode cycling. Thinking level
-// remains settable via /settings. We only write the keybindings file if it
-// doesn't already exist — users who have customised their keybindings are
-// left alone.
-{
-  const keybindingsPath = join(agentDir, "keybindings.json");
-  if (!existsSync(keybindingsPath)) {
-    mkdirSync(agentDir, { recursive: true });
-    writeFileSync(keybindingsPath, JSON.stringify({ "app.thinking.cycle": [] }, null, 2) + "\n");
-  }
-}

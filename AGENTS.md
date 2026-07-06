@@ -84,7 +84,7 @@ API 密钥（Anthropic、OpenAI、Google 等）同样配置在 `~/.srcode/agent/
 srcode 是 `@earendil-works/pi-coding-agent`（`^0.79.10`）的包装器，通过 **12 个扩展** 叠加功能。每个扩展是 `ExtensionFactory = (pi: ExtensionAPI) => void`，在 `bin/srcode.ts` 中按**严格顺序**注册：
 
 ```
-vibe → language → logo → memory → subagent → todo → ask → init → plan → web → permissions → hooks
+vibe → language → logo → memory → subagent → todo → ask → init → plan → web → hooks
 ```
 
 这个顺序影响事件处理优先级（特别是 `tool_call` 和 `turn_end` 事件的监听顺序）。扩展可注册：

@@ -5,7 +5,7 @@
  * LLM-callable tools with pi's extension system.
  *
  * Tool naming: mcp__<server>__<toolName>
- *   — compatible with the permission system's mcp__ prefix matching.
+ *   — compatible with the mcp__ prefix matching.
  *
  * Lifecycle:
  *   1. Extension init (async): read config, spawn servers, initialize, list
