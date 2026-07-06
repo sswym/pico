@@ -145,6 +145,53 @@ export class LspClient {
     return this.diagnostics;
   }
 
+  /**
+   * Wait for fresh diagnostics for a URI.
+   * Returns diagnostics when they arrive, or null on timeout/abort.
+   */
+  async waitForDiagnostics(
+    uri: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<Diagnostic[] | null> {
+    // Check cache first
+    const existing = this.diagnostics.get(uri);
+    if (existing && existing.length > 0) {
+      return existing;
+    }
+
+    return new Promise<Diagnostic[] | null>((resolve) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve(null);
+      }, timeoutMs);
+
+      const cleanup = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        if (handler) {
+          const idx = this.diagnosticsHandlers.indexOf(handler);
+          if (idx >= 0) this.diagnosticsHandlers.splice(idx, 1);
+        }
+      };
+
+      const onAbort = () => {
+        cleanup();
+        resolve(null);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+
+      let handler: DiagnosticsHandler | null = null;
+      handler = (handlerUri: string, diagnostics: Diagnostic[]) => {
+        if (handlerUri === uri) {
+          cleanup();
+          resolve(diagnostics);
+        }
+      };
+      this.diagnosticsHandlers.push(handler);
+    });
+  }
+
   // ── Lifecycle ─────────────────────────────────────────────────────────
 
   async initialize(workspaceRoot: string): Promise<InitializeResult> {
@@ -267,92 +314,104 @@ export class LspClient {
 
   // ── LSP requests ──────────────────────────────────────────────────────
 
-  async textDocumentHover(uri: string, position: Position): Promise<Hover | null> {
+  async textDocumentHover(uri: string, position: Position, signal?: AbortSignal): Promise<Hover | null> {
     return this.request<Hover | null>("textDocument/hover", {
       textDocument: { uri },
       position,
-    });
+    }, signal);
   }
 
-  async textDocumentDefinition(uri: string, position: Position): Promise<Location | Location[] | LocationLink[] | null> {
+  async textDocumentDefinition(uri: string, position: Position, signal?: AbortSignal): Promise<Location | Location[] | LocationLink[] | null> {
     return this.request("textDocument/definition", {
       textDocument: { uri },
       position,
-    });
+    }, signal);
   }
 
-  async textDocumentTypeDefinition(uri: string, position: Position): Promise<Location | Location[] | LocationLink[] | null> {
+
+  async textDocumentTypeDefinition(uri: string, position: Position, signal?: AbortSignal): Promise<Location | Location[] | LocationLink[] | null> {
     return this.request("textDocument/typeDefinition", {
       textDocument: { uri },
       position,
-    });
+    }, signal);
   }
 
-  async textDocumentImplementation(uri: string, position: Position): Promise<Location | Location[] | LocationLink[] | null> {
+
+  async textDocumentImplementation(uri: string, position: Position, signal?: AbortSignal): Promise<Location | Location[] | LocationLink[] | null> {
     return this.request("textDocument/implementation", {
       textDocument: { uri },
       position,
-    });
+    }, signal);
   }
 
-  async textDocumentReferences(uri: string, position: Position): Promise<Location[] | null> {
+
+  async textDocumentReferences(uri: string, position: Position, signal?: AbortSignal): Promise<Location[] | null> {
     return this.request<Location[] | null>("textDocument/references", {
       textDocument: { uri },
       position,
       context: { includeDeclaration: true },
-    });
+    }, signal);
   }
 
-  async textDocumentDocumentSymbol(uri: string): Promise<DocumentSymbol[] | SymbolInformation[] | null> {
-    return this.request("textDocument/documentSymbol", { textDocument: { uri } });
+
+  async textDocumentDocumentSymbol(uri: string, signal?: AbortSignal): Promise<DocumentSymbol[] | SymbolInformation[] | null> {
+    return this.request("textDocument/documentSymbol", { textDocument: { uri } }, signal);
   }
 
-  async workspaceSymbol(query: string): Promise<WorkspaceSymbol[] | null> {
-    return this.request<WorkspaceSymbol[] | null>("workspace/symbol", { query });
+
+  async workspaceSymbol(query: string, signal?: AbortSignal): Promise<WorkspaceSymbol[] | null> {
+    return this.request<WorkspaceSymbol[] | null>("workspace/symbol", { query }, signal);
   }
+
 
   async textDocumentCodeAction(
     uri: string,
     range: { start: Position; end: Position },
     context: CodeActionContext,
+    signal?: AbortSignal,
   ): Promise<CodeAction[] | null> {
     return this.request<CodeAction[] | null>("textDocument/codeAction", {
       textDocument: { uri },
       range,
       context,
-    });
+    }, signal);
   }
 
-  async codeActionResolve(action: CodeAction): Promise<CodeAction> {
-    return this.request<CodeAction>("codeAction/resolve", action);
+
+  async codeActionResolve(action: CodeAction, signal?: AbortSignal): Promise<CodeAction> {
+    return this.request<CodeAction>("codeAction/resolve", action, signal);
   }
 
-  async textDocumentRename(uri: string, position: Position, newName: string): Promise<WorkspaceEdit | null> {
+
+  async textDocumentRename(uri: string, position: Position, newName: string, signal?: AbortSignal): Promise<WorkspaceEdit | null> {
     return this.request<WorkspaceEdit | null>("textDocument/rename", {
       textDocument: { uri },
       position,
       newName,
-    });
+    }, signal);
   }
 
-  async workspaceWillRenameFiles(files: FileRenameEvent[]): Promise<WorkspaceEdit | null> {
-    return this.request<WorkspaceEdit | null>("workspace/willRenameFiles", { files });
+
+  async workspaceWillRenameFiles(files: FileRenameEvent[], signal?: AbortSignal): Promise<WorkspaceEdit | null> {
+    return this.request<WorkspaceEdit | null>("workspace/willRenameFiles", { files }, signal);
   }
+
 
   async workspaceDidRenameFiles(files: FileRenameEvent[]): Promise<void> {
     this.notify("workspace/didRenameFiles", { files });
   }
 
-  async textDocumentFormatting(uri: string, options: FormattingOptions): Promise<Array<{ range: { start: Position; end: Position }; newText: string }> | null> {
+  async textDocumentFormatting(uri: string, options: FormattingOptions, signal?: AbortSignal): Promise<Array<{ range: { start: Position; end: Position }; newText: string }> | null> {
     return this.request("textDocument/formatting", {
       textDocument: { uri },
       options,
-    });
+    }, signal);
   }
 
+
   /** Invoke an arbitrary LSP method. */
-  async rawRequest(method: string, params: unknown): Promise<unknown> {
-    return this.request(method, params);
+  async rawRequest(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
+    return this.request(method, params, signal);
   }
 
   /** Send an arbitrary LSP notification. */
@@ -362,7 +421,7 @@ export class LspClient {
 
   // ── JSON-RPC transport ────────────────────────────────────────────────
 
-  private request<T>(method: string, params: unknown): Promise<T> {
+  private request<T>(method: string, params: unknown, signal?: AbortSignal): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (!this.process?.stdin) {
         return reject(new LspError("Server not running"));
@@ -370,13 +429,38 @@ export class LspClient {
       const id = this.nextId++;
       const msg = JSON.stringify({ jsonrpc: "2.0", id, method, params });
       const frame = `Content-Length: ${Buffer.byteLength(msg)}\r\n\r\n${msg}`;
+
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new LspError(`Request ${method} timed out`, -1));
+      }, REQUEST_TIMEOUT_MS);
+
+      const onAbort = () => {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(new LspError(`Request ${method} aborted`, -1));
+      };
+      if (signal) {
+        if (signal.aborted) {
+          clearTimeout(timer);
+          reject(new LspError(`Request ${method} aborted`, -1));
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
       this.pending.set(id, {
-        resolve: resolve as (v: unknown) => void,
-        reject,
-        timer: setTimeout(() => {
-          this.pending.delete(id);
-          reject(new LspError(`Request ${method} timed out`, -1));
-        }, REQUEST_TIMEOUT_MS),
+        resolve: (result) => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
+          resolve(result as T);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
+          reject(err);
+        },
+        timer,
       });
       this.process.stdin.write(frame);
     });
