@@ -11,7 +11,7 @@ import { expect, test } from "bun:test";
 import { initExtension } from "../src/extensions/init/index.ts";
 
 // Bun imports markdown with { type: "text" } as a plain string
-import PROMPT_MD from "../src/extensions/init/prompt.md" with { type: "text" };
+import PROMPT_MD from "../src/prompts/init.md" with { type: "text" };
 
 /**
  * Minimal frontmatter parser for testing purposes.

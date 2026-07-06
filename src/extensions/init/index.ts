@@ -9,7 +9,7 @@
  */
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { getEmbeddedContent } from "../embedded-assets.ts";
-import PROMPT_MD from "./prompt.md" with { type: "text" };
+import PROMPT_MD from "../../prompts/init.md" with { type: "text" };
 
 /**
  * Resolve the init prompt content.
@@ -18,7 +18,7 @@ import PROMPT_MD from "./prompt.md" with { type: "text" };
  * mode Bun imports it directly. The embedded-assets fallback handles both.
  */
 function loadPrompt(): string {
-  return getEmbeddedContent("init/prompt.md") ?? PROMPT_MD;
+  return getEmbeddedContent("prompts/init.md") ?? PROMPT_MD;
 }
 
 export const initExtension: ExtensionFactory = (pi: ExtensionAPI) => {

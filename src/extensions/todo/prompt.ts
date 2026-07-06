@@ -6,36 +6,12 @@
  * We strip the long examples; the rules survive.
  */
 import type { Todo } from "./schema.ts";
+import TODO_PROMPT from "../../prompts/todo-tool.md" with { type: "text" };
+
+export { TODO_PROMPT };
 
 export const TODO_DESCRIPTION =
   "Maintain a session task checklist. Call to create, update, or clear the list. Each entry needs `content` (imperative) and `activeForm` (present continuous). Mark exactly ONE item as in_progress; finish it before starting another. Update the list as work progresses, not in batches at the end.";
-
-export const TODO_PROMPT = `Use this tool to track multi-step work in the current session. The list is visible to the user and helps them follow your progress.
-
-## When to use
-
-- Tasks with 3+ distinct steps
-- Tasks where you might forget a step (rename across files, multi-feature work)
-- The user provides a list of things to do (numbered or comma-separated)
-- You discover new follow-up work mid-task — append it
-
-## When NOT to use
-
-- Single trivial step (one edit, one bash, one read)
-- Pure Q&A or explanation
-- Less than 3 real steps
-
-## Rules
-
-1. **Each item has two forms**:
-   - \`content\`: imperative — "Fix the auth bug"
-   - \`activeForm\`: present continuous — "Fixing the auth bug"
-2. **Status values**: \`pending\` | \`in_progress\` | \`completed\`.
-3. **Exactly one in_progress at a time**. Mark the previous task completed *before* starting the next.
-4. **Mark completed only when fully done** — tests passing, file written, etc. Never call something done because you're tired of looking at it.
-5. **Pass the full list every time** — the tool replaces, not patches. Drop entries that are no longer relevant.
-6. **When every item is completed**, the next call will collapse the list to empty automatically; you don't need to clear it manually.
-`;
 
 export function formatTodoList(todos: Todo[]): string {
   if (todos.length === 0) return "_(no tasks)_";

@@ -200,7 +200,7 @@ test("before_agent_start appends the PLAN_MODE_BLOCK while active and not while 
   const active = await handler({ systemPrompt: "BASE" }, makeCtx());
   expect(active).toBeDefined();
   expect(active.systemPrompt).toContain("BASE");
-  expect(active.systemPrompt).toMatch(/Plan Mode is ACTIVE/);
+  expect(active.systemPrompt).toMatch(/计划模式已激活/);
   expect(active.systemPrompt).toContain("inj.md");
 });
 

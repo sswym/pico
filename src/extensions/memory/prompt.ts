@@ -9,20 +9,33 @@
  */
 import type { Fact } from "./store.ts";
 import { VALID_CATEGORIES } from "./schema.ts";
+import MEMORY_PROMPT_TEMPLATE from "../../prompts/memory-tool.md" with { type: "text" };
 
 const CATEGORY_LIST = VALID_CATEGORIES.join(" | ");
 
+/** Extract a named section from the memory prompt template. */
+function extractSection(name: string): string {
+  const regex = new RegExp(`## ${name}\\n([\\s\\S]*?)(?=\\n##|$)`);
+  const match = MEMORY_PROMPT_TEMPLATE.match(regex);
+  return match?.[1]?.trim() ?? "";
+}
+
 export function systemPromptBlock(factCount: number): string {
   if (factCount === 0) {
+    const template = extractSection("Long-term memory (empty)");
     return [
       "## Long-term memory",
-      `Your \`memory\` tool is empty. Proactively call \`memory(action="add", content=..., category=...)\` whenever the user shares a durable preference, decision, or stack choice they would expect you to remember next session. Categories: ${CATEGORY_LIST}.`,
-      'Before answering questions about the user or project, call `memory(action="search", query=...)` first.',
+      template
+        .replace("{{categories}}", CATEGORY_LIST)
+        .replace(/^[^\n]*\n/, ""),  // Remove the first line (description)
     ].join("\n");
   }
+  const template = extractSection("Long-term memory (active)");
   return [
     "## Long-term memory",
-    `Active. ${factCount} facts stored, weighted by trust score (0..1). Call \`memory(action="search", query=...)\` before answering questions about the user or project; call \`memory(action="add", ...)\` when the user shares something durable; call \`memory(action="feedback", fact_id=..., helpful=true|false)\` after using a fact to train trust.`,
+    template
+      .replace("{{factCount}}", String(factCount))
+      .replace(/^[^\n]*\n/, ""),  // Remove the first line (description)
   ].join("\n");
 }
 
