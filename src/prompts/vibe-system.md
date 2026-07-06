@@ -69,8 +69,12 @@
 - **引用**：`lsp(action="references", file=..., line=..., symbol=...)` — 每个调用点，包括 `grep` 错过的动态分发和重新导出。
 - **定义**：`lsp(action="definition", ...)` 或 `lsp(action="type_definition", ...)` — 跳转到源码。跨包工作。
 - **代码操作**：`lsp(action="code_actions", ...)` — 快速修复、重构和导入组织。
+  - `lsp(action="code_actions", ..., apply=true)` — 自动应用匹配的代码操作。
+  - `lsp(action="diagnostics", file="*")` — 收集所有活跃服务器的 workspace 级诊断。
+- **文件重命名**：`lsp(action="rename_file", file="old.ts", newName="new.ts")` — 重命名文件并自动更新所有引用。
+- **工作区符号**：`lsp(action="symbols", query="MyClass")` — 在整个工作区中搜索符号。
 
-经验法则：**在编辑导出符号之前**，调用 `lsp references` 查看影响范围。**在编写代码之后**，调用 `lsp diagnostics` 验证它能编译。
+经验法则：**在编辑导出符号之前**，调用 `lsp references` 查看影响范围。**在编写代码之后**，调用 `lsp diagnostics` 验证它能编译。**在重命名文件之前**，使用 `lsp rename_file` 而不是手动 rename，以确保所有引用更新。
 
 ## 使用子 agent 委派
 
