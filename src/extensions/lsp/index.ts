@@ -7,7 +7,7 @@
  *
  * Lazy server startup on first call. Graceful degradation when no server available.
  */
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, renameSync, mkdirSync } from "node:fs";
 import { dirname, basename } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
@@ -16,8 +16,8 @@ import {
   type ExtensionContext,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import { positionToLsp, uriToPath, LspError, COMMAND_NOT_FOUND } from "./client.ts";
-import type { Location, Position } from "./types.ts";
+import { positionToLsp, uriToPath, pathToUri, lspPositionToDisplay, LspError, COMMAND_NOT_FOUND } from "./client.ts";
+import type { Location, Position, WorkspaceEdit, FileRenameEvent } from "./types.ts";
 import { loadConfig } from "./config.ts";
 import {
   createLspManager,
@@ -34,6 +34,7 @@ import {
 import type { DocumentSymbolFlat, LspManagerState } from "./manager.ts";
 import { resolveFormattingOptions } from "./format-options.ts";
 import { getInstallHint, installServer, formatInstallHint } from "./install.ts";
+import { applyWorkspaceEdit } from "./edits.ts";
 
 // ── Result helpers ────────────────────────────────────────────────────────
 
@@ -125,7 +126,7 @@ function normalizeLocations(result: unknown): Location[] {
 
 const ACTIONS = [
   "hover", "definition", "type_definition", "implementation", "references",
-  "diagnostics", "symbols", "code_actions", "rename",
+  "diagnostics", "symbols", "code_actions", "rename", "rename_file",
   "capabilities", "status", "reload", "request",
 ] as const;
 
@@ -168,52 +169,6 @@ function resolveSymbolColumn(filePath: string, line: number, symbol: string, occ
   }
 }
 
-// ── Workspace edit application ────────────────────────────────────────────
-
-function applyWorkspaceEdit(edit: { changes?: Record<string, Array<{ range: { start: { line: number; character: number }; end: { line: number; character: number } }; newText: string }>>; documentChanges?: unknown[] }): string {
-  const lines: string[] = [];
-  let fileCount = 0;
-
-  if (edit.changes) {
-    for (const [uri, textEdits] of Object.entries(edit.changes)) {
-      const filePath = uriToPath(uri);
-      try {
-        let content = readFileSync(filePath, "utf8");
-        const sorted = [...textEdits].sort((a, b) => {
-          if (a.range.start.line !== b.range.start.line) return b.range.start.line - a.range.start.line;
-          return b.range.start.character - a.range.start.character;
-        });
-        const contentLines = content.split("\n");
-        for (const te of sorted) {
-          const startLine = te.range.start.line;
-          const startChar = te.range.start.character;
-          const endLine = te.range.end.line;
-          const endChar = te.range.end.character;
-          if (startLine === endLine) {
-            const line = contentLines[startLine] ?? "";
-            contentLines[startLine] = line.slice(0, startChar) + te.newText + line.slice(endChar);
-          } else {
-            const startLineText = contentLines[startLine] ?? "";
-            const endLineText = contentLines[endLine] ?? "";
-            const merged = startLineText.slice(0, startChar) + te.newText + endLineText.slice(endChar);
-            contentLines.splice(startLine, endLine - startLine + 1, merged);
-          }
-        }
-        content = contentLines.join("\n");
-        mkdirSync(dirname(filePath), { recursive: true });
-        writeFileSync(filePath, content, "utf8");
-        fileCount++;
-        lines.push(`  ${filePath} (${textEdits.length} edits)`);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        lines.push(`  ${filePath}: FAILED — ${msg}`);
-      }
-    }
-  }
-
-  if (fileCount === 0) return "No files modified.";
-  return `Modified ${fileCount} file(s):\n${lines.join("\n")}`;
-}
 
 // ── Extension factory ─────────────────────────────────────────────────────
 
@@ -261,7 +216,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       description:
         "Query LSP (language server) for diagnostics, hover info, references, and code intelligence. " +
         "Actions: hover, definition, type_definition, implementation, references, diagnostics, " +
-        "symbols, code_actions, rename, capabilities, status, reload, request. " +
+        "symbols, code_actions, rename, rename_file, capabilities, status, reload, request. " +
         "Use symbol to auto-resolve column position from a name on the given line.",
       parameters: LspParams,
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -324,17 +279,27 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
         // ── File-level actions ──────────────────────────────────────────
         if (action === "diagnostics") {
-          if (!params.file) {
-            const allDiags = client.getAllDiagnostics();
-            const lines: string[] = [];
-            for (const [uri, diags] of allDiags) {
-              if (diags.length > 0) {
+          if (!params.file || params.file === "*") {
+            // Collect from ALL active servers
+            const activeClients = getActiveClients(state);
+            if (activeClients.length === 0) return ok("No active language servers.");
+            const allMessages: string[] = [];
+            for (const [serverName, managed] of activeClients) {
+              const allDiags = managed.getAllDiagnostics();
+              for (const [uri, diags] of allDiags) {
+                if (diags.length === 0) continue;
                 const filePath = uriToPath(uri);
-                lines.push(formatDiagnosticsForFile(filePath, diags));
+                for (const d of diags) {
+                  const pos = lspPositionToDisplay(d.range.start);
+                  const sev = d.severity === 1 ? "ERROR" : d.severity === 2 ? "WARNING" : d.severity === 3 ? "INFO" : "HINT";
+                  const code = d.code ? ` [${d.code}]` : "";
+                  const src = d.source ? ` (${d.source})` : "";
+                  allMessages.push(`${filePath}:${pos.line}:${pos.character} ${sev}${code}${src}: ${d.message}`);
+                }
               }
             }
-            if (lines.length === 0) return ok("No diagnostics across workspace.");
-            return ok(lines.join("\n\n"));
+            if (allMessages.length === 0) return ok("No diagnostics found.", { action: "diagnostics", success: true });
+            return ok(`Workspace diagnostics (${allMessages.length}):\n${allMessages.join("\n")}`, { action: "diagnostics", success: true });
           }
           const uri = syncDocument(state, params.file);
           if (!uri) return fail(`Cannot open file: ${params.file}`);
@@ -395,6 +360,55 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           }
         }
 
+
+        if (action === "rename_file") {
+          if (!params.file || !params.newName) {
+            return fail("rename_file requires both 'file' (source) and 'newName' (destination).");
+          }
+          const absPath = params.file.startsWith("/") ? params.file : `${ctx.cwd}/${params.file}`;
+          const absNew = params.newName.startsWith("/") ? params.newName : `${ctx.cwd}/${params.newName}`;
+
+          // Step 1: willRenameFiles
+          let workspaceEdit: WorkspaceEdit | null = null;
+          try {
+            workspaceEdit = await client.workspaceWillRenameFiles([
+              { oldUri: pathToUri(absPath), newUri: pathToUri(absNew) } satisfies FileRenameEvent,
+            ]);
+          } catch {
+            // Server may not support willRenameFiles — continue with just the rename
+          }
+
+          // Step 2: Apply workspace edits if any
+          if (workspaceEdit) {
+            const result = applyWorkspaceEdit(workspaceEdit, ctx.cwd);
+            if (!result.ok) {
+              return fail(`Failed to apply workspace edits:\n${result.messages.join("\n")}`);
+            }
+          }
+
+          // Step 3: Filesystem rename
+          try {
+            mkdirSync(dirname(absNew), { recursive: true });
+            renameSync(absPath, absNew);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return fail(`Filesystem rename failed: ${msg}`);
+          }
+
+          // Step 4: didRenameFiles notification
+          try {
+            client.workspaceDidRenameFiles([
+              { oldUri: pathToUri(absPath), newUri: pathToUri(absNew) } satisfies FileRenameEvent,
+            ]);
+          } catch {}
+
+          // Step 5: Sync new file into document cache
+          try { syncDocument(state, absNew); } catch {}
+
+          const lines = [`Renamed: ${params.file} → ${params.newName}`];
+          if (workspaceEdit) lines.push("Applied workspace edits from LSP server.");
+          return ok(lines.join("\n"), { action: "rename_file", success: true });
+        }
         // ── Position-based actions ──────────────────────────────────────
         if (!params.file) return fail(`${action} requires 'file' parameter.`);
         if (!params.line) return fail(`${action} requires 'line' parameter.`);
@@ -450,7 +464,8 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
                 let resolved = target;
                 try { resolved = await client.codeActionResolve(target); } catch {}
                 if (resolved.edit) {
-                  return ok(`Applied: ${resolved.title}\n${applyWorkspaceEdit(resolved.edit)}`);
+                  const applyResult = applyWorkspaceEdit(resolved.edit, ctx.cwd);
+                  return ok(`Applied: ${resolved.title}\n${applyResult.messages.join("\n")}`);
                 }
                 if (resolved.command) {
                   return ok(`Action requires command execution (not yet supported): ${resolved.title}`);
@@ -470,7 +485,8 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               if (!params.newName) return fail("rename requires 'newName' parameter.");
               const edit = await client.textDocumentRename(uri, pos, params.newName);
               if (!edit) return ok("No rename edits returned.");
-              return ok(`Renamed to "${params.newName}"\n${applyWorkspaceEdit(edit)}`);
+              const applyResult = applyWorkspaceEdit(edit, ctx.cwd);
+              return ok(`Renamed to "${params.newName}"\n${applyResult.messages.join("\n")}`);
             }
             default:
               return fail(`Unknown action: ${action}`);
