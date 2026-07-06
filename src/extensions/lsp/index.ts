@@ -17,7 +17,7 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { positionToLsp, uriToPath, pathToUri, lspPositionToDisplay, LspError, COMMAND_NOT_FOUND } from "./client.ts";
-import type { Location, Position, WorkspaceEdit, FileRenameEvent } from "./types.ts";
+import type { Location, Position, WorkspaceSymbol, WorkspaceEdit, FileRenameEvent } from "./types.ts";
 import { loadConfig } from "./config.ts";
 import {
   createLspManager,
@@ -317,8 +317,20 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
         if (action === "symbols") {
           if (!params.file && params.query) {
+            const tryWorkspaceSymbol = async (): Promise<WorkspaceSymbol[] | null> => {
+              try {
+                return await client.workspaceSymbol(params.query!);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                if (msg.includes("No Project")) {
+                  await new Promise<void>((r) => { setTimeout(() => r(), 2000); });
+                  return await client.workspaceSymbol(params.query!);
+                }
+                throw err;
+              }
+            };
             try {
-              const result = await client.workspaceSymbol(params.query);
+              const result = await tryWorkspaceSymbol();
               if (!result || result.length === 0) return ok(`No symbols found matching "${params.query}".`);
               if (!isWorkspaceSymbolArray(result)) return ok(`No symbols found matching "${params.query}".`);
               const lines: string[] = [];
