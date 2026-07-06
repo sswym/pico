@@ -6,9 +6,67 @@
  */
 import { readFileSync } from "node:fs";
 import { join, extname } from "node:path";
-import type { LspServerConfig } from "./config.ts";
+import type { LspServerConfig, LspConfig } from "./config.ts";
 import { loadConfig, getServersForFile, detectServers, resolveCommand } from "./config.ts";
 import { LspClient, locationToDisplay, lspPositionToDisplay, LspError, COMMAND_NOT_FOUND } from "./client.ts";
+
+// ── Idle timeout ────────────────────────────────────────────────────────────
+
+let idleTimeoutMs: number | null = null;
+let idleCheckInterval: ReturnType<typeof setInterval> | null = null;
+const IDLE_CHECK_INTERVAL_MS = 60_000;
+
+export function setIdleTimeout(state: LspManagerState, ms: number | null | undefined): void {
+  idleTimeoutMs = ms ?? null;
+  if (idleTimeoutMs && idleTimeoutMs > 0) {
+    startIdleChecker(state);
+  } else {
+    stopIdleChecker();
+  }
+}
+
+function startIdleChecker(state: LspManagerState): void {
+  if (idleCheckInterval) return;
+  idleCheckInterval = setInterval(() => {
+    if (!idleTimeoutMs) return;
+    const now = Date.now();
+    for (const [name, managed] of state.servers) {
+      if (managed.client.ready && now - managed.lastActivity > idleTimeoutMs) {
+        managed.client.shutdown().catch(() => {});
+        state.servers.delete(name);
+      }
+    }
+  }, IDLE_CHECK_INTERVAL_MS);
+}
+
+function stopIdleChecker(): void {
+  if (idleCheckInterval) {
+    clearInterval(idleCheckInterval);
+    idleCheckInterval = null;
+  }
+}
+
+// ── Init failure backoff ────────────────────────────────────────────────────
+
+const initFailures = new Map<string, { at: number; message: string }>();
+const INIT_FAILURE_BACKOFF_MS = 3 * 60 * 1000;
+
+function checkInitBackoff(serverName: string): void {
+  const failure = initFailures.get(serverName);
+  if (!failure) return;
+  if (Date.now() - failure.at < INIT_FAILURE_BACKOFF_MS) {
+    const remaining = Math.ceil((INIT_FAILURE_BACKOFF_MS - (Date.now() - failure.at)) / 1000);
+    throw new LspError(
+      `Server "${serverName}" failed to start recently (${failure.message}). Retry in ${remaining}s.`,
+      -1,
+    );
+  }
+  initFailures.delete(serverName);
+}
+
+function recordInitFailure(serverName: string, message: string): void {
+  initFailures.set(serverName, { at: Date.now(), message });
+}
 
 // ── Type guards for Hover contents ────────────────────────────────────────
 
@@ -173,10 +231,11 @@ interface ManagedServer {
   client: LspClient;
   initializing: Promise<void> | null;
   openDocuments: Map<string, { uri: string; languageId: string }>;
+  lastActivity: number;
 }
 
 export interface LspManagerState {
-  config: ReturnType<typeof loadConfig> | null;
+  config: LspConfig | null;
   servers: Map<string, ManagedServer>;
   configured: boolean;
 }
@@ -204,6 +263,7 @@ export async function ensureServer(
   if (!state.config) {
     state.config = loadConfig(workspaceRoot);
     state.configured = true;
+    setIdleTimeout(state, state.config.idleTimeoutMs);
   }
 
   // Find the first ready or startable server for any file in this project
@@ -212,13 +272,18 @@ export async function ensureServer(
     if (serverConfig.disabled) continue;
     if (serverConfig.isLinter) continue; // Skip linters for primary
     const managed = state.servers.get(name);
-    if (managed?.client.ready) return managed.client;
+    if (managed?.client.ready) {
+      managed.lastActivity = Date.now();
+      return managed.client;
+    }
   }
 
   // No server ready — start the first matching one (filtered by rootMarkers)
   const matching = detectServers(state.config, workspaceRoot);
   for (const [name, serverConfig] of matching) {
     if (serverConfig.isLinter) continue;
+
+    checkInitBackoff(name);
 
     const client = new LspClient(
       { language: name, extensions: serverConfig.fileTypes, command: serverConfig.command, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
@@ -231,6 +296,7 @@ export async function ensureServer(
       client,
       initializing: null,
       openDocuments: new Map(),
+      lastActivity: Date.now(),
     };
 
     state.servers.set(name, managed);
@@ -243,6 +309,7 @@ export async function ensureServer(
           name,
         );
         await managed.client.initialize(workspaceRoot);
+        managed.lastActivity = Date.now();
       } catch (err) {
         // Propagate command-not-found so callers can offer to install.
         if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) {
@@ -251,6 +318,7 @@ export async function ensureServer(
         }
         const msg = err instanceof LspError ? err.message : String(err);
         console.error(`[lsp] Failed to start ${name}:`, msg);
+        recordInitFailure(name, msg);
         state.servers.delete(name);
       } finally {
         managed.initializing = null;
@@ -278,19 +346,25 @@ export async function ensureNamedServer(
   if (!state.config) {
     state.config = loadConfig(workspaceRoot);
     state.configured = true;
+    setIdleTimeout(state, state.config.idleTimeoutMs);
   }
 
   const serverConfig = state.config.servers[name];
   if (!serverConfig || serverConfig.disabled) return null;
 
   const managed = state.servers.get(name);
-  if (managed?.client.ready) return managed.client;
+  if (managed?.client.ready) {
+    managed.lastActivity = Date.now();
+    return managed.client;
+  }
   if (managed?.initializing) {
     await managed.initializing;
     return managed.client.ready ? managed.client : null;
   }
 
   // Start this server
+  checkInitBackoff(name);
+
   const client = new LspClient(
     { language: name, extensions: serverConfig.fileTypes, command: serverConfig.command, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
     name,
@@ -302,6 +376,7 @@ export async function ensureNamedServer(
     client,
     initializing: null,
     openDocuments: new Map(),
+    lastActivity: Date.now(),
   };
 
   state.servers.set(name, newManaged);
@@ -309,6 +384,7 @@ export async function ensureNamedServer(
   newManaged.initializing = (async () => {
     try {
       await newManaged.client.initialize(workspaceRoot);
+      newManaged.lastActivity = Date.now();
     } catch (err) {
       if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) {
         state.servers.delete(name);
@@ -316,6 +392,7 @@ export async function ensureNamedServer(
       }
       const msg = err instanceof LspError ? err.message : String(err);
       console.error(`[lsp] Failed to start ${name}:`, msg);
+      recordInitFailure(name, msg);
       state.servers.delete(name);
     } finally {
       newManaged.initializing = null;
@@ -332,6 +409,7 @@ export async function ensureNamedServer(
 
 /** Shut down all managed servers. */
 export async function stopServer(state: LspManagerState): Promise<void> {
+  stopIdleChecker();
   for (const [, managed] of state.servers) {
     for (const [, doc] of managed.openDocuments) {
       managed.client.didClose(doc.uri);
@@ -348,7 +426,10 @@ export async function stopServer(state: LspManagerState): Promise<void> {
 export function getActiveClients(state: LspManagerState): Array<[string, LspClient]> {
   const result: Array<[string, LspClient]> = [];
   for (const [name, managed] of state.servers) {
-    if (managed.client.ready) result.push([name, managed.client]);
+    if (managed.client.ready) {
+      managed.lastActivity = Date.now();
+      result.push([name, managed.client]);
+    }
   }
   return result;
 }

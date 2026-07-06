@@ -44,6 +44,7 @@ export interface LspServerConfig {
 
 export interface LspConfig {
   servers: Record<string, LspServerConfig>;
+  idleTimeoutMs?: number;
 }
 
 // ── Config loading ────────────────────────────────────────────────────────
@@ -96,12 +97,16 @@ export function loadConfig(workspaceRoot: string): LspConfig {
   let merged: Record<string, LspServerConfig> = parseServerMap(
     defaultServers as Record<string, unknown>,
   );
+  let idleTimeoutMs: number | undefined;
 
   // Merge user-level config
   const userConfigPath = join(homedir(), ".srcode", "lsp.json");
   const userConfig = parseJsonFile(userConfigPath);
   if (userConfig) {
     merged = { ...merged, ...parseServerMap(userConfig) };
+    if (typeof userConfig["idleTimeoutMs"] === "number") {
+      idleTimeoutMs = userConfig["idleTimeoutMs"] as number;
+    }
   }
 
   // Merge project-level config
@@ -109,9 +114,12 @@ export function loadConfig(workspaceRoot: string): LspConfig {
   const projectConfig = parseJsonFile(projectConfigPath);
   if (projectConfig) {
     merged = { ...merged, ...parseServerMap(projectConfig) };
+    if (typeof projectConfig["idleTimeoutMs"] === "number") {
+      idleTimeoutMs = projectConfig["idleTimeoutMs"] as number;
+    }
   }
 
-  return { servers: merged };
+  return { servers: merged, idleTimeoutMs };
 }
 
 // ── Local binary resolution ───────────────────────────────────────────────
