@@ -4,7 +4,7 @@
  * Uses config.ts to discover and route servers. Each server is spawned lazily
  * when first needed. Supports multiple concurrent servers per file type.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join, extname } from "node:path";
 import type { LspServerConfig, LspConfig } from "./config.ts";
 import { loadConfig, getServersForFile, detectServers, resolveCommand } from "./config.ts";
@@ -310,6 +310,7 @@ export async function ensureServer(
         );
         await managed.client.initialize(workspaceRoot);
         managed.lastActivity = Date.now();
+        prewarmProject(managed, workspaceRoot);
       } catch (err) {
         // Propagate command-not-found so callers can offer to install.
         if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) {
@@ -385,6 +386,7 @@ export async function ensureNamedServer(
     try {
       await newManaged.client.initialize(workspaceRoot);
       newManaged.lastActivity = Date.now();
+      prewarmProject(newManaged, workspaceRoot);
     } catch (err) {
       if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) {
         state.servers.delete(name);
@@ -512,6 +514,34 @@ function guessLanguageId(filePath: string): string {
     graphql: "graphql", prisma: "prisma", tf: "terraform",
   };
   return map[ext] ?? ext;
+}
+
+/**
+ * Pre-warm a language server by opening the first matching source file.
+ * Both tsserver and rust-analyzer need at least one didOpen before
+ * workspace/symbol and other project-wide features work.
+ */
+function prewarmProject(managed: ManagedServer, workspaceRoot: string): void {
+  const exts = new Set((managed.client.config.extensions ?? []).map(e => e.startsWith(".") ? e : `.${e}`));
+  const dirs = [workspaceRoot, join(workspaceRoot, "src")];
+  for (const dir of dirs) {
+    try {
+      const entries = readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const ext = extname(entry.name);
+        if (!exts.has(ext)) continue;
+        const absPath = join(dir, entry.name);
+        try {
+          const text = readFileSync(absPath, "utf8");
+          const langId = ext.slice(1);
+          managed.client.ensureOpen(absPath, text, langId);
+          managed.openDocuments.set(absPath, { uri: `file://${absPath}`, languageId: langId });
+          return;
+        } catch {}
+      }
+    } catch {}
+  }
 }
 
 // Backwards-compatible re-export for index.ts

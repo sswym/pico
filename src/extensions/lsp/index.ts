@@ -317,17 +317,21 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
         if (action === "symbols") {
           if (!params.file && params.query) {
+
             const tryWorkspaceSymbol = async (): Promise<WorkspaceSymbol[] | null> => {
-              try {
-                return await client.workspaceSymbol(params.query!);
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                if (msg.includes("No Project")) {
-                  await new Promise<void>((r) => { setTimeout(() => r(), 2000); });
+              for (let attempt = 0; attempt < 2; attempt++) {
+                try {
                   return await client.workspaceSymbol(params.query!);
+                } catch (err) {
+                  const msg = err instanceof Error ? err.message : String(err);
+                  if (msg.includes("No Project") && attempt === 0) {
+                    await new Promise<void>((r) => { setTimeout(() => r(), 3000); });
+                    continue;
+                  }
+                  throw err;
                 }
-                throw err;
               }
+              return null;
             };
             try {
               const result = await tryWorkspaceSymbol();
@@ -604,12 +608,12 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
   pi.on("session_start", async (_event, ctx) => {
     ledger.clear();
-    // Start the language server in the background; offer install if binary is missing.
-    ensureServerWithInstall(ctx.cwd, ctx).then((client) => {
+    try {
+      const client = await ensureServerWithInstall(ctx.cwd, ctx);
       if (client) {
         ctx.ui.setStatus("lsp", `LSP: ${client.serverName} ${client.displayVersion}`.trim());
       }
-    }).catch(() => {});
+    } catch {}
   });
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
