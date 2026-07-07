@@ -247,7 +247,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       const parseScope = (text: string): { scope: "global" | "project" | undefined; rest: string } => {
         const m = text.match(/--scope\s+(global|project)\s*/i);
         if (!m) return { scope: undefined, rest: text };
-        return { scope: m[1].toLowerCase() as "global" | "project", rest: text.replace(/--scope\s+(global|project)\s*/i, "").trim() };
+        return { scope: m[1]!.toLowerCase() as "global" | "project", rest: text.replace(/--scope\s+(global|project)\s*/i, "").trim() };
       };
 
       try {

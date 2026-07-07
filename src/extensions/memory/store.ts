@@ -1,11 +1,10 @@
 /**
  * MemoryStore — SQLite-backed long-term memory for srcode.
  *
- * Port of hermes-agent holographic store, minus HRR.
- * (See ~/hermes-agent/plugins/memory/holographic/store.py)
- *
- * Single-process, single-file. Uses bun:sqlite with FTS5 for search.
- * Trust score lives in [0, 1] and shifts with user feedback.
+ * Extended from hermes holographic store with:
+ * - Entity extraction and linking (probe/related/reason support)
+ * - TF-IDF vector computation (semantic search)
+ * - Hybrid retrieval via FactRetriever
  */
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
@@ -27,6 +26,9 @@ import {
   type Scope,
 } from "./schema.ts";
 import { scanSecrets } from "./secrets.ts";
+import { extractEntities } from "./entities.ts";
+import { tokenize, filterStopwords, buildIdfMap, computeTfIdf, vectorToJson } from "./tfidf.ts";
+import { FactRetriever } from "./retrieval.ts";
 
 export interface Fact {
   fact_id: number;
@@ -41,6 +43,7 @@ export interface Fact {
   scope: string;
   correction_of: number | null;
   source: string;
+  tfidf_vector: string;
 }
 
 export interface AddOptions {
@@ -78,32 +81,23 @@ export interface UpdateOptions {
 
 const clampTrust = (n: number) => Math.max(TRUST_MIN, Math.min(TRUST_MAX, n));
 
-/**
- * Build a project scope key from a cwd path.
- * Stored as "project:/absolute/path" so it's unique per project directory.
- */
 export function projectScopeKey(cwd: string): string {
   return `${SCOPE_PROJECT}:${cwd}`;
 }
 
-/**
- * FTS5 MATCH wants a query that won't blow up on user input. We strip
- * characters that have special meaning (quotes, parens, asterisks, colons)
- * and split on whitespace, joining tokens with OR. Empty input returns "".
- */
 function normaliseFtsQuery(raw: string): string {
   const cleaned = raw
     .replace(/["'()*:^-]/g, " ")
     .split(/\s+/)
     .map((t) => t.trim())
-    .filter((t) => t.length > 1); // drop noise like "a", "i"
+    .filter((t) => t.length > 1);
   if (cleaned.length === 0) return "";
   return cleaned.map((t) => `"${t}"`).join(" OR ");
 }
 
 export class MemoryStore {
   readonly dbPath: string;
-  private readonly db: Database;
+  readonly db: Database;
   private readonly defaultTrust: number;
 
   constructor(dbPath: string, opts: { defaultTrust?: number } = {}) {
@@ -117,14 +111,12 @@ export class MemoryStore {
     this.migrate();
   }
 
-  /** Idempotent schema migration — adds columns introduced after v1. */
   private migrate(): void {
     for (const sql of MIGRATIONS) {
       try {
         this.db.exec(sql);
       } catch {
-        // ALTER TABLE fails silently if column already exists;
-        // CREATE INDEX IF NOT EXISTS never fails.
+        // ALTER TABLE fails silently if column already exists
       }
     }
   }
@@ -139,8 +131,7 @@ export class MemoryStore {
    * Insert a fact. Content is UNIQUE — re-adding the same content returns
    * the existing fact_id without changing its trust/timestamps.
    *
-   * If `opts.correctionOf` is set, the referenced fact's trust is penalised
-   * and the new fact starts with CORRECTED_BOOST trust.
+   * Post-insert: extracts entities and computes TF-IDF vector.
    */
   add(content: string, opts: AddOptions = {}): number {
     const trimmed = content.trim();
@@ -172,7 +163,6 @@ export class MemoryStore {
     if (correctionOf !== null) {
       const original = this.get(correctionOf);
       if (!original) throw new Error(`memory.add: correction_of #${correctionOf} not found`);
-      // Penalise the original fact.
       this.update(correctionOf, { trustDelta: CORRECTION_DELTA });
       trust = CORRECTED_BOOST;
     }
@@ -182,17 +172,24 @@ export class MemoryStore {
       .get(trimmed);
     if (existing) return existing.fact_id;
 
-    const stmt = this.db.query<
-      { fact_id: number },
-      [string, string, string, number, string, number | null, string]
-    >(
-      `INSERT INTO facts (content, category, tags, trust_score, scope, correction_of, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       RETURNING fact_id`,
-    );
-    const row = stmt.get(trimmed, category, tags, trust, scopeKey, correctionOf, source);
+    const row = this.db
+      .query<{ fact_id: number }, [string, string, string, number, string, number | null, string]>(
+        `INSERT INTO facts (content, category, tags, trust_score, scope, correction_of, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         RETURNING fact_id`,
+      )
+      .get(trimmed, category, tags, trust, scopeKey, correctionOf, source);
     if (!row) throw new Error("memory.add: insert returned no row");
-    return row.fact_id;
+
+    const factId = row.fact_id;
+
+    // Post-insert: extract entities and link
+    this._linkEntities(factId, trimmed);
+
+    // Post-insert: compute TF-IDF vector
+    this._computeTfIdf(factId, trimmed);
+
+    return factId;
   }
 
   update(fact_id: number, opts: UpdateOptions): boolean {
@@ -219,10 +216,18 @@ export class MemoryStore {
           WHERE fact_id = ?`,
       )
       .run(next.content, next.category, next.tags, next.trust_score, fact_id);
+
+    // If content changed, re-extract entities and recompute TF-IDF
+    if (opts.content !== undefined) {
+      this._linkEntities(fact_id, next.content);
+      this._computeTfIdf(fact_id, next.content);
+    }
+
     return true;
   }
 
   remove(fact_id: number): boolean {
+    // fact_entities has ON DELETE CASCADE, so this cleans up automatically
     const res = this.db.query("DELETE FROM facts WHERE fact_id = ?").run(fact_id);
     return res.changes > 0;
   }
@@ -257,47 +262,57 @@ export class MemoryStore {
     const minTrust = opts.minTrust ?? 0.0;
     const limit = Math.max(1, opts.limit ?? 50);
 
-    // Build scope filter.
-    const scopeClauses: string[] = [];
-    const params: unknown[] = [];
-
     if (opts.scope === SCOPE_PROJECT && opts.cwd) {
       const pKey = projectScopeKey(opts.cwd);
-      scopeClauses.push(`AND (scope = ? OR scope = ?)`);
-      params.push(SCOPE_GLOBAL, pKey);
-    } else if (opts.scope === SCOPE_GLOBAL || !opts.scope) {
-      scopeClauses.push(`AND scope = ?`);
-      params.push(SCOPE_GLOBAL);
-    }
-
-    if (opts.category) {
+      if (opts.category) {
+        return this.db
+          .query<Fact, [string, number, string, string, number]>(
+            `SELECT * FROM facts
+              WHERE category = ? AND trust_score >= ?
+              AND (scope = ? OR scope = ?)
+              ORDER BY trust_score DESC, fact_id DESC
+              LIMIT ?`,
+          )
+          .all(opts.category, minTrust, SCOPE_GLOBAL, pKey, limit);
+      }
       return this.db
-        .query<Fact, (string | number)[]>(
+        .query<Fact, [number, string, string, number]>(
           `SELECT * FROM facts
-            WHERE category = ? AND trust_score >= ?
-            ${scopeClauses.join(" ")}
+            WHERE trust_score >= ?
+            AND (scope = ? OR scope = ?)
             ORDER BY trust_score DESC, fact_id DESC
             LIMIT ?`,
         )
-        .all(opts.category, minTrust, ...params as (string | number)[], limit);
+        .all(minTrust, SCOPE_GLOBAL, pKey, limit);
+    }
+
+    // Default: global scope
+    const scopeVal = opts.scope ?? SCOPE_GLOBAL;
+    if (opts.category) {
+      return this.db
+        .query<Fact, [string, number, string, number]>(
+          `SELECT * FROM facts
+            WHERE category = ? AND trust_score >= ?
+            AND scope = ?
+            ORDER BY trust_score DESC, fact_id DESC
+            LIMIT ?`,
+        )
+        .all(opts.category, minTrust, scopeVal, limit);
     }
     return this.db
-      .query<Fact, (string | number)[]>(
+      .query<Fact, [number, string, number]>(
         `SELECT * FROM facts
           WHERE trust_score >= ?
-          ${scopeClauses.join(" ")}
+          AND scope = ?
           ORDER BY trust_score DESC, fact_id DESC
           LIMIT ?`,
       )
-      .all(minTrust, ...params as (string | number)[], limit);
+      .all(minTrust, scopeVal, limit);
   }
 
   /**
-   * Full-text search. Boost FTS rank by trust_score so high-trust facts
-   * surface first. Bumps retrieval_count for every returned row.
-   *
-   * When scope="project" and cwd is provided, returns both global and
-   * project-scoped facts, with a 10% ranking boost for project facts.
+   * Full-text search with scope-aware ranking.
+   * Bumps retrieval_count for every returned row.
    */
   search(query: string, opts: SearchOptions = {}): Fact[] {
     const fts = normaliseFtsQuery(query);
@@ -306,45 +321,67 @@ export class MemoryStore {
     const minTrust = opts.minTrust ?? 0.3;
     const limit = Math.max(1, opts.limit ?? 10);
 
-    // Build scope filter and ranking boost.
-    let scopeClause = "";
-    let scopeBoost = "";
-    const scopeParams: unknown[] = [];
-
     if (opts.scope === SCOPE_PROJECT && opts.cwd) {
       const pKey = projectScopeKey(opts.cwd);
-      scopeClause = `AND (f.scope = ? OR f.scope = ?)`;
-      scopeParams.push(SCOPE_GLOBAL, pKey);
-      // Give project-scoped facts a 50% ranking boost so they surface
-      // above global facts of similar relevance.
-      scopeBoost = `(CASE WHEN f.scope = ? THEN 1.5 ELSE 1.0 END) * `;
-      scopeParams.push(pKey);
-    } else if (opts.scope === SCOPE_GLOBAL || !opts.scope) {
-      scopeClause = `AND f.scope = ?`;
-      scopeParams.push(SCOPE_GLOBAL);
+      if (opts.category) {
+        const rows = this.db
+          .query<Fact, [string, number, string, string, string, string, number]>(
+            `SELECT f.* FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
+             WHERE facts_fts MATCH ? AND f.trust_score >= ?
+             AND (f.scope = ? OR f.scope = ?) AND f.category = ?
+             ORDER BY (CASE WHEN f.scope = ? THEN 1.5 ELSE 1.0 END) * (-bm25(facts_fts)) * f.trust_score DESC,
+                      f.trust_score DESC, f.fact_id DESC
+             LIMIT ?`,
+          )
+          .all(fts, minTrust, SCOPE_GLOBAL, pKey, opts.category, pKey, limit);
+        this._bumpRetrieval(rows);
+        return rows;
+      }
+      const rows = this.db
+        .query<Fact, [string, number, string, string, string, number]>(
+          `SELECT f.* FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
+           WHERE facts_fts MATCH ? AND f.trust_score >= ?
+           AND (f.scope = ? OR f.scope = ?)
+           ORDER BY (CASE WHEN f.scope = ? THEN 1.5 ELSE 1.0 END) * (-bm25(facts_fts)) * f.trust_score DESC,
+                    f.trust_score DESC, f.fact_id DESC
+           LIMIT ?`,
+        )
+        .all(fts, minTrust, SCOPE_GLOBAL, pKey, pKey, limit);
+      this._bumpRetrieval(rows);
+      return rows;
     }
 
-    const baseSql = `
-      SELECT f.*
-        FROM facts_fts m
-        JOIN facts f ON f.fact_id = m.rowid
-       WHERE facts_fts MATCH ?
-         AND f.trust_score >= ?
-         ${scopeClause}
-         ${opts.category ? "AND f.category = ?" : ""}
-       ORDER BY ${scopeBoost}(-bm25(facts_fts)) * f.trust_score DESC,
-                f.trust_score DESC,
-                f.fact_id DESC
-       LIMIT ?
-    `;
+    const scopeVal = opts.scope ?? SCOPE_GLOBAL;
+    if (opts.category) {
+      const rows = this.db
+        .query<Fact, [string, number, string, string, number]>(
+          `SELECT f.* FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
+           WHERE facts_fts MATCH ? AND f.trust_score >= ?
+           AND f.scope = ? AND f.category = ?
+           ORDER BY (-bm25(facts_fts)) * f.trust_score DESC,
+                    f.trust_score DESC, f.fact_id DESC
+           LIMIT ?`,
+        )
+        .all(fts, minTrust, scopeVal, opts.category, limit);
+      this._bumpRetrieval(rows);
+      return rows;
+    }
+    const rows = this.db
+      .query<Fact, [string, number, string, number]>(
+        `SELECT f.* FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
+         WHERE facts_fts MATCH ? AND f.trust_score >= ?
+         AND f.scope = ?
+         ORDER BY (-bm25(facts_fts)) * f.trust_score DESC,
+                  f.trust_score DESC, f.fact_id DESC
+         LIMIT ?`,
+      )
+      .all(fts, minTrust, scopeVal, limit);
+    this._bumpRetrieval(rows);
+    return rows;
+  }
 
-    // Interleave params in the correct order.
-    const allParams: unknown[] = [fts, minTrust, ...scopeParams];
-    if (opts.category) allParams.push(opts.category);
-    allParams.push(limit);
-
-    const rows = this.db.query<Fact, unknown[]>(baseSql).all(...allParams);
-
+  /** Bump retrieval_count on matched rows. */
+  private _bumpRetrieval(rows: Fact[]): void {
     if (rows.length > 0) {
       const ids = rows.map((r) => r.fact_id);
       const placeholders = ids.map(() => "?").join(",");
@@ -356,51 +393,70 @@ export class MemoryStore {
         )
         .run(...ids);
     }
-    return rows;
   }
 
   /**
-   * Probe: same shape as `search` but treats the input as an entity name —
-   * we wrap it in a phrase match so multi-word names resolve cleanly.
-   * (v1 is FTS-only; entity table reserved for v2.)
+   * Probe: find facts about an entity using the entity table.
+   * Falls back to FTS phrase match if entity not found.
    */
   probe(entity: string, opts: SearchOptions = {}): Fact[] {
     const trimmed = entity.trim();
     if (!trimmed) return [];
-    const phrase = `"${trimmed.replace(/"/g, " ")}"`;
+    const name = trimmed.toLowerCase();
+
+    // Try entity table first
+    const entityRow = this.db
+      .query<{ entity_id: number }, [string, string]>(
+        "SELECT entity_id FROM entities WHERE LOWER(name) = ? OR (',' || aliases || ',') LIKE ?",
+      )
+      .get(name, `%,${name},%`);
+
+    if (!entityRow) {
+      // Fallback to FTS phrase match
+      const phrase = `"${trimmed.replace(/"/g, " ")}"`;
+      const minTrust = opts.minTrust ?? 0.3;
+      const limit = Math.max(1, opts.limit ?? 10);
+
+      if (opts.category) {
+        return this.db
+          .query<Fact, [string, number, string, string, number]>(
+            `SELECT f.* FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
+             WHERE facts_fts MATCH ? AND f.trust_score >= ? AND f.scope = ? AND f.category = ?
+             ORDER BY f.trust_score DESC, f.fact_id DESC LIMIT ?`,
+          )
+          .all(phrase, minTrust, opts.scope ?? SCOPE_GLOBAL, opts.category, limit) as unknown as Fact[];
+      }
+      return this.db
+        .query<Fact, [string, number, string, number]>(
+          `SELECT f.* FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
+           WHERE facts_fts MATCH ? AND f.trust_score >= ? AND f.scope = ?
+           ORDER BY f.trust_score DESC, f.fact_id DESC LIMIT ?`,
+        )
+        .all(phrase, minTrust, opts.scope ?? SCOPE_GLOBAL, opts.limit ?? 10) as unknown as Fact[];
+    }
+
+    // Use entity table for structural lookup
     const minTrust = opts.minTrust ?? 0.3;
     const limit = Math.max(1, opts.limit ?? 10);
 
-    // Build scope filter.
-    let scopeClause = "";
-    const scopeParams: unknown[] = [];
-
-    if (opts.scope === SCOPE_PROJECT && opts.cwd) {
-      const pKey = projectScopeKey(opts.cwd);
-      scopeClause = `AND (f.scope = ? OR f.scope = ?)`;
-      scopeParams.push(SCOPE_GLOBAL, pKey);
-    } else if (opts.scope === SCOPE_GLOBAL || !opts.scope) {
-      scopeClause = `AND f.scope = ?`;
-      scopeParams.push(SCOPE_GLOBAL);
+    if (opts.category) {
+      return this.db
+        .query<Fact, [number, number, string, string, number]>(
+          `SELECT f.* FROM facts f
+           JOIN fact_entities fe ON fe.fact_id = f.fact_id
+           WHERE fe.entity_id = ? AND f.trust_score >= ? AND f.scope = ? AND f.category = ?
+           ORDER BY f.trust_score DESC, f.fact_id DESC LIMIT ?`,
+        )
+        .all(entityRow.entity_id, minTrust, opts.scope ?? SCOPE_GLOBAL, opts.category, limit) as unknown as Fact[];
     }
-
-    const sql = `
-      SELECT f.*
-        FROM facts_fts m
-        JOIN facts f ON f.fact_id = m.rowid
-       WHERE facts_fts MATCH ?
-         AND f.trust_score >= ?
-         ${scopeClause}
-         ${opts.category ? "AND f.category = ?" : ""}
-       ORDER BY f.trust_score DESC, f.fact_id DESC
-       LIMIT ?
-    `;
-
-    const allParams: unknown[] = [phrase, minTrust, ...scopeParams];
-    if (opts.category) allParams.push(opts.category);
-    allParams.push(limit);
-
-    return this.db.query<Fact, unknown[]>(sql).all(...allParams);
+    return this.db
+      .query<Fact, [number, number, string, number]>(
+        `SELECT f.* FROM facts f
+         JOIN fact_entities fe ON fe.fact_id = f.fact_id
+         WHERE fe.entity_id = ? AND f.trust_score >= ? AND f.scope = ?
+         ORDER BY f.trust_score DESC, f.fact_id DESC LIMIT ?`,
+      )
+      .all(entityRow.entity_id, minTrust, opts.scope ?? SCOPE_GLOBAL, limit) as unknown as Fact[];
   }
 
   count(): number {
@@ -412,6 +468,74 @@ export class MemoryStore {
 
   /** Wipe everything. Used by /memory clear and tests. */
   clear(): void {
+    this.db.exec("DELETE FROM fact_entities");
+    this.db.exec("DELETE FROM entities");
     this.db.exec("DELETE FROM facts");
+  }
+
+  /** Create a FactRetriever bound to this store's database. */
+  retriever(opts?: { ftsWeight?: number; jaccardWeight?: number; tfidfWeight?: number }): FactRetriever {
+    return new FactRetriever(this.db, opts);
+  }
+
+  // ---- entity helpers ----------------------------------------------------
+
+  /** Extract entities from text, resolve/create in DB, link to fact. */
+  private _linkEntities(factId: number, content: string): void {
+    // Remove existing links for this fact
+    this.db.query("DELETE FROM fact_entities WHERE fact_id = ?").run(factId);
+
+    const entityNames = extractEntities(content);
+    for (const name of entityNames) {
+      const entityId = this._resolveEntity(name);
+      this.db
+        .query("INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) VALUES (?, ?)")
+        .run(factId, entityId);
+    }
+  }
+
+  /** Find or create an entity by name (case-insensitive), with alias check. */
+  private _resolveEntity(name: string): number {
+    const lower = name.toLowerCase();
+
+    // Exact name match (case-insensitive)
+    const exact = this.db
+      .query<{ entity_id: number }, [string]>("SELECT entity_id FROM entities WHERE LOWER(name) = ?")
+      .get(lower);
+    if (exact) return exact.entity_id;
+
+    // Alias match
+    const alias = this.db
+      .query<{ entity_id: number }, [string]>("SELECT entity_id FROM entities WHERE (',' || aliases || ',') LIKE ?")
+      .get(`%,${lower},%`);
+    if (alias) return alias.entity_id;
+
+    // Create new entity
+    const row = this.db
+      .query<{ entity_id: number }, [string]>("INSERT INTO entities (name) VALUES (?) RETURNING entity_id")
+      .get(name);
+    return row!.entity_id;
+  }
+
+  // ---- TF-IDF helpers ----------------------------------------------------
+
+  /** Compute and store TF-IDF vector for a fact. */
+  private _computeTfIdf(factId: number, content: string): void {
+    // Get all fact contents for corpus
+    const allFacts = this.db
+      .query<{ content: string }, []>("SELECT content FROM facts")
+      .all() as { content: string }[];
+
+    // Build corpus: tokenize each doc, filter stopwords
+    const corpus = allFacts.map((f) => filterStopwords(tokenize(f.content)));
+    const idf = buildIdfMap(corpus);
+
+    // Compute vector for this fact
+    const tokens = filterStopwords(tokenize(content));
+    const vec = computeTfIdf(tokens, idf);
+
+    this.db
+      .query("UPDATE facts SET tfidf_vector = ? WHERE fact_id = ?")
+      .run(vectorToJson(vec), factId);
   }
 }

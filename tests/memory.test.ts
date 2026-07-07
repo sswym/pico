@@ -258,3 +258,160 @@ test("list with scope filters correctly", () => {
   const globalList = store.list({ limit: 10, scope: "global" });
   expect(globalList.map((f) => f.content)).toEqual(["global thing"]);
 });
+
+// ---- Entity system tests --------------------------------------------------
+
+test("add extracts entities and links them to fact", () => {
+  const id = store.add("Alice Wong manages the Auth Service", { category: "project" });
+  // Probe by entity should find the fact
+  const hits = store.probe("Alice Wong", { minTrust: 0 });
+  expect(hits).toHaveLength(1);
+  expect(hits[0]!.fact_id).toBe(id);
+});
+
+test("entities are extracted from quoted terms and capitalized words", () => {
+  store.add('We use "Redis" for caching and Postgres for storage', { category: "project" });
+  const redisHits = store.probe("Redis", { minTrust: 0 });
+  expect(redisHits).toHaveLength(1);
+  const pgHits = store.probe("Postgres", { minTrust: 0 });
+  expect(pgHits).toHaveLength(1);
+});
+
+test("probe uses entity table not just FTS", () => {
+  // Add a fact where the entity appears
+  store.add("Bob Chen rewrote the billing module", { category: "project" });
+  // Entity table should resolve "Bob Chen" directly
+  const hits = store.probe("Bob Chen", { minTrust: 0 });
+  expect(hits).toHaveLength(1);
+  expect(hits[0]!.content).toContain("Bob Chen");
+});
+
+test("remove cleans up entity links via CASCADE", () => {
+  const id = store.add("Charlie works on the API", { category: "project" });
+  expect(store.probe("Charlie", { minTrust: 0 })).toHaveLength(1);
+  store.remove(id);
+  expect(store.probe("Charlie", { minTrust: 0 })).toHaveLength(0);
+});
+
+test("update re-extracts entities when content changes", () => {
+  const id = store.add("Dave built the frontend", { category: "project" });
+  expect(store.probe("Dave", { minTrust: 0 })).toHaveLength(1);
+  store.update(id, { content: "Eve rebuilt the frontend" });
+  expect(store.probe("Dave", { minTrust: 0 })).toHaveLength(0);
+  expect(store.probe("Eve", { minTrust: 0 })).toHaveLength(1);
+});
+
+// ---- TF-IDF tests ---------------------------------------------------------
+
+test("tfidf_vector is populated after add", () => {
+  const id = store.add("we use TypeScript for all backend services", { category: "project" });
+  const fact = store.get(id)!;
+  expect(fact.tfidf_vector).toBeDefined();
+  expect(fact.tfidf_vector).not.toBe("{}");
+  const vec = JSON.parse(fact.tfidf_vector);
+  expect(vec["typescript"]).toBeGreaterThan(0);
+});
+
+test("tfidf_vector is recomputed on update", () => {
+  const id = store.add("old content about Python", { category: "general" });
+  const before = JSON.parse(store.get(id)!.tfidf_vector);
+  expect(before["python"]).toBeGreaterThan(0);
+
+  store.update(id, { content: "new content about Rust" });
+  const after = JSON.parse(store.get(id)!.tfidf_vector);
+  expect(after["rust"]).toBeGreaterThan(0);
+  // Python should no longer be dominant (it may exist with low weight from corpus)
+});
+
+// ---- FactRetriever tests ---------------------------------------------------
+
+test("FactRetriever.search returns hybrid-scored results", () => {
+  store.add("we use Postgres for production database", { category: "project" });
+  store.add("the project uses Redis caching", { category: "project" });
+  store.add("unrelated fact about weather", { category: "general" });
+
+  const retriever = store.retriever();
+  const results = retriever.search("Postgres database", { minTrust: 0 });
+  expect(results.length).toBeGreaterThanOrEqual(1);
+  expect(results[0]!.content).toContain("Postgres");
+  expect(results[0]!.score).toBeGreaterThan(0);
+});
+
+test("FactRetriever.probe finds entity-linked facts", () => {
+  store.add("Frank designed the architecture", { category: "project" });
+  store.add("Grace implemented the auth module", { category: "project" });
+
+  const retriever = store.retriever();
+  const results = retriever.probe("Frank", { minTrust: 0 });
+  expect(results).toHaveLength(1);
+  expect(results[0]!.content).toContain("Frank");
+});
+
+test("FactRetriever.related finds co-occurring entity facts", () => {
+  store.add("Alice and Bob work on the backend", { category: "project" });
+  store.add("Alice and Charlie do code reviews", { category: "project" });
+  store.add("Dave works alone on docs", { category: "project" });
+
+  const retriever = store.retriever();
+  const results = retriever.related("Alice", { minTrust: 0 });
+  // Should find both facts where Alice co-occurs with other entities
+  expect(results.length).toBe(2);
+  const contents = results.map((r) => r.content);
+  expect(contents.some((c) => c.includes("Bob"))).toBe(true);
+  expect(contents.some((c) => c.includes("Charlie"))).toBe(true);
+});
+
+test("FactRetriever.reason finds facts linked to ALL specified entities", () => {
+  store.add("Alice Wong and the Auth Service team deployed v2", { category: "project" });
+  store.add("Alice Wong wrote documentation", { category: "project" });
+  store.add("Auth Service had a hotfix", { category: "project" });
+
+  const retriever = store.retriever();
+  const results = retriever.reason(["Alice Wong", "Auth Service"], { minTrust: 0 });
+  // Only the first fact mentions both Alice Wong and Auth Service
+  expect(results).toHaveLength(1);
+  expect(results[0]!.content).toContain("Alice Wong");
+  expect(results[0]!.content).toContain("Auth Service");
+});
+
+test("FactRetriever.contradict detects contradictory facts", () => {
+  // Two facts about the same entity with different claims
+  store.add('the "Auth Service" uses webpack for bundling', { category: "project" });
+  store.add('the "Auth Service" uses vite for bundling', { category: "project" });
+
+  const retriever = store.retriever();
+  const contradictions = retriever.contradict({ threshold: 0.1, limit: 10 });
+  expect(contradictions.length).toBeGreaterThanOrEqual(1);
+  expect(contradictions[0]!.shared_entities.length).toBeGreaterThan(0);
+  expect(contradictions[0]!.contradiction_score).toBeGreaterThan(0);
+});
+
+test("FactRetriever.search respects minTrust filter", () => {
+  const id = store.add("low trust fact about Docker", { category: "tool" });
+  store.add("high trust fact about Docker containers", { category: "tool" });
+  // Punish the first fact to lower trust
+  store.feedback(id, false);
+  store.feedback(id, false);
+  store.feedback(id, false);
+
+  const retriever = store.retriever();
+  const highTrustOnly = retriever.search("Docker", { minTrust: 0.4 });
+  expect(highTrustOnly.every((r) => r.trust_score >= 0.4)).toBe(true);
+});
+
+test("store.clear removes entities and entity links", () => {
+  store.add("Helen manages infra", { category: "project" });
+  expect(store.probe("Helen", { minTrust: 0 })).toHaveLength(1);
+  store.clear();
+  expect(store.probe("Helen", { minTrust: 0 })).toHaveLength(0);
+  expect(store.count()).toBe(0);
+});
+
+test("existing probe test still works with entity table", () => {
+  // Re-verify the original probe test works with entity-table-backed probe
+  store.add("Alice Wong manages auth service", { category: "project" });
+  store.add("the project is named Phoenix", { category: "project" });
+  const hits = store.probe("Alice Wong", { minTrust: 0 });
+  expect(hits).toHaveLength(1);
+  expect(hits[0]!.content).toContain("Alice Wong");
+});

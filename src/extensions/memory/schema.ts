@@ -1,13 +1,12 @@
 /**
  * SQLite schema for the srcode memory store.
  *
- * Simplified port of hermes-agent's holographic memory plugin
+ * Ported from hermes-agent's holographic memory plugin
  * (~/hermes-agent/plugins/memory/holographic/store.py:_SCHEMA):
- * - keep `facts` (with category/tags/trust/retrieval bookkeeping)
- * - keep FTS5 mirror with INSERT/DELETE/UPDATE triggers
- * - drop HRR vector + memory_banks (numpy-only path)
- * - drop entities/fact_entities (FTS5 covers entity-as-keyword for v1;
- *   re-add when we need entity disambiguation)
+ * - facts with category/tags/trust/retrieval bookkeeping
+ * - FTS5 mirror with INSERT/DELETE/UPDATE triggers
+ * - entities + fact_entities for entity resolution (probe/related/reason)
+ * - TF-IDF vectors stored as JSON (replaces HRR numpy dependency)
  */
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS facts (
@@ -22,8 +21,23 @@ CREATE TABLE IF NOT EXISTS facts (
   updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS entities (
+  entity_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL,
+  entity_type TEXT NOT NULL DEFAULT 'unknown',
+  aliases     TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS fact_entities (
+  fact_id   INTEGER REFERENCES facts(fact_id) ON DELETE CASCADE,
+  entity_id INTEGER REFERENCES entities(entity_id) ON DELETE CASCADE,
+  PRIMARY KEY (fact_id, entity_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_facts_trust    ON facts(trust_score DESC);
 CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
+CREATE INDEX IF NOT EXISTS idx_entities_name  ON entities(name);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
   USING fts5(content, tags, content=facts, content_rowid=fact_id);
@@ -87,4 +101,5 @@ export const MIGRATIONS = [
   "ALTER TABLE facts ADD COLUMN source TEXT NOT NULL DEFAULT 'auto'",
   "CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope)",
   "CREATE INDEX IF NOT EXISTS idx_facts_correction ON facts(correction_of)",
+  "ALTER TABLE facts ADD COLUMN tfidf_vector TEXT NOT NULL DEFAULT '{}'",
 ];

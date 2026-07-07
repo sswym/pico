@@ -1,0 +1,457 @@
+/**
+ * FactRetriever — hybrid keyword/semantic retrieval for the memory store.
+ *
+ * Ported from hermes-agent's holographic/retrieval.py, replacing HRR vectors
+ * with TF-IDF sparse vectors (pure TS, no numpy dependency).
+ *
+ * Pipeline: FTS5 candidates -> Jaccard rerank -> TF-IDF similarity -> trust weighting
+ */
+import type { Database } from "bun:sqlite";
+import { tokenize, filterStopwords, cosineSimilarity, vectorFromJson, type SparseVector } from "./tfidf.ts";
+
+/** FTS5 stopwords. */
+const FTS_STOPWORDS: Record<string, true> = {
+  "a": true, "about": true, "above": true, "after": true, "again": true,
+  "all": true, "am": true, "an": true, "and": true, "any": true,
+  "are": true, "as": true, "at": true, "be": true, "because": true,
+  "been": true, "before": true, "being": true, "between": true,
+  "both": true, "but": true, "by": true, "can": true, "could": true,
+  "did": true, "do": true, "does": true, "doing": true, "don": true,
+  "down": true, "during": true, "each": true, "few": true, "for": true,
+  "from": true, "further": true, "had": true, "has": true, "have": true,
+  "having": true, "he": true, "her": true, "here": true, "hers": true,
+  "herself": true, "him": true, "himself": true, "his": true, "how": true,
+  "i": true, "if": true, "in": true, "into": true, "is": true, "it": true,
+  "its": true, "itself": true, "just": true, "me": true, "more": true,
+  "most": true, "my": true, "myself": true, "no": true, "nor": true,
+  "not": true, "now": true, "of": true, "off": true, "on": true,
+  "once": true, "only": true, "or": true, "other": true, "our": true,
+  "ours": true, "ourselves": true, "out": true, "over": true, "own": true,
+  "same": true, "she": true, "should": true, "so": true, "some": true,
+  "such": true, "than": true, "that": true, "the": true, "their": true,
+  "theirs": true, "them": true, "themselves": true, "then": true,
+  "there": true, "these": true, "they": true, "this": true, "those": true,
+  "through": true, "to": true, "too": true, "under": true, "until": true,
+  "up": true, "very": true, "was": true, "we": true, "were": true,
+  "what": true, "when": true, "where": true, "which": true, "while": true,
+  "who": true, "whom": true, "why": true, "will": true, "with": true,
+  "would": true, "you": true, "your": true, "yours": true,
+  "yourself": true, "yourselves": true,
+};
+
+/** Convert a natural-language query to FTS5-safe OR expression. */
+export function sanitizeFtsQuery(query: string): string {
+  if (!query) return "";
+  const FTS_SPECIAL = /["'*^:()+\-]/g;
+  const tokens: string[] = [];
+  for (const raw of query.toLowerCase().split(/\s+/)) {
+    const cleaned = raw.replace(/^[.,;:!?'"()[\]{}#@<>]+|[.,;:!?'"()[\]{}#@<>]+$/g, "").replace(FTS_SPECIAL, "");
+    if (cleaned.length < 2) continue;
+    if (FTS_STOPWORDS[cleaned]) continue;
+    tokens.push(`"${cleaned}"`);
+  }
+  if (tokens.length === 0) return query;
+  return tokens.join(" OR ");
+}
+
+/** Whitespace tokenization for Jaccard similarity. */
+function jaccardTokens(text: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const word of text.toLowerCase().split(/\s+/)) {
+    const cleaned = word.replace(/^[.,;:!?'"()[\]{}#@<>]+|[.,;:!?'"()[\]{}#@<>]+$/g, "");
+    if (cleaned) tokens.add(cleaned);
+  }
+  return tokens;
+}
+
+/** Jaccard similarity: |A ∩ B| / |A ∪ B|. */
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  const [smaller, larger] = a.size <= b.size ? [a, b] : [b, a];
+  for (const item of smaller) {
+    if (larger.has(item)) intersection++;
+  }
+  const union = a.size + b.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+/** Result row from the facts table. */
+export interface FactRow {
+  fact_id: number;
+  content: string;
+  category: string;
+  tags: string;
+  trust_score: number;
+  retrieval_count: number;
+  helpful_count: number;
+  created_at: string;
+  updated_at: string;
+  scope: string;
+  correction_of: number | null;
+  source: string;
+  tfidf_vector: string;
+  fts_rank?: number;
+}
+
+/** Scored result with combined relevance score. */
+export interface ScoredFact extends FactRow {
+  score: number;
+}
+
+/** Contradiction pair result. */
+export interface ContradictionResult {
+  fact_a: FactRow;
+  fact_b: FactRow;
+  entity_overlap: number;
+  content_similarity: number;
+  contradiction_score: number;
+  shared_entities: string[];
+}
+
+export interface RetrieverOptions {
+  ftsWeight?: number;
+  jaccardWeight?: number;
+  tfidfWeight?: number;
+}
+
+export class FactRetriever {
+  private readonly db: Database;
+  readonly ftsWeight: number;
+  readonly jaccardWeight: number;
+  readonly tfidfWeight: number;
+
+  constructor(db: Database, opts: RetrieverOptions = {}) {
+    this.db = db;
+    this.ftsWeight = opts.ftsWeight ?? 0.4;
+    this.jaccardWeight = opts.jaccardWeight ?? 0.3;
+    this.tfidfWeight = opts.tfidfWeight ?? 0.3;
+  }
+
+  /**
+   * Hybrid search: FTS5 candidates -> Jaccard rerank -> TF-IDF similarity -> trust weighting.
+   */
+  search(query: string, opts: { category?: string; minTrust?: number; limit?: number } = {}): ScoredFact[] {
+    const minTrust = opts.minTrust ?? 0.3;
+    const limit = Math.max(1, opts.limit ?? 10);
+
+    const candidates = this.ftsCandidates(query, opts.category, minTrust, limit * 3);
+    if (candidates.length === 0) return [];
+
+    const queryTokens = jaccardTokens(query);
+    const idfAvailable = candidates.some((c) => c.tfidf_vector && c.tfidf_vector !== "{}");
+
+    const scored: ScoredFact[] = [];
+    for (const fact of candidates) {
+      const contentTokens = jaccardTokens(fact.content);
+      const tagTokens = jaccardTokens(fact.tags);
+      const allTokens = new Set([...contentTokens, ...tagTokens]);
+
+      const jac = jaccardSimilarity(queryTokens, allTokens);
+      const ftsRank = fact.fts_rank ?? 0;
+
+      let tfidfSim = 0.5;
+      if (idfAvailable && fact.tfidf_vector && fact.tfidf_vector !== "{}") {
+        const factVec = vectorFromJson(fact.tfidf_vector);
+        const queryTerms = filterStopwords(tokenize(query));
+        const qVec: SparseVector = {};
+        for (const t of queryTerms) {
+          qVec[t] = (qVec[t] ?? 0) + 1 / queryTerms.length;
+        }
+        tfidfSim = cosineSimilarity(qVec, factVec);
+      }
+
+      const relevance =
+        this.ftsWeight * ftsRank +
+        this.jaccardWeight * jac +
+        this.tfidfWeight * tfidfSim;
+
+      scored.push({ ...fact, score: relevance * fact.trust_score });
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, limit);
+  }
+
+  /**
+   * Entity probe: find facts linked to a specific entity.
+   */
+  probe(entity: string, opts: { category?: string; minTrust?: number; limit?: number } = {}): ScoredFact[] {
+    const minTrust = opts.minTrust ?? 0.3;
+    const limit = Math.max(1, opts.limit ?? 10);
+    const name = entity.trim().toLowerCase();
+    if (!name) return [];
+
+    const entityRow = this.db
+      .query<{ entity_id: number }, [string, string]>(
+        "SELECT entity_id FROM entities WHERE LOWER(name) = ? OR (',' || aliases || ',') LIKE ?",
+      )
+      .get(name, `%,${name},%`);
+
+    if (!entityRow) return this.search(`"${entity}"`, opts);
+
+    const categoryClause = opts.category ? "AND f.category = ?" : "";
+    const params: [number, number, ...string[], number] = opts.category
+      ? [entityRow.entity_id, minTrust, opts.category, limit] as unknown as [number, number, ...string[], number]
+      : [entityRow.entity_id, minTrust, limit] as unknown as [number, number, ...string[], number];
+
+    // Build parameterized query
+    if (opts.category) {
+      const rows = this.db
+        .query<FactRow, [number, number, string, number]>(
+          `SELECT f.* FROM facts f
+           JOIN fact_entities fe ON fe.fact_id = f.fact_id
+           WHERE fe.entity_id = ? AND f.trust_score >= ? AND f.category = ?
+           ORDER BY f.trust_score DESC, f.fact_id DESC
+           LIMIT ?`,
+        )
+        .all(entityRow.entity_id, minTrust, opts.category, limit) as FactRow[];
+      return rows.map((r) => ({ ...r, score: r.trust_score }));
+    }
+
+    const rows = this.db
+      .query<FactRow, [number, number, number]>(
+        `SELECT f.* FROM facts f
+         JOIN fact_entities fe ON fe.fact_id = f.fact_id
+         WHERE fe.entity_id = ? AND f.trust_score >= ?
+         ORDER BY f.trust_score DESC, f.fact_id DESC
+         LIMIT ?`,
+      )
+      .all(entityRow.entity_id, minTrust, limit) as FactRow[];
+    return rows.map((r) => ({ ...r, score: r.trust_score }));
+  }
+
+  /**
+   * Related: find facts that share entities with the given entity.
+   */
+  related(entity: string, opts: { category?: string; minTrust?: number; limit?: number } = {}): ScoredFact[] {
+    const minTrust = opts.minTrust ?? 0.3;
+    const limit = Math.max(1, opts.limit ?? 10);
+    const name = entity.trim().toLowerCase();
+    if (!name) return [];
+
+    const entityRow = this.db
+      .query<{ entity_id: number }, [string, string]>(
+        "SELECT entity_id FROM entities WHERE LOWER(name) = ? OR (',' || aliases || ',') LIKE ?",
+      )
+      .get(name, `%,${name},%`);
+
+    if (!entityRow) return this.search(entity, opts);
+
+    if (opts.category) {
+      const rows = this.db
+        .query<FactRow & { co_occurrence: number }, [number, number, number, string, number]>(
+          `SELECT f3.*, COUNT(DISTINCT fe2.entity_id) as co_occurrence
+           FROM fact_entities fe1
+           JOIN fact_entities fe2 ON fe2.entity_id = fe1.entity_id AND fe2.fact_id != fe1.fact_id
+           JOIN facts f3 ON f3.fact_id = fe2.fact_id
+           WHERE fe1.entity_id = ? AND f3.trust_score >= ? AND fe1.entity_id != ? AND f3.category = ?
+           GROUP BY f3.fact_id
+           ORDER BY co_occurrence DESC, f3.trust_score DESC
+           LIMIT ?`,
+        )
+        .all(entityRow.entity_id, minTrust, entityRow.entity_id, opts.category, limit) as (FactRow & { co_occurrence: number })[];
+      return rows.map((r) => ({ ...r, score: (r.co_occurrence * 0.5) + (r.trust_score * 0.5) }));
+    }
+
+    const rows = this.db
+      .query<FactRow & { co_occurrence: number }, [number, number, number, number]>(
+        `SELECT f3.*, COUNT(DISTINCT fe2.entity_id) as co_occurrence
+         FROM fact_entities fe1
+         JOIN fact_entities fe2 ON fe2.entity_id = fe1.entity_id AND fe2.fact_id != fe1.fact_id
+         JOIN facts f3 ON f3.fact_id = fe2.fact_id
+         WHERE fe1.entity_id = ? AND f3.trust_score >= ? AND fe1.entity_id != ?
+         GROUP BY f3.fact_id
+         ORDER BY co_occurrence DESC, f3.trust_score DESC
+         LIMIT ?`,
+      )
+      .all(entityRow.entity_id, minTrust, entityRow.entity_id, limit) as (FactRow & { co_occurrence: number })[];
+    return rows.map((r) => ({ ...r, score: (r.co_occurrence * 0.5) + (r.trust_score * 0.5) }));
+  }
+
+  /**
+   * Reason: multi-entity compositional query.
+   * Finds facts linked to ALL given entities (AND semantics).
+   */
+  reason(entities: string[], opts: { category?: string; minTrust?: number; limit?: number } = {}): ScoredFact[] {
+    if (entities.length === 0) return [];
+    const minTrust = opts.minTrust ?? 0.3;
+    const limit = Math.max(1, opts.limit ?? 10);
+
+    // Resolve entity IDs
+    const entityIds: number[] = [];
+    for (const name of entities) {
+      const row = this.db
+        .query<{ entity_id: number }, [string, string]>(
+          "SELECT entity_id FROM entities WHERE LOWER(name) = ? OR (',' || aliases || ',') LIKE ?",
+        )
+        .get(name.trim().toLowerCase(), `%,${name.trim().toLowerCase()},%`);
+      if (row) entityIds.push(row.entity_id);
+    }
+
+    if (entityIds.length === 0) return this.search(entities.join(" "), opts);
+
+    // Build IN clause
+    const placeholders = entityIds.map(() => "?").join(",");
+
+    if (opts.category) {
+      const rows = this.db
+        .query<FactRow, [...number[], string, number, number, number]>(
+          `SELECT f.* FROM facts f
+           JOIN fact_entities fe ON fe.fact_id = f.fact_id
+           WHERE fe.entity_id IN (${placeholders}) AND f.category = ?
+           GROUP BY f.fact_id
+           HAVING COUNT(DISTINCT fe.entity_id) = ?
+           AND f.trust_score >= ?
+           ORDER BY f.trust_score DESC
+           LIMIT ?`,
+        )
+        .all(...entityIds, opts.category, entityIds.length, minTrust, limit) as FactRow[];
+      return rows.map((r) => ({ ...r, score: r.trust_score }));
+    }
+
+    const rows = this.db
+      .query<FactRow, [...number[], number, number, number]>(
+        `SELECT f.* FROM facts f
+         JOIN fact_entities fe ON fe.fact_id = f.fact_id
+         WHERE fe.entity_id IN (${placeholders})
+         GROUP BY f.fact_id
+         HAVING COUNT(DISTINCT fe.entity_id) = ?
+         AND f.trust_score >= ?
+         ORDER BY f.trust_score DESC
+         LIMIT ?`,
+      )
+      .all(...entityIds, entityIds.length, minTrust, limit) as FactRow[];
+    return rows.map((r) => ({ ...r, score: r.trust_score }));
+  }
+
+  /**
+   * Contradict: find potentially contradictory facts via entity overlap + content divergence.
+   */
+  contradict(opts: { category?: string; threshold?: number; limit?: number } = {}): ContradictionResult[] {
+    const threshold = opts.threshold ?? 0.3;
+    const limit = opts.limit ?? 10;
+    const MAX_FACTS = 500;
+
+    let rows: FactRow[];
+    if (opts.category) {
+      rows = this.db
+        .query<FactRow, [string, number]>(
+          `SELECT DISTINCT f.* FROM facts f
+           JOIN fact_entities fe ON fe.fact_id = f.fact_id
+           WHERE f.category = ?
+           ORDER BY f.updated_at DESC
+           LIMIT ?`,
+        )
+        .all(opts.category, MAX_FACTS) as FactRow[];
+    } else {
+      rows = this.db
+        .query<FactRow, [number]>(
+          `SELECT DISTINCT f.* FROM facts f
+           JOIN fact_entities fe ON fe.fact_id = f.fact_id
+           ORDER BY f.updated_at DESC
+           LIMIT ?`,
+        )
+        .all(MAX_FACTS) as FactRow[];
+    }
+
+    if (rows.length < 2) return [];
+
+    // Build entity sets per fact
+    const factEntities = new Map<number, Set<string>>();
+    for (const row of rows) {
+      const entityRows = this.db
+        .query<{ name: string }, [number]>(
+          `SELECT e.name FROM entities e
+           JOIN fact_entities fe ON fe.entity_id = e.entity_id
+           WHERE fe.fact_id = ?`,
+        )
+        .all(row.fact_id) as { name: string }[];
+      factEntities.set(row.fact_id, new Set(entityRows.map((e) => e.name.toLowerCase())));
+    }
+
+    const contradictions: ContradictionResult[] = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      for (let j = i + 1; j < rows.length; j++) {
+        const f1 = rows[i]!;
+        const f2 = rows[j]!;
+        const ents1 = factEntities.get(f1.fact_id)!;
+        const ents2 = factEntities.get(f2.fact_id)!;
+
+        if (ents1.size === 0 || ents2.size === 0) continue;
+
+        const entityOverlap = jaccardSimilarity(ents1, ents2);
+        if (entityOverlap < 0.3) continue;
+
+        const contentSim = jaccardSimilarity(jaccardTokens(f1.content), jaccardTokens(f2.content));
+        const contradictionScore = entityOverlap * (1.0 - contentSim);
+
+        if (contradictionScore >= threshold) {
+          const shared = [...ents1].filter((e) => ents2.has(e));
+          contradictions.push({
+            fact_a: f1,
+            fact_b: f2,
+            entity_overlap: Math.round(entityOverlap * 1000) / 1000,
+            content_similarity: Math.round(contentSim * 1000) / 1000,
+            contradiction_score: Math.round(contradictionScore * 1000) / 1000,
+            shared_entities: shared,
+          });
+        }
+      }
+    }
+
+    contradictions.sort((a, b) => b.contradiction_score - a.contradiction_score);
+    return contradictions.slice(0, limit);
+  }
+
+  /** Get raw FTS5 candidates from the store. */
+  private ftsCandidates(query: string, category: string | undefined, minTrust: number, limit: number): FactRow[] {
+    const matchQuery = sanitizeFtsQuery(query);
+    if (!matchQuery) return [];
+
+    try {
+      if (category) {
+        const rows = this.db
+          .query<FactRow & { fts_rank_raw: number }, [string, number, string, number]>(
+            `SELECT f.*, facts_fts.rank as fts_rank_raw
+             FROM facts_fts
+             JOIN facts f ON f.fact_id = facts_fts.rowid
+             WHERE facts_fts MATCH ? AND f.trust_score >= ? AND f.category = ?
+             ORDER BY facts_fts.rank
+             LIMIT ?`,
+          )
+          .all(matchQuery, minTrust, category, limit) as (FactRow & { fts_rank_raw: number })[];
+
+        if (rows.length === 0) return [];
+        const rawRanks = rows.map((r) => Math.abs(r.fts_rank_raw));
+        const maxRank = Math.max(...rawRanks, 1e-6);
+        return rows.map((r) => {
+          const { fts_rank_raw: _, ...rest } = r;
+          return { ...rest, fts_rank: Math.abs(r.fts_rank_raw) / maxRank };
+        });
+      }
+
+      const rows = this.db
+        .query<FactRow & { fts_rank_raw: number }, [string, number, number]>(
+          `SELECT f.*, facts_fts.rank as fts_rank_raw
+           FROM facts_fts
+           JOIN facts f ON f.fact_id = facts_fts.rowid
+           WHERE facts_fts MATCH ? AND f.trust_score >= ?
+           ORDER BY facts_fts.rank
+           LIMIT ?`,
+        )
+        .all(matchQuery, minTrust, limit) as (FactRow & { fts_rank_raw: number })[];
+
+      if (rows.length === 0) return [];
+      const rawRanks = rows.map((r) => Math.abs(r.fts_rank_raw));
+      const maxRank = Math.max(...rawRanks, 1e-6);
+      return rows.map((r) => {
+        const { fts_rank_raw: _, ...rest } = r;
+        return { ...rest, fts_rank: Math.abs(r.fts_rank_raw) / maxRank };
+      });
+    } catch {
+      return [];
+    }
+  }
+}
