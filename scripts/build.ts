@@ -122,7 +122,7 @@ function generateEmbeddedAssets() {
   const entries: Array<{ key: string; value: string; binary?: boolean }> = [];
 
   // 1. srcode agents
-  const agentsDir = resolve(ROOT, "src", "extensions", "subagent", "agents");
+  const agentsDir = resolve(ROOT, "src", "prompts", "agents");
   if (existsSync(agentsDir)) {
     for (const f of readdirSync(agentsDir, { withFileTypes: true })) {
       if (f.isFile() && f.name.endsWith(".md")) {

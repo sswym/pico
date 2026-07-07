@@ -71,7 +71,7 @@ function resolveBuiltinAgentsDir(): string {
 	if (isBunBinary) {
 		return path.join(path.dirname(process.execPath), "agents");
 	}
-	return path.join(path.dirname(fileURLToPath(url)), "agents");
+	return path.join(path.dirname(fileURLToPath(url)), "..", "..", "prompts", "agents");
 }
 
 /**
