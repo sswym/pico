@@ -12,8 +12,8 @@
  *   - Local binary resolution (node_modules/.bin, .venv/bin, etc.)
  *   - Multi-server routing (one file → multiple servers)
  */
-import { existsSync, readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join, dirname, extname } from "node:path";
 import { homedir } from "node:os";
 import defaultServers from "./defaults.json" with { type: "json" };
 
@@ -219,5 +219,27 @@ export function detectServers(config: LspConfig, workspaceRoot: string): Array<[
       result.push([name, serverConfig]);
     }
   }
+  // Sort by how many matching source files exist in the project.
+  // Ensures language-specific servers (basedpyright for .py) rank higher than
+  // generic ones (vscode-html-language-server) when the project has actual source files.
+  const SKIP = new Set(["node_modules", ".git", "build", "dist", "target", ".next", "__pycache__", ".venv"]);
+  function countFiles(dir: string, exts: Set<string>, depth: number): number {
+    if (depth > 2) return 0;
+    let count = 0;
+    try {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isFile() && exts.has(extname(entry.name))) count++;
+        else if (entry.isDirectory() && !SKIP.has(entry.name) && !entry.name.startsWith(".")) {
+          count += countFiles(join(dir, entry.name), exts, depth + 1);
+        }
+      }
+    } catch {}
+    return count;
+  }
+  result.sort(([, a], [, b]) => {
+    const extsA = new Set(a.fileTypes.map(e => e.startsWith(".") ? e : `.${e}`));
+    const extsB = new Set(b.fileTypes.map(e => e.startsWith(".") ? e : `.${e}`));
+    return countFiles(workspaceRoot, extsB, 0) - countFiles(workspaceRoot, extsA, 0);
+  });
   return result;
 }

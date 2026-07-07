@@ -523,25 +523,38 @@ function guessLanguageId(filePath: string): string {
  */
 function prewarmProject(managed: ManagedServer, workspaceRoot: string): void {
   const exts = new Set((managed.client.config.extensions ?? []).map(e => e.startsWith(".") ? e : `.${e}`));
-  const dirs = [workspaceRoot, join(workspaceRoot, "src")];
-  for (const dir of dirs) {
+  const SKIP = new Set(["node_modules", ".git", "build", "dist", "target", ".next", "__pycache__"]);
+  const MAX_DEPTH = 3;
+
+  function scan(dir: string, depth: number): boolean {
+    if (depth > MAX_DEPTH) return false;
     try {
       const entries = readdirSync(dir, { withFileTypes: true });
+      // Process files first, then directories
       for (const entry of entries) {
-        if (!entry.isFile()) continue;
-        const ext = extname(entry.name);
-        if (!exts.has(ext)) continue;
-        const absPath = join(dir, entry.name);
-        try {
-          const text = readFileSync(absPath, "utf8");
-          const langId = ext.slice(1);
-          managed.client.ensureOpen(absPath, text, langId);
-          managed.openDocuments.set(absPath, { uri: `file://${absPath}`, languageId: langId });
-          return;
-        } catch {}
+        if (entry.isFile()) {
+          const ext = extname(entry.name);
+          if (!exts.has(ext)) continue;
+          const absPath = join(dir, entry.name);
+          try {
+            const text = readFileSync(absPath, "utf8");
+            const langId = ext.slice(1);
+            managed.client.ensureOpen(absPath, text, langId);
+            managed.openDocuments.set(absPath, { uri: `file://${absPath}`, languageId: langId });
+            return true;
+          } catch {}
+        }
+      }
+      for (const entry of entries) {
+        if (entry.isDirectory() && !SKIP.has(entry.name) && !entry.name.startsWith(".")) {
+          if (scan(join(dir, entry.name), depth + 1)) return true;
+        }
       }
     } catch {}
+    return false;
   }
+
+  scan(workspaceRoot, 0);
 }
 
 // Backwards-compatible re-export for index.ts

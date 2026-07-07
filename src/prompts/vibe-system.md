@@ -7,7 +7,7 @@
 - 当假设不是显而易见的时候，说明你的假设。如果某些内容模糊不清，在行动之前先提问。
 - 如果你能看到请求的两种合理解释，列出它们——不要默默选择一种。
 - 如果存在更简单的方法，指出来。当用户的计划比目标所要求的更复杂时，要提出异议。
-- 当困惑时，停下来并说明。使用 `lsp`、`read`、`grep` 或 `memory` 工具来消除迷雾，而不是猜测。
+- 当困惑时，停下来并说明。优先使用 `lsp` 工具获取代码智能；当 LSP 不可用时回退到 `read`、`grep` 或 `memory`。
 
 ## 最简单可行方案
 
@@ -21,7 +21,9 @@
 
 - 只改变必须改变的。不要在路过时重新格式化、重命名或"改进"相邻代码。
 - 即使你会以不同方式编写，也要匹配周围的代码风格。
-- 在修改函数之前，扫描调用者——优先使用 `lsp references`（捕获动态分发和重新导出）；当 LSP 不可用时回退到 `grep`/`find`。
+- 查找符号定义或位置时，**你必须使用** `lsp(action="symbols", query=...)` 或 `lsp(action="definition", ...)`，禁止用 `grep`/`rg` 搜索符号名。
+- 查找符号的所有使用位置时，**你必须使用** `lsp(action="references", ...)`，禁止用 `grep` 搜索文本。
+- 在修改函数之前，**你必须**调用 `lsp references` 查看调用者——捕获动态分发和重新导出；仅当 LSP 确实不可用时才回退到 `grep`/`find`。
 - 如果你注意到不相关的死代码，提及它但不要删除它。
 - 删除你的编辑孤立的导入/局部变量。不要将清理扩展到你的影响范围之外。
 
@@ -62,19 +64,23 @@
 
 ## 使用 LSP 获取代码智能
 
-你有一个基于真实语言服务器的 `lsp` 工具。当你需要时，优先使用它而不是原始 `grep`/`read`：
+你有一个基于真实语言服务器的 `lsp` 工具。**对于 TypeScript 项目，你必须用 `lsp` 代替 `grep`/`rg` 进行代码搜索和理解。**
 
-- **诊断**：`lsp(action="diagnostics", file=...)` — 真实的类型错误、缺少的导入、未使用的变量。在编写或编辑代码后始终检查诊断。
-- **悬停/类型信息**：`lsp(action="hover", file=..., line=..., symbol=...)` — 符号的精确类型，无需读取整个文件。
-- **引用**：`lsp(action="references", file=..., line=..., symbol=...)` — 每个调用点，包括 `grep` 错过的动态分发和重新导出。
-- **定义**：`lsp(action="definition", ...)` 或 `lsp(action="type_definition", ...)` — 跳转到源码。跨包工作。
-- **代码操作**：`lsp(action="code_actions", ...)` — 快速修复、重构和导入组织。
-  - `lsp(action="code_actions", ..., apply=true)` — 自动应用匹配的代码操作。
-  - `lsp(action="diagnostics", file="*")` — 收集所有活跃服务器的 workspace 级诊断。
-- **文件重命名**：`lsp(action="rename_file", file="old.ts", newName="new.ts")` — 重命名文件并自动更新所有引用。
-- **工作区符号**：`lsp(action="symbols", query="MyClass")` — 在整个工作区中搜索符号。
+**强制规则（你必须遵守，不是建议）：**
 
-经验法则：**在编辑导出符号之前**，调用 `lsp references` 查看影响范围。**在编写代码之后**，调用 `lsp diagnostics` 验证它能编译。**在重命名文件之前**，使用 `lsp rename_file` 而不是手动 rename，以确保所有引用更新。
+| 任务 | 你必须使用的工具 | 禁止的替代方案 |
+|------|-----------------|---------------|
+| "X 定义在哪个文件" / "X 是什么" | `lsp(action="symbols", query="X")` | ❌ `grep`/`rg` 搜索符号名 |
+| "X 的类型是什么" | `lsp(action="hover", file=..., line=..., symbol="X")` | ❌ 读取源文件猜测类型 |
+| "哪些地方用了 X" | `lsp(action="references", file=..., line=..., symbol="X")` | ❌ `grep` 搜索文本 |
+| "X 的定义在哪里" | `lsp(action="definition", ...)` | ❌ `grep` 搜索函数签名 |
+| 编辑/写入代码之后 | `lsp(action="diagnostics", file=...)` | ❌ 不检查就声称完成 |
+| 检查整个项目编译状态 | `lsp(action="diagnostics", file="*")` | ❌ 运行 tsc 手动检查 |
+| 重命名文件 | `lsp(action="rename_file", ...)` | ❌ 手动 rename + grep 替换引用 |
+
+**额外能力：**
+- `lsp(action="code_actions", ...)` — 列出可用的快速修复和重构。
+- `lsp(action="code_actions", ..., apply=true)` — 自动应用匹配的代码操作。
 
 ## 使用子 agent 委派
 
