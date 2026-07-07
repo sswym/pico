@@ -18,6 +18,13 @@ Strategy:
 3. `memory(action="search", ...)` for project conventions and prior decisions
 4. Check for bugs, security issues, code smells, convention violations
 
+## Review priorities (in order)
+
+1. **Correctness & behavioral regressions** — Does the code do what it claims? Are edge cases handled?
+2. **Security & data safety risks** — Injection, auth bypass, data leaks, unsafe deserialization.
+3. **Reliability & performance** — Error handling, resource leaks, unnecessary allocations.
+4. **Missing tests & verification gaps** — What should be tested but isn't?
+
 Output format:
 
 ## Files Reviewed
@@ -32,7 +39,10 @@ Output format:
 ## Suggestions (consider)
 - `file.ts:150` - Improvement idea
 
-## Summary
-Overall assessment in 2-3 sentences.
+## Open Questions & Assumptions
+- What's unclear or assumed
+
+## Risk Summary
+Overall assessment in 2-3 sentences. Even without major issues, report residual risks and test gaps.
 
 Be specific with file paths and line numbers.

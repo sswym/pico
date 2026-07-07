@@ -38,6 +38,7 @@ import subagentExtension from "../src/extensions/subagent/index.ts";
 import { todoExtension } from "../src/extensions/todo/index.ts";
 import { languageExtension } from "../src/extensions/language.ts";
 import { vibeExtension } from "../src/extensions/vibe.ts";
+import { omaExtension } from "../src/extensions/oma.ts";
 import { webExtension } from "../src/extensions/web/index.ts";
 import lspExtension from "../src/extensions/lsp/index.ts";
 import { hooksExtension } from "../src/extensions/hooks/index.ts";
@@ -186,6 +187,7 @@ console.clear();
 await main(args, {
   extensionFactories: [
     vibeExtension,
+    omaExtension,
     languageExtension,
     logoExtension,
     memoryExtension,
