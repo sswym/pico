@@ -16,8 +16,18 @@ import {
   type UpdateOptions,
   type ScoredFact,
   type ContradictionResult,
+  type MemoryWriteMetadata,
   WriteQueue,
 } from "./provider.ts";
+
+/** Keywords that must never be persisted to memory (comma-separated env). */
+function denyKeywords(): string[] {
+  const raw = process.env.SRCODE_MEMORY_DENY ?? "";
+  return raw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
 
 function toFact(sf: StoreFact): Fact {
   return sf as unknown as Fact;
@@ -107,6 +117,22 @@ export class BuiltinMemoryProvider implements MemoryProvider {
     return this.store.remove(factId);
   }
 
+  /**
+   * Write gate: refuses to persist content matching SRCODE_MEMORY_DENY
+   * keywords. External providers can override this for richer policy.
+   * Returns void (allow) when no deny list is configured.
+   */
+  onBeforeWrite(metadata: MemoryWriteMetadata): { ok: boolean; reason?: string } | void {
+    const deny = denyKeywords();
+    if (deny.length === 0) return;
+    const text = (metadata.content ?? "").toLowerCase();
+    const hit = deny.find((kw) => text.includes(kw));
+    if (hit) {
+      return { ok: false, reason: `memory write denied: contains blocked keyword '${hit}'` };
+    }
+    return;
+  }
+
   feedback(factId: number, helpful: boolean): Fact | null {
     const f = this.store.feedback(factId, helpful);
     return f ? toFact(f) : null;
@@ -167,7 +193,7 @@ export class BuiltinMemoryProvider implements MemoryProvider {
       limit: opts.limit,
     }).map(toScoredFact);
   }
-
+  
   contradict(opts: { category?: string; limit?: number } = {}): ContradictionResult[] {
     this._renewRetriever();
     return this.retriever.contradict({

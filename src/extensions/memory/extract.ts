@@ -21,11 +21,17 @@ const PREF_PATTERNS = [
   /\bI\s+(?:prefer|like|love|use|want|need)\b/i,
   /\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\b/i,
   /\bI\s+(?:always|never|usually)\b/i,
+  // 中文：偏好/习惯陈述
+  /(?:我|咱们)\s*(?:更喜欢|偏好|习惯用|爱用|只用|倾向用|喜欢用)\s*.+/,
+  /(?:我|咱们)\s*(?:总是|从不|通常|一般)\s*.+/,
 ];
 
 const DECISION_PATTERNS = [
   /\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?/i,
   /\bthe\s+project\s+(?:uses|needs|requires)\b/i,
+  // 中文：项目决策/约定
+  /(?:我们|团队|项目)\s*(?:决定|约定|选定|确定|选择)\s*.+/,
+  /(?:这个项目|本仓库|代码库)\s*(?:使用|采用|需要|依赖|要求)\s*.+/,
 ];
 
 /** Patterns that indicate the user is correcting the agent. */
@@ -36,6 +42,11 @@ export const CORRECTION_PATTERNS = [
   /\bI\s+(?:said|meant)\s+/i,
   /\bwrong[.!]?\s+(?:it(?:'s| is)|that(?:'s| is))\s+(?:should be|supposed to be)\b/i,
   /\b(?:fix|correct)\s+(?:that|this|it)\b/i,
+  // 中文：纠错/纠正
+  /(?:不对|错了|搞错了|说错了|理解错了)[,.]?\s*.+/,
+  /(?:实际上|其实|准确地说|更正一下)[,.]?\s*(?:我|我们|应该|要用|是)\s*.+/,
+  /(?:之前|刚才|上面)\s*(?:说|写|记|说的)\s*(?:不对|错了|有误)/,
+  /(?:不要用|别用|别写|别加|去掉)\s*\S+\s*(?:了|吧)?[,，]?\s*(?:改[成用]|用|换成)\s*.+/,
 ];
 
 /** Patterns that capture learnings from experience. */
@@ -43,6 +54,10 @@ const INSIGHT_PATTERNS = [
   /\b(?:note|remember|keep in mind)\s+that\s*[:.]?\s/i,
   /\b(?:insight|lesson|takeaway)\s*:/i,
   /\b(?:this\s+)?(?:always|never)\s+(?:fails|happens|works)\s+(?:because|when|if)\b/i,
+  // 中文：经验/教训
+  /(?:记住|留意|注意|切记)\s*[:：]?\s*.+/,
+  /(?:经验|教训|心得)\s*[:：]/,
+  /(?:总是|从来|一般)\s*(?:失败|出错|有效|好用)\s*(?:因为|当|如果)/,
 ];
 
 /** Patterns that indicate something didn't work. */
@@ -50,6 +65,9 @@ const FAILURE_PATTERNS = [
   /\b(?:that\s+)?(?:didn't|doesn't|won't)\s+work\b/i,
   /\b(?:error|failure|bug)\s*:\s*.+\b/i,
   /\b(?:crash\w*|timeout|hang)\s+(?:when|if|on)\b/i,
+  // 中文：失败/报错（独立成词即可，不强制后接特定字）
+  /(?:报错|崩溃|挂了|超时了|不工作|没生效|跑不起来|出错了)\s*(?:了|因为|当|在)?/,
+  /(?:错误|异常|bug)\s*[:：]/,
 ];
 
 /** Patterns that indicate project conventions. */
@@ -57,6 +75,10 @@ const CONVENTION_PATTERNS = [
   /\b(?:we\s+)?(?:always|never|must|should)\s+(?:use|follow|write)\s+/i,
   /\bour\s+(?:convention|standard|style|pattern)\s+(?:is|for)\b/i,
   /\b(?:by convention|as a rule|as standard)\b/i,
+  // 中文：规范/约定
+  /(?:我们|团队|项目|仓库)\s*(?:总是|从不|必须|应该|一律)\s*(?:用|遵循|写|采用)/,
+  /(?:我们的)?\s*(?:规范|标准|风格|约定|规矩)\s*(?:是|为|要求)/,
+  /(?:按规范|按惯例|按标准|作为规范)/,
 ];
 
 /** Patterns that capture tool-specific quirks or gotchas. */
@@ -65,6 +87,10 @@ const TOOL_QUIRK_PATTERNS = [
   /\b(?:quirk|gotcha|caveat|limitation)\s*:/i,
   /\b(?:doesn't|don't|won't|can't)\s+support\s+/i,
   /\b(?:this|the|that)\s+\w+\s+(?:doesn't|don't|won't)\s+support\b/i,
+  // 中文：工具怪癖/限制
+  /\S+\s*(?:在|对于|上)\s*\S*\s*(?:表现|行为|处理方式)\s*(?:不同|奇怪|异常|不一致)/,
+  /(?:坑|怪癖|限制|注意点|陷阱)\s*[:：]/,
+  /\S+\s*(?:不支持|没法|无法|不能)\s*(?:做|处理|用|运行|解析)/,
 ];
 
 // ---- Message helpers -----------------------------------------------------
@@ -113,13 +139,13 @@ export function autoExtractFromMessages(
     if (text.length < 10) continue;
 
     let category: Category | undefined;
-    if (CORRECTION_PATTERNS.some((p) => p.test(text)))        category = "correction";
-    else if (FAILURE_PATTERNS.some((p) => p.test(text)))      category = "failure";
-    else if (INSIGHT_PATTERNS.some((p) => p.test(text)))      category = "insight";
-    else if (PREF_PATTERNS.some((p) => p.test(text)))         category = "user_pref";
-    else if (CONVENTION_PATTERNS.some((p) => p.test(text)))   category = "convention";
-    else if (TOOL_QUIRK_PATTERNS.some((p) => p.test(text)))   category = "tool_quirk";
-    else if (DECISION_PATTERNS.some((p) => p.test(text)))     category = "project";
+    if (CORRECTION_PATTERNS.some((p) => p.test(text))) category = "correction";
+    else if (FAILURE_PATTERNS.some((p) => p.test(text))) category = "failure";
+    else if (INSIGHT_PATTERNS.some((p) => p.test(text))) category = "insight";
+    else if (PREF_PATTERNS.some((p) => p.test(text))) category = "user_pref";
+    else if (CONVENTION_PATTERNS.some((p) => p.test(text))) category = "convention";
+    else if (TOOL_QUIRK_PATTERNS.some((p) => p.test(text))) category = "tool_quirk";
+    else if (DECISION_PATTERNS.some((p) => p.test(text))) category = "project";
     if (!category) continue;
 
     try {

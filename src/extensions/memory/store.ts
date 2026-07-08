@@ -29,6 +29,7 @@ import { scanSecrets } from "./secrets.ts";
 import { extractEntities } from "./entities.ts";
 import { tokenize, filterStopwords, buildIdfMap, computeTfIdf, vectorToJson } from "./tfidf.ts";
 import { FactRetriever } from "./retrieval.ts";
+import { normalizeTerm, expandQuery } from "./synonyms.ts";
 
 export interface Fact {
   fact_id: number;
@@ -315,7 +316,10 @@ export class MemoryStore {
    * Bumps retrieval_count for every returned row.
    */
   search(query: string, opts: SearchOptions = {}): Fact[] {
-    const fts = normaliseFtsQuery(query);
+    // Expand query with synonyms/aliases so paraphrases (TS vs TypeScript)
+    // still match at the FTS5 layer.
+    const expandedQuery = expandQuery(filterStopwords(tokenize(query))).map((e) => e.term).join(" ");
+    const fts = normaliseFtsQuery(expandedQuery);
     if (!fts) return [];
 
     const minTrust = opts.minTrust ?? 0.3;
@@ -527,11 +531,13 @@ export class MemoryStore {
       .all() as { content: string }[];
 
     // Build corpus: tokenize each doc, filter stopwords
-    const corpus = allFacts.map((f) => filterStopwords(tokenize(f.content)));
+    const corpus = allFacts.map((f) =>
+      filterStopwords(tokenize(f.content)).map(normalizeTerm),
+    );
     const idf = buildIdfMap(corpus);
 
-    // Compute vector for this fact
-    const tokens = filterStopwords(tokenize(content));
+    // Compute vector for this fact (normalized tokens)
+    const tokens = filterStopwords(tokenize(content)).map(normalizeTerm);
     const vec = computeTfIdf(tokens, idf);
 
     this.db

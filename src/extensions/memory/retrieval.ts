@@ -8,6 +8,7 @@
  */
 import type { Database } from "bun:sqlite";
 import { tokenize, filterStopwords, cosineSimilarity, vectorFromJson, type SparseVector } from "./tfidf.ts";
+import { expandQuery, normalizeTerm } from "./synonyms.ts";
 
 /** FTS5 stopwords. */
 const FTS_STOPWORDS: Record<string, true> = {
@@ -139,10 +140,15 @@ export class FactRetriever {
     const minTrust = opts.minTrust ?? 0.3;
     const limit = Math.max(1, opts.limit ?? 10);
 
-    const candidates = this.ftsCandidates(query, opts.category, minTrust, limit * 3);
+    // Expand query with synonyms/aliases for both FTS5 candidate retrieval
+    // and lexical scoring, so paraphrases (TS vs TypeScript) still match.
+    const expandedTerms = expandQuery(filterStopwords(tokenize(query))).map((e) => e.term);
+    const expandedQuery = expandedTerms.join(" ");
+
+    const candidates = this.ftsCandidates(expandedQuery, opts.category, minTrust, limit * 3);
     if (candidates.length === 0) return [];
 
-    const queryTokens = jaccardTokens(query);
+    const queryTokens = jaccardTokens(expandedQuery);
     const idfAvailable = candidates.some((c) => c.tfidf_vector && c.tfidf_vector !== "{}");
 
     const scored: ScoredFact[] = [];
@@ -157,10 +163,12 @@ export class FactRetriever {
       let tfidfSim = 0.5;
       if (idfAvailable && fact.tfidf_vector && fact.tfidf_vector !== "{}") {
         const factVec = vectorFromJson(fact.tfidf_vector);
+        // Expand query with synonyms/aliases so paraphrases still match.
         const queryTerms = filterStopwords(tokenize(query));
+        const expanded = expandQuery(queryTerms);
         const qVec: SparseVector = {};
-        for (const t of queryTerms) {
-          qVec[t] = (qVec[t] ?? 0) + 1 / queryTerms.length;
+        for (const { term, weight } of expanded) {
+          qVec[term] = (qVec[term] ?? 0) + weight / expanded.length;
         }
         tfidfSim = cosineSimilarity(qVec, factVec);
       }

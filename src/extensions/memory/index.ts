@@ -144,6 +144,8 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               const cat = asCategory(params.category);
               if (params.category && !cat) return errorResult(`invalid category '${params.category}'`);
               const scope = (params.scope === "project" || params.scope === "global") ? params.scope : undefined;
+              const beforeAdd = provider.onBeforeWrite?.({ action: "add", content: params.content, category: cat, scope, tags: params.tags, source: "manual" });
+              if (beforeAdd && beforeAdd.ok === false) return errorResult(beforeAdd.reason ?? "memory write denied");
               const id = provider.add(params.content, {
                 category: cat,
                 tags: params.tags,
@@ -240,6 +242,8 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               // Fetch previous content BEFORE update so previousContent
               // reflects the old value, not the new one (reviewer caught this).
               const prevFact = provider.get(params.fact_id);
+              const beforeUpd = provider.onBeforeWrite?.({ action: "update", content: params.content, factId: params.fact_id, category: cat, tags: params.tags, previousContent: prevFact?.content });
+              if (beforeUpd && beforeUpd.ok === false) return errorResult(beforeUpd.reason ?? "memory write denied");
               const ok = provider.update(params.fact_id, {
                 content: params.content,
                 category: cat,
@@ -257,6 +261,8 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             }
             case "remove": {
               if (params.fact_id === undefined) return errorResult("'fact_id' is required for remove");
+              const beforeRm = provider.onBeforeWrite?.({ action: "remove", factId: params.fact_id });
+              if (beforeRm && beforeRm.ok === false) return errorResult(beforeRm.reason ?? "memory write denied");
               const ok = provider.remove(params.fact_id);
               manager.notifyMemoryToolWrite({
                 action: "remove",
