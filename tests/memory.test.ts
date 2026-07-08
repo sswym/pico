@@ -13,6 +13,8 @@ import { tmpdir } from "node:os";
 import { MemoryStore } from "../src/extensions/memory/store.ts";
 import { autoExtractFromMessages } from "../src/extensions/memory/extract.ts";
 import { scanSecrets } from "../src/extensions/memory/secrets.ts";
+import { WriteQueue, type MemoryProvider, type MemoryWriteMetadata } from "../src/extensions/memory/provider.ts";
+import { ProviderManager } from "../src/extensions/memory/provider-manager.ts";
 
 let dbPath: string;
 let store: MemoryStore;
@@ -24,9 +26,9 @@ beforeEach(() => {
 
 afterEach(() => {
   store.close();
-  try { rmSync(dbPath); } catch {}
-  try { rmSync(`${dbPath}-wal`); } catch {}
-  try { rmSync(`${dbPath}-shm`); } catch {}
+  try { rmSync(dbPath); } catch { }
+  try { rmSync(`${dbPath}-wal`); } catch { }
+  try { rmSync(`${dbPath}-shm`); } catch { }
 });
 
 test("add returns id and is idempotent on duplicate content", () => {
@@ -414,4 +416,122 @@ test("existing probe test still works with entity table", () => {
   const hits = store.probe("Alice Wong", { minTrust: 0 });
   expect(hits).toHaveLength(1);
   expect(hits[0]!.content).toContain("Alice Wong");
+});
+
+// ---- External provider registration tests --------------------------------
+
+function makeFakeMemoryProvider(overrides: Partial<MemoryProvider> = {}): MemoryProvider {
+  return {
+    name: "test-provider",
+    isAvailable: () => true,
+    initialize: () => { },
+    shutdown: () => { },
+    get: () => null,
+    add: () => 0,
+    update: () => true,
+    remove: () => true,
+    feedback: () => null,
+    clear: () => { },
+    count: () => 0,
+    search: () => [],
+    probe: () => [],
+    list: () => [],
+    related: () => [],
+    reason: () => [],
+    contradict: () => [],
+    queue: new WriteQueue(),
+    getRawStore: () => null,
+    systemPromptBlock: () => "",
+    prefetch: () => [],
+    queuePrefetch: () => { },
+    ...overrides,
+  };
+}
+
+function withTestManager(fn: (manager: ProviderManager) => void): void {
+  const oldEnv = process.env.SRCODE_MEMORY_DB;
+  const tempDb = join(tmpdir(), `srcode-mgr-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  process.env.SRCODE_MEMORY_DB = tempDb;
+  try {
+    const manager = new ProviderManager();
+    fn(manager);
+  } finally {
+    if (oldEnv === undefined) {
+      delete process.env.SRCODE_MEMORY_DB;
+    } else {
+      process.env.SRCODE_MEMORY_DB = oldEnv;
+    }
+    try { rmSync(tempDb); } catch { }
+    try { rmSync(`${tempDb}-wal`); } catch { }
+    try { rmSync(`${tempDb}-shm`); } catch { }
+  }
+}
+
+test("ProviderManager.registerExternalProvider accepts first provider", () => {
+  withTestManager((manager) => {
+    const fake = makeFakeMemoryProvider();
+    const result = manager.registerExternalProvider(fake);
+    expect(result.accepted).toBe(true);
+    expect(manager.getExternalProvider()).toBe(fake);
+  });
+});
+
+test("ProviderManager.registerExternalProvider rejects second different provider", () => {
+  withTestManager((manager) => {
+    const fake1 = makeFakeMemoryProvider();
+    const fake2 = makeFakeMemoryProvider();
+    expect(manager.registerExternalProvider(fake1).accepted).toBe(true);
+    const result = manager.registerExternalProvider(fake2);
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toBeDefined();
+  });
+});
+
+test("ProviderManager.registerExternalProvider idempotent same provider", () => {
+  withTestManager((manager) => {
+    const fake = makeFakeMemoryProvider();
+    expect(manager.registerExternalProvider(fake).accepted).toBe(true);
+    const result = manager.registerExternalProvider(fake);
+    expect(result.accepted).toBe(true);
+  });
+});
+
+test("ProviderManager.registerExternalProvider rejects reserved tool name", () => {
+  withTestManager((manager) => {
+    const fake = makeFakeMemoryProvider();
+    const result = manager.registerExternalProvider(fake, "memory");
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toBeDefined();
+  });
+});
+
+test("ProviderManager.notifyMemoryToolWrite invokes onMemoryWrite with metadata", () => {
+  withTestManager((manager) => {
+    const calls: MemoryWriteMetadata[] = [];
+    const fake = makeFakeMemoryProvider({
+      onMemoryWrite: (meta) => {
+        calls.push(meta);
+      },
+    });
+    manager.registerExternalProvider(fake);
+    manager.notifyMemoryToolWrite({ action: "add", content: "test", factId: 1 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.action).toBe("add");
+    expect(calls[0]!.factId).toBe(1);
+  });
+});
+
+test("ProviderManager.notifyMemoryToolWrite does not throw when onMemoryWrite throws", () => {
+  withTestManager((manager) => {
+    const fake = makeFakeMemoryProvider({
+      onMemoryWrite: () => {
+        throw new Error("boom");
+      },
+    });
+    manager.registerExternalProvider(fake);
+    // Should not throw
+    manager.notifyMemoryToolWrite({ action: "remove", factId: 42 });
+    // Implicit pass if we reach here
+    expect(true).toBe(true);
+  });
 });

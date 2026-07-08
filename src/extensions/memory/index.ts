@@ -152,13 +152,14 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
                 correctionOf: params.correction_of,
                 source: "manual",
               });
-              provider.onMemoryWrite?.({
+              manager.notifyMemoryToolWrite({
                 action: "add",
                 content: params.content,
                 tags: params.tags,
                 category: cat,
                 scope,
                 source: "manual",
+                factId: id,
               });
               const fact = provider.get(id);
               return jsonResult({ status: "added", fact_id: id, fact });
@@ -236,23 +237,31 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               if (params.fact_id === undefined) return errorResult("'fact_id' is required for update");
               const cat = asCategory(params.category);
               if (params.category && !cat) return errorResult(`invalid category '${params.category}'`);
+              // Fetch previous content BEFORE update so previousContent
+              // reflects the old value, not the new one (reviewer caught this).
+              const prevFact = provider.get(params.fact_id);
               const ok = provider.update(params.fact_id, {
                 content: params.content,
                 category: cat,
                 tags: params.tags,
               });
-              provider.onMemoryWrite?.({
+              manager.notifyMemoryToolWrite({
                 action: "update",
                 content: params.content,
                 tags: params.tags,
                 category: cat,
+                factId: params.fact_id,
+                previousContent: prevFact?.content,
               });
               return jsonResult({ status: ok ? "updated" : "not_found", fact_id: params.fact_id });
             }
             case "remove": {
               if (params.fact_id === undefined) return errorResult("'fact_id' is required for remove");
               const ok = provider.remove(params.fact_id);
-              provider.onMemoryWrite?.({ action: "remove", content: String(params.fact_id) });
+              manager.notifyMemoryToolWrite({
+                action: "remove",
+                factId: params.fact_id,
+              });
               return jsonResult({ status: ok ? "removed" : "not_found", fact_id: params.fact_id });
             }
             case "feedback": {

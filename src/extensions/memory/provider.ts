@@ -73,6 +73,8 @@ export interface MemoryWriteMetadata {
   action: "add" | "update" | "remove";
   /** The content being written (for add/update). */
   content?: string;
+  /** The fact id of the written entry. */
+  factId?: number;
   /** Previous content for updates. */
   previousContent?: string;
   /** Tags attached to the write. */
@@ -235,6 +237,17 @@ export interface MemoryProvider {
    * The parent's provider gets the task+result pair as an observation.
    */
   onDelegation?(task: string, result: string, childSessionId?: string): void;
+
+  /**
+   * Called BEFORE the built-in memory tool writes an entry.
+   * Return { ok: false, reason: "..." } to deny the write.
+   * Return void or { ok: true } to allow it.
+   */
+  // TODO: Integrate onBeforeWrite into index.ts tool handler (next phase).
+  // Current state: interface defined, but add/update/remove paths do not call
+  // this hook yet. Integration requires checking the return value before
+  // proceeding with provider.add() / provider.update() / provider.remove().
+  onBeforeWrite?(metadata: MemoryWriteMetadata): { ok: boolean; reason?: string } | void;
 
   /**
    * Called when the built-in memory tool writes an entry.

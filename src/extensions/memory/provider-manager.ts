@@ -13,7 +13,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { MemoryProvider } from "./provider.ts";
+import type { MemoryProvider, MemoryWriteMetadata } from "./provider.ts";
 import { BuiltinMemoryProvider } from "./builtin-provider.ts";
 
 // ---- Settings ------------------------------------------------------------
@@ -82,6 +82,14 @@ export interface ProviderInfo {
 
 export class ProviderManager {
   readonly provider: MemoryProvider;
+  /** The externally registered provider, if any. */
+  private _externalProvider: MemoryProvider | null = null;
+  /** Tool name associated with the external provider. */
+  private _externalToolName: string | null = null;
+  /** Tool names reserved for core extensions. */
+  private static _CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
+    "memory", "ask", "web", "todo", "subagent", "lsp", "plan", "mcp"
+  ]);
 
   constructor(settings?: MemorySettings) {
     const resolved = settings ?? readMemorySettings();
@@ -123,5 +131,49 @@ export class ProviderManager {
       searchable: true,
       factCount: this.provider.count(),
     };
+  }
+
+  /**
+   * Register an external provider for write mirroring.
+   * Returns { accepted: true } on success, or { accepted: false, reason } on failure.
+   */
+  registerExternalProvider(
+    provider: MemoryProvider,
+    toolName?: string,
+  ): { accepted: boolean; reason?: string } {
+    // Reject if a different provider is already registered.
+    if (this._externalProvider !== null && this._externalProvider !== provider) {
+      return { accepted: false, reason: "A different external provider is already registered" };
+    }
+    // Reject if toolName is reserved for core extensions.
+    if (toolName && ProviderManager._CORE_TOOL_NAMES.has(toolName)) {
+      return { accepted: false, reason: `Tool name "${toolName}" is reserved for core extensions` };
+    }
+    // Idempotent: same provider already registered.
+    if (this._externalProvider === provider) {
+      return { accepted: true };
+    }
+    // First registration.
+    this._externalProvider = provider;
+    this._externalToolName = toolName ?? null;
+    return { accepted: true };
+  }
+
+  /** Return the externally registered provider, or null. */
+  getExternalProvider(): MemoryProvider | null {
+    return this._externalProvider;
+  }
+
+  /**
+   * Notify the external provider (if any) of a memory tool write.
+   * Catches and logs errors — never throws.
+   */
+  notifyMemoryToolWrite(metadata: MemoryWriteMetadata): void {
+    if (!this._externalProvider) return;
+    try {
+      this._externalProvider.onMemoryWrite?.(metadata);
+    } catch (err) {
+      console.warn("[memory] External provider onMemoryWrite failed:", err);
+    }
   }
 }
