@@ -16,6 +16,7 @@ import {
   type UpdateOptions,
   type ScoredFact,
   type ContradictionResult,
+  WriteQueue,
 } from "./provider.ts";
 
 function toFact(sf: StoreFact): Fact {
@@ -39,12 +40,20 @@ function toContradiction(c: RetrieverContradiction): ContradictionResult {
 
 export class BuiltinMemoryProvider implements MemoryProvider {
   readonly name = "builtin";
+  readonly queue = new WriteQueue();
+
   private store: MemoryStore;
   private retriever: FactRetriever;
+  /** Cached prefetch result, set by queuePrefetch, consumed by prefetch. */
+  private cachedPrefetch: { query: string; results: Fact[] } | null = null;
 
   constructor(dbPath: string) {
     this.store = new MemoryStore(dbPath);
     this.retriever = this.store.retriever();
+  }
+
+  isAvailable(): boolean {
+    return true; // builtin is always available
   }
 
   initialize(_sessionId: string): void {
@@ -52,6 +61,7 @@ export class BuiltinMemoryProvider implements MemoryProvider {
   }
 
   shutdown(): void {
+    this.queue.drain();
     this.store.close();
   }
 
@@ -78,6 +88,10 @@ export class BuiltinMemoryProvider implements MemoryProvider {
       source: opts.source,
       cwd: opts.cwd,
     });
+  }
+
+  getRawStore(): unknown {
+    return this.store;
   }
 
   update(factId: number, opts: UpdateOptions): boolean {
@@ -165,19 +179,46 @@ export class BuiltinMemoryProvider implements MemoryProvider {
   // -- Context injection -------------------------------------------------
 
   systemPromptBlock(): string {
-    // index.ts handles prompt formatting via prompt.ts helpers.
-    // Return the raw fact count so the caller can format.
     const count = this.store.count();
     return `Memory: ${count} facts stored. Use memory(action=...) to access them.`;
   }
 
+  /**
+   * Consume the cached prefetch result set by queuePrefetch().
+   * Returns the cached results matching the query, or falls back to
+   * a synchronous search if no cache hit.
+   */
   prefetch(query: string, cwd?: string): Fact[] {
+    if (this.cachedPrefetch && this.cachedPrefetch.query === query) {
+      const results = this.cachedPrefetch.results;
+      this.cachedPrefetch = null;
+      return results;
+    }
     if (!query) return [];
     return this.store.search(query, {
       limit: 5,
       minTrust: 0.3,
-      scope: cwd ? "project" as any : undefined,
+      scope: cwd ? ("project" as const) : undefined,
       cwd,
     }).map(toFact);
+  }
+
+  /**
+   * Queue a background prefetch for the NEXT turn.
+   * Executes on the next microtask via the WriteQueue.
+   */
+  queuePrefetch(query: string, cwd?: string): void {
+    if (!query) return;
+    this.queue.push(`prefetch:${query.slice(0, 60)}`, () => {
+      this.cachedPrefetch = {
+        query,
+        results: this.store.search(query, {
+          limit: 5,
+          minTrust: 0.3,
+          scope: cwd ? ("project" as const) : undefined,
+          cwd,
+        }).map(toFact),
+      };
+    });
   }
 }

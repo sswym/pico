@@ -28,6 +28,7 @@ import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { checkAcceptanceGate } from "./gates.ts";
+import { fireDelegationCallback } from "../memory/delegation-registry.ts";
 import { createWorktree, getWorktreeDiff, mergeWorktree, type WorktreeHandle } from "./worktree.ts";
 
 const MAX_PARALLEL_TASKS = 8;
@@ -846,6 +847,7 @@ export default function (pi: ExtensionAPI) {
 					if (stepForkFallback) result.contextFallback = stepForkFallback;
 
 					results.push(result);
+					fireDelegationCallback(step.task, getResultOutput(result));
 
 					const isError = isFailedResult(result);
 					if (isError) {
@@ -1004,6 +1006,13 @@ export default function (pi: ExtensionAPI) {
 						}
 					}
 
+					// Fire delegation callback for each subagent result.
+					for (let i = 0; i < results.length; i++) {
+						const t = params.tasks[i];
+						const r = results[i];
+						if (t && r) fireDelegationCallback(t.task, getResultOutput(r));
+					}
+
 					const successCount = results.filter((r) => !isFailedResult(r)).length;
 					const summaries = results.map((r) => {
 						const output = truncateParallelOutput(getResultOutput(r));
@@ -1049,6 +1058,8 @@ export default function (pi: ExtensionAPI) {
 					makeDetails("single"),
 					forkPath,
 				);
+				// Fire delegation callback for single subagent result.
+				fireDelegationCallback(params.task, getResultOutput(result));
 				if (forkFallbackNote) result.contextFallback = forkFallbackNote;
 				const isError = isFailedResult(result);
 				if (isError) {

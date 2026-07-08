@@ -4,14 +4,8 @@
  * Wires a long-term-memory store into pi-coding-agent:
  *   - registers a `memory` tool (LLM-callable)
  *   - registers a `/memory` slash command (user-callable)
- *   - injects a recall block into the system prompt at the start of each turn
- *   - detects corrections in real-time via turn_end
- *   - auto-extracts user prefs / project decisions on session shutdown
- *
- * Storage layout: ~/.srcode/memory.db (overridable via $SRCODE_MEMORY_DB,
- * or relocate the whole srcode root via $SRCODE_HOME).
+
  */
-import { join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
   defineTool,
@@ -25,17 +19,11 @@ import {
   type ExtractableMessage,
 } from "./extract.ts";
 import { formatFactLine, formatRecallBlock, systemPromptBlock } from "./prompt.ts";
-import { type Fact, type MemoryProvider } from "./provider.ts";
-import { BuiltinMemoryProvider } from "./builtin-provider.ts";
+import { type Fact, type MemoryWriteMetadata, type MemoryProvider } from "./provider.ts";
+import { registerDelegationCallback } from "./delegation-registry.ts";
 import { MemoryStore } from "./store.ts";
+import { resolveDbPath, ProviderManager, sanitizeContext, buildMemoryContextBlock } from "./provider-manager.ts";
 import { CORRECTED_BOOST, SCOPE_PROJECT, VALID_CATEGORIES, type Category } from "./schema.ts";
-import { srcodeHome } from "../paths.ts";
-function resolveDbPath(): string {
-  const override = process.env.SRCODE_MEMORY_DB;
-  if (override) return override;
-  return join(srcodeHome(), "memory.db");
-}
-
 const CATEGORY_LIST = VALID_CATEGORIES.join(" | ");
 
 const MemoryParams = Type.Object({
@@ -102,11 +90,20 @@ function parseCommand(args: string): ParsedCommand {
 
 // --------------------------------------------------------------------------
 
-export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
-  const provider: MemoryProvider = new BuiltinMemoryProvider(resolveDbPath());
-  /** Expose raw MemoryStore for extract.ts which needs low-level access. */
-  const rawStore = (provider as any).store as MemoryStore;
+/** Module-level reference set by memoryExtension for cross-extension hooks. */
+let activeMemoryProvider: MemoryProvider | null = null;
 
+export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
+  const manager = new ProviderManager();
+  const provider: MemoryProvider = manager.provider;
+  // Expose for subagent extension's onDelegation hook.
+  activeMemoryProvider = provider;
+  /** Expose raw MemoryStore for extract.ts which needs low-level access. */
+  const rawStore = provider.getRawStore() as MemoryStore;
+  // Register delegation hook for subagent completion tracking.
+  registerDelegationCallback((task, result, childSessionId) => {
+    provider.onDelegation?.(task, result, childSessionId);
+  });
   /** Track current working directory for project-scoped memory. */
   let currentCwd: string | null = null;
 
@@ -153,6 +150,14 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
                 scope,
                 cwd: scope === "project" ? (currentCwd ?? undefined) : undefined,
                 correctionOf: params.correction_of,
+                source: "manual",
+              });
+              provider.onMemoryWrite?.({
+                action: "add",
+                content: params.content,
+                tags: params.tags,
+                category: cat,
+                scope,
                 source: "manual",
               });
               const fact = provider.get(id);
@@ -236,11 +241,18 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
                 category: cat,
                 tags: params.tags,
               });
+              provider.onMemoryWrite?.({
+                action: "update",
+                content: params.content,
+                tags: params.tags,
+                category: cat,
+              });
               return jsonResult({ status: ok ? "updated" : "not_found", fact_id: params.fact_id });
             }
             case "remove": {
               if (params.fact_id === undefined) return errorResult("'fact_id' is required for remove");
               const ok = provider.remove(params.fact_id);
+              provider.onMemoryWrite?.({ action: "remove", content: String(params.fact_id) });
               return jsonResult({ status: ok ? "removed" : "not_found", fact_id: params.fact_id });
             }
             case "feedback": {
@@ -425,6 +437,8 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     },
   });
 
+
+
   // --- 3. inject recall + system-prompt header (frozen snapshot) -----------
   //
   // At session start we capture a frozen snapshot of the memory context (header
@@ -449,7 +463,8 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         });
         frozenSnapshot = { header, recall: formatRecallBlock(recall) };
       }
-      const extras = [frozenSnapshot.header, frozenSnapshot.recall]
+      const recallBlock = buildMemoryContextBlock(frozenSnapshot.recall);
+      const extras = [frozenSnapshot.header, recallBlock]
         .filter((s) => s.length > 0).join("\n\n");
       if (!extras) return {};
       return { systemPrompt: `${event.systemPrompt}\n\n${extras}` };
@@ -458,35 +473,42 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     }
   });
 
-  // --- 4. real-time correction detection -----------------------------------
+  // --- 4. real-time correction detection + prefetch queue -------------------
   pi.on("turn_end", (event) => {
     try {
       const msg = event.message;
       if (!msg || msg.role !== "user") return;
 
-      const text = extractText(msg.content).trim();
+      const text = sanitizeContext(extractText(msg.content).trim());
       if (text.length < 10) return;
 
       // Only run correction patterns — keep per-turn overhead minimal.
-      if (!CORRECTION_PATTERNS.some((p) => p.test(text))) return;
+      if (CORRECTION_PATTERNS.some((p) => p.test(text))) {
+        provider.add(text.slice(0, 400), {
+          category: "correction",
+          scope: currentCwd ? "project" : undefined,
+          cwd: currentCwd ?? undefined,
+          source: "correction",
+          trust: CORRECTED_BOOST,
+        });
+      }
 
-      provider.add(text.slice(0, 400), {
-        category: "correction",
-        scope: currentCwd ? "project" : undefined,
-        cwd: currentCwd ?? undefined,
-        source: "correction",
-        trust: CORRECTED_BOOST,
-      });
+      // Queue background prefetch for the next turn.
+      provider.queuePrefetch(text, currentCwd ?? undefined);
     } catch {
       // best-effort — must not break the turn
     }
   });
 
-  // --- 5. auto-extract on shutdown ----------------------------------------
+  // --- 5. auto-extract + session message accumulation ----------------------
+  const sessionMessages: unknown[] = [];
+
   pi.on("agent_end", (event) => {
     try {
       const messages = (event.messages ?? []) as ExtractableMessage[];
       autoExtractFromMessages(rawStore, messages, { cwd: currentCwd ?? undefined });
+      // Keep a running total of all session messages for onSessionEnd
+      sessionMessages.push(...messages);
     } catch {
       // best-effort
     }
@@ -494,6 +516,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
   pi.on("session_shutdown", () => {
     try {
+      provider.onSessionEnd?.(sessionMessages);
       frozenSnapshot = null;  // next session gets a fresh snapshot
       provider.shutdown();
     } catch {
