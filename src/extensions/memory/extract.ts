@@ -93,6 +93,18 @@ const TOOL_QUIRK_PATTERNS = [
   /\S+\s*(?:不支持|没法|无法|不能)\s*(?:做|处理|用|运行|解析)/,
 ];
 
+/** Patterns indicating the message is an instruction TO the agent (meta-command),
+ *  not a durable user statement. Seen in --print mode prompts like
+ *  "use memory tool action=add ..." or "please call memory". Such text must
+ *  never be auto-extracted as a memory fact. */
+const INSTRUCTION_PATTERNS = [
+  /用\s*memory\s*工具/,
+  /请调用|调用\s*memory|action\s*=/,
+  /回复\s*(?:done|收到|确认|ok)/,
+  /帮我\s*(?:调用|执行|运行|记)/,
+  /^\s*请\s*(?:用|调用|执行)/,
+];
+
 // ---- Message helpers -----------------------------------------------------
 
 export interface ExtractableMessage {
@@ -137,6 +149,10 @@ export function autoExtractFromMessages(
     if (msg.role !== "user") continue;
     const text = extractText(msg.content).trim();
     if (text.length < 10) continue;
+
+    // Skip messages that are instructions TO the agent (meta-commands like
+    // "use memory tool action=add ..."), not durable user statements.
+    if (INSTRUCTION_PATTERNS.some((p) => p.test(text))) continue;
 
     let category: Category | undefined;
     if (CORRECTION_PATTERNS.some((p) => p.test(text))) category = "correction";
