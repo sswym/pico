@@ -245,32 +245,32 @@ export class FactRetriever {
 
     if (opts.category) {
       const rows = this.db
-        .query<FactRow & { co_occurrence: number }, [number, number, number, string, number]>(
+        .query<FactRow & { co_occurrence: number }, [number, number, string, number]>(
           `SELECT f3.*, COUNT(DISTINCT fe2.entity_id) as co_occurrence
            FROM fact_entities fe1
            JOIN fact_entities fe2 ON fe2.entity_id = fe1.entity_id AND fe2.fact_id != fe1.fact_id
            JOIN facts f3 ON f3.fact_id = fe2.fact_id
-           WHERE fe1.entity_id = ? AND f3.trust_score >= ? AND fe1.entity_id != ? AND f3.category = ?
+           WHERE fe1.entity_id = ? AND f3.trust_score >= ? AND f3.category = ?
            GROUP BY f3.fact_id
            ORDER BY co_occurrence DESC, f3.trust_score DESC
            LIMIT ?`,
         )
-        .all(entityRow.entity_id, minTrust, entityRow.entity_id, opts.category, limit) as (FactRow & { co_occurrence: number })[];
+        .all(entityRow.entity_id, minTrust, opts.category, limit) as (FactRow & { co_occurrence: number })[];
       return rows.map((r) => ({ ...r, score: (r.co_occurrence * 0.5) + (r.trust_score * 0.5) }));
     }
 
     const rows = this.db
-      .query<FactRow & { co_occurrence: number }, [number, number, number, number]>(
+      .query<FactRow & { co_occurrence: number }, [number, number, number]>(
         `SELECT f3.*, COUNT(DISTINCT fe2.entity_id) as co_occurrence
          FROM fact_entities fe1
          JOIN fact_entities fe2 ON fe2.entity_id = fe1.entity_id AND fe2.fact_id != fe1.fact_id
          JOIN facts f3 ON f3.fact_id = fe2.fact_id
-         WHERE fe1.entity_id = ? AND f3.trust_score >= ? AND fe1.entity_id != ?
+         WHERE fe1.entity_id = ? AND f3.trust_score >= ?
          GROUP BY f3.fact_id
          ORDER BY co_occurrence DESC, f3.trust_score DESC
          LIMIT ?`,
       )
-      .all(entityRow.entity_id, minTrust, entityRow.entity_id, limit) as (FactRow & { co_occurrence: number })[];
+      .all(entityRow.entity_id, minTrust, limit) as (FactRow & { co_occurrence: number })[];
     return rows.map((r) => ({ ...r, score: (r.co_occurrence * 0.5) + (r.trust_score * 0.5) }));
   }
 

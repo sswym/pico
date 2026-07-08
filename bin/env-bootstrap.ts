@@ -17,9 +17,10 @@
  * Also hydrates env vars from settings.json so API keys like TAVILY_API_KEY
  * stored in settings are available at startup.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const home = homedir();
 const agentDir = join(home, ".srcode", "agent");
@@ -34,6 +35,35 @@ process.env.SRCODE_CODING_AGENT_SESSION_DIR ??= sessionDir;
 // package version. srcode is a wrapper with its own release cadence, so that
 // check reports misleading "srcode update" prompts when only pi changed.
 process.env.PI_SKIP_VERSION_CHECK ??= "1";
+
+// Resolve the upstream package directory so pi-coding-agent can find its
+// built-in themes / assets (getThemesDir walks up from PI_PACKAGE_DIR).
+//
+// In compiled-binary mode, bin/srcode.ts extracts embedded assets to a temp
+// dir and sets PI_PACKAGE_DIR itself. In source mode (bun run bin/srcode.ts),
+// nothing sets it, so pi falls back to a wrong path and crashes on theme
+// load. Default it here to the installed upstream package in node_modules.
+const IS_BUN_BINARY =
+  import.meta.url.includes("$bunfs") ||
+  import.meta.url.includes("~BUN") ||
+  import.meta.url.includes("%7EBUN");
+if (!IS_BUN_BINARY) {
+  const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const upstream = join(
+    projectRoot,
+    "node_modules",
+    "@earendil-works",
+    "pi-coding-agent",
+  );
+  const hasAssets = (p: string | undefined) =>
+    !!p && (existsSync(join(p, "dist")) || existsSync(join(p, "src")));
+  // Trust an existing PI_PACKAGE_DIR only if it actually holds pi's assets.
+  // A stale/empty value (e.g. inherited from a wrapper harness) breaks theme
+  // resolution, so fall back to the installed upstream package in that case.
+  if (hasAssets(upstream) && !hasAssets(process.env.PI_PACKAGE_DIR)) {
+    process.env.PI_PACKAGE_DIR = upstream;
+  }
+}
 
 // Hydrate env vars from settings.json (keys under the "env" stanza).
 const settingsPath = join(agentDir, "settings.json");
