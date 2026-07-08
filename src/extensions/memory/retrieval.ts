@@ -113,6 +113,8 @@ export interface RetrieverOptions {
   ftsWeight?: number;
   jaccardWeight?: number;
   tfidfWeight?: number;
+  /** Temporal decay half-life in days. 0 = disabled. Default: 0. */
+  temporalDecayHalfLife?: number;
 }
 
 export class FactRetriever {
@@ -120,12 +122,14 @@ export class FactRetriever {
   readonly ftsWeight: number;
   readonly jaccardWeight: number;
   readonly tfidfWeight: number;
+  readonly temporalDecayHalfLife: number;
 
   constructor(db: Database, opts: RetrieverOptions = {}) {
     this.db = db;
     this.ftsWeight = opts.ftsWeight ?? 0.4;
     this.jaccardWeight = opts.jaccardWeight ?? 0.3;
     this.tfidfWeight = opts.tfidfWeight ?? 0.3;
+    this.temporalDecayHalfLife = opts.temporalDecayHalfLife ?? 0;
   }
 
   /**
@@ -165,8 +169,9 @@ export class FactRetriever {
         this.ftsWeight * ftsRank +
         this.jaccardWeight * jac +
         this.tfidfWeight * tfidfSim;
-
-      scored.push({ ...fact, score: relevance * fact.trust_score });
+      let score = relevance * fact.trust_score;
+      score *= this._temporalDecay(fact.updated_at);
+      scored.push({ ...fact, score });
     }
 
     scored.sort((a, b) => b.score - a.score);
@@ -453,5 +458,19 @@ export class FactRetriever {
     } catch {
       return [];
     }
+  }
+  /**
+   * Exponential temporal decay: 0.5^(age_days / half_life_days).
+   * Ported from hermes-agent's holographic/retrieval.py.
+   * Returns 1.0 (no decay) when half-life is 0 or the timestamp is unparseable.
+   */
+  private _temporalDecay(timestampStr: string): number {
+    if (this.temporalDecayHalfLife <= 0) return 1.0;
+    if (!timestampStr) return 1.0;
+    const dt = new Date(timestampStr);
+    if (isNaN(dt.getTime())) return 1.0;
+    const ageMs = Date.now() - dt.getTime();
+    const ageDays = ageMs / 86_400_000;
+    return Math.pow(0.5, ageDays / this.temporalDecayHalfLife);
   }
 }

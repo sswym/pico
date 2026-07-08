@@ -7,7 +7,7 @@
  *   2. formatRecallBlock(facts) — a block injected per-turn with retrieved facts,
  *      so the model can answer without re-searching. Mirrors hermes' prefetch().
  */
-import type { Fact } from "./store.ts";
+import type { Fact } from "./provider.ts";
 import { VALID_CATEGORIES } from "./schema.ts";
 import MEMORY_PROMPT_TEMPLATE from "../../prompts/memory-tool.md" with { type: "text" };
 

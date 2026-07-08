@@ -25,10 +25,11 @@ import {
   type ExtractableMessage,
 } from "./extract.ts";
 import { formatFactLine, formatRecallBlock, systemPromptBlock } from "./prompt.ts";
-import { MemoryStore, type Fact } from "./store.ts";
+import { type Fact, type MemoryProvider } from "./provider.ts";
+import { BuiltinMemoryProvider } from "./builtin-provider.ts";
+import { MemoryStore } from "./store.ts";
 import { CORRECTED_BOOST, SCOPE_PROJECT, VALID_CATEGORIES, type Category } from "./schema.ts";
 import { srcodeHome } from "../paths.ts";
-
 function resolveDbPath(): string {
   const override = process.env.SRCODE_MEMORY_DB;
   if (override) return override;
@@ -42,6 +43,9 @@ const MemoryParams = Type.Object({
     Type.Literal("add"),
     Type.Literal("search"),
     Type.Literal("probe"),
+    Type.Literal("related"),
+    Type.Literal("reason"),
+    Type.Literal("contradict"),
     Type.Literal("list"),
     Type.Literal("update"),
     Type.Literal("remove"),
@@ -49,7 +53,8 @@ const MemoryParams = Type.Object({
   ], { description: "Operation to perform on the memory store." }),
   content: Type.Optional(Type.String({ description: "Fact body (required for add; optional for update)." })),
   query: Type.Optional(Type.String({ description: "Search query (required for search)." })),
-  entity: Type.Optional(Type.String({ description: "Entity name (required for probe)." })),
+  entity: Type.Optional(Type.String({ description: "Entity name (required for probe and related)." })),
+  entities: Type.Optional(Type.Array(Type.String(), { description: "Entity names (required for reason)." })),
   fact_id: Type.Optional(Type.Number({ description: "Target fact id (update / remove / feedback)." })),
   category: Type.Optional(Type.String({ description: `One of: ${CATEGORY_LIST}.` })),
   tags: Type.Optional(Type.String({ description: "Comma-separated tags." })),
@@ -98,7 +103,9 @@ function parseCommand(args: string): ParsedCommand {
 // --------------------------------------------------------------------------
 
 export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
-  const store = new MemoryStore(resolveDbPath());
+  const provider: MemoryProvider = new BuiltinMemoryProvider(resolveDbPath());
+  /** Expose raw MemoryStore for extract.ts which needs low-level access. */
+  const rawStore = (provider as any).store as MemoryStore;
 
   /** Track current working directory for project-scoped memory. */
   let currentCwd: string | null = null;
@@ -110,11 +117,14 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       label: "Memory",
       description: [
         "Long-term memory for durable user prefs, project decisions, failures, corrections, insights, and reusable facts.",
-        `Actions: add | search | probe | list | update | remove | feedback.`,
+        `Actions: add | search | probe | list | update | remove | feedback | related | reason | contradict.`,
         "Categories: " + CATEGORY_LIST + ".",
         "Call `search` BEFORE answering questions about the user or project.",
         "Call `add` whenever the user shares something they would expect you to remember.",
         "Call `feedback` after using a fact (helpful=true) to lift its trust score.",
+        "Call `related(entity=...)` to find facts related to an entity.",
+        "Call `reason(entities=[...])` to find facts linking multiple entities.",
+        "Call `contradict()` to surface potentially contradictory facts.",
         "Use `scope=\"project\"` for facts that only apply in the current project directory.",
         "Use `correction_of` when a new fact supersedes an older one.",
       ].join(" "),
@@ -137,7 +147,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               const cat = asCategory(params.category);
               if (params.category && !cat) return errorResult(`invalid category '${params.category}'`);
               const scope = (params.scope === "project" || params.scope === "global") ? params.scope : undefined;
-              const id = store.add(params.content, {
+              const id = provider.add(params.content, {
                 category: cat,
                 tags: params.tags,
                 scope,
@@ -145,14 +155,14 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
                 correctionOf: params.correction_of,
                 source: "manual",
               });
-              const fact = store.get(id);
+              const fact = provider.get(id);
               return jsonResult({ status: "added", fact_id: id, fact });
             }
             case "search": {
               if (!params.query) return errorResult("'query' is required for search");
               const cat = asCategory(params.category);
               const scope = (params.scope === "project" || params.scope === "global") ? params.scope : undefined;
-              const results = store.search(params.query, {
+              const results = provider.search(params.query, {
                 category: cat,
                 minTrust: params.min_trust,
                 limit: params.limit,
@@ -166,7 +176,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               if (!target) return errorResult("'entity' is required for probe");
               const cat = asCategory(params.category);
               const scope = (params.scope === "project" || params.scope === "global") ? params.scope : undefined;
-              const results = store.probe(target, {
+              const results = provider.probe(target, {
                 category: cat,
                 minTrust: params.min_trust,
                 limit: params.limit,
@@ -178,7 +188,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             case "list": {
               const cat = asCategory(params.category);
               const scope = (params.scope === "project" || params.scope === "global") ? params.scope : undefined;
-              const results = store.list({
+              const results = provider.list({
                 category: cat,
                 minTrust: params.min_trust,
                 limit: params.limit,
@@ -187,11 +197,41 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               });
               return jsonResult({ count: results.length, facts: results });
             }
+            case "related": {
+              const target = params.entity ?? params.query;
+              if (!target) return errorResult("'entity' is required for related");
+              const cat = asCategory(params.category);
+              const results = provider.related(target, {
+                category: cat,
+                minTrust: params.min_trust,
+                limit: params.limit,
+              });
+              return jsonResult({ count: results.length, results });
+            }
+            case "reason": {
+              const entities = params.entities;
+              if (!entities || entities.length === 0) return errorResult("'entities' list is required for reason");
+              const cat = asCategory(params.category);
+              const results = provider.reason(entities, {
+                category: cat,
+                minTrust: params.min_trust,
+                limit: params.limit,
+              });
+              return jsonResult({ count: results.length, results });
+            }
+            case "contradict": {
+              const cat = asCategory(params.category);
+              const results = provider.contradict({
+                category: cat,
+                limit: params.limit,
+              });
+              return jsonResult({ count: results.length, contradictions: results });
+            }
             case "update": {
               if (params.fact_id === undefined) return errorResult("'fact_id' is required for update");
               const cat = asCategory(params.category);
               if (params.category && !cat) return errorResult(`invalid category '${params.category}'`);
-              const ok = store.update(params.fact_id, {
+              const ok = provider.update(params.fact_id, {
                 content: params.content,
                 category: cat,
                 tags: params.tags,
@@ -200,13 +240,13 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             }
             case "remove": {
               if (params.fact_id === undefined) return errorResult("'fact_id' is required for remove");
-              const ok = store.remove(params.fact_id);
+              const ok = provider.remove(params.fact_id);
               return jsonResult({ status: ok ? "removed" : "not_found", fact_id: params.fact_id });
             }
             case "feedback": {
               if (params.fact_id === undefined) return errorResult("'fact_id' is required for feedback");
               if (params.helpful === undefined) return errorResult("'helpful' is required for feedback");
-              const fact = store.feedback(params.fact_id, params.helpful);
+              const fact = provider.feedback(params.fact_id, params.helpful);
               if (!fact) return jsonResult({ status: "not_found", fact_id: params.fact_id });
               return jsonResult({ status: "ok", fact });
             }
@@ -255,11 +295,11 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           case "list": {
             const { scope, rest: filterRest } = parseScope(rest);
             const cat = asCategory(filterRest) || undefined;
-            renderFacts(store.list({ limit: 50, scope, cwd: scope === "project" ? (currentCwd ?? undefined) : undefined, category: cat }), `Memory — ${store.count()} facts:`);
+            renderFacts(provider.list({ limit: 50, scope, cwd: scope === "project" ? (currentCwd ?? undefined) : undefined, category: cat }), `Memory — ${provider.count()} facts:`);
             break;
           }
           case "count": {
-            announce(`Memory: ${store.count()} facts at ${store.dbPath}`);
+            announce(`Memory: ${provider.count()} facts at ${resolveDbPath()}`);
             break;
           }
           case "search": {
@@ -268,7 +308,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               announce("Usage: /memory search [--scope global|project] <query>");
               break;
             }
-            renderFacts(store.search(queryRest, { limit: 20, minTrust: 0, scope, cwd: scope === "project" ? (currentCwd ?? undefined) : undefined }), `Search: ${queryRest}`);
+            renderFacts(provider.search(queryRest, { limit: 20, minTrust: 0, scope, cwd: scope === "project" ? (currentCwd ?? undefined) : undefined }), `Search: ${queryRest}`);
             break;
           }
           case "add": {
@@ -282,16 +322,51 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             const category = (m?.[1] ?? "general") as Category;
             const content = m?.[2] ?? addRest;
             try {
-              const id = store.add(content, {
+              const id = provider.add(content, {
                 category,
                 scope,
                 cwd: scope === "project" ? (currentCwd ?? undefined) : undefined,
                 source: "manual",
               });
-              const fact = store.get(id);
+              const fact = provider.get(id);
               if (fact) renderFacts([fact], `Added:`);
             } catch (err) {
               announce(`Error: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            break;
+          }
+          case "related": {
+            if (!rest) {
+              announce("Usage: /memory related <entity>");
+              break;
+            }
+            const cat = asCategory(rest) || undefined;
+            const results = provider.related(rest, { category: cat, limit: 20, minTrust: 0 });
+            renderFacts(results, `Related to "${rest}":`);
+            break;
+          }
+          case "reason": {
+            if (!rest) {
+              announce("Usage: /memory reason <entity1>,<entity2>[,...]");
+              break;
+            }
+            const entities = rest.split(",").map((s) => s.trim()).filter(Boolean);
+            const results = provider.reason(entities, { limit: 20, minTrust: 0 });
+            renderFacts(results, `Reason over [${entities.join(", ")}]:`);
+            break;
+          }
+          case "contradict": {
+            const cat = asCategory(rest) || undefined;
+            const results = provider.contradict({ category: cat, limit: 10 });
+            if (results.length === 0) {
+              announce("No contradictions found.");
+            } else {
+              lines.push(`Contradictions (${results.length}):`);
+              for (const c of results) {
+                lines.push(`  #${c.fact_a.fact_id} vs #${c.fact_b.fact_id} (score: ${c.contradiction_score.toFixed(3)})`);
+                lines.push(`    A: ${c.fact_a.content.slice(0, 80)}`);
+                lines.push(`    B: ${c.fact_b.content.slice(0, 80)}`);
+              }
             }
             break;
           }
@@ -303,17 +378,17 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               announce("Usage: /memory remove <fact_id>");
               break;
             }
-            const ok = store.remove(id);
+            const ok = provider.remove(id);
             announce(ok ? `Removed memory #${id}` : `No such memory #${id}`);
             break;
           }
           case "clear": {
             const confirm = await ctx.ui.confirm(
               "Clear all memory?",
-              `Permanently delete ${store.count()} facts at ${store.dbPath}?`,
+              `Permanently delete ${provider.count()} facts at ${resolveDbPath()}?`,
             );
             if (confirm) {
-              store.clear();
+              provider.clear();
               announce("Memory cleared.");
             } else {
               announce("Cancelled.");
@@ -331,6 +406,9 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             lines.push("  /memory remove <id>       — delete a fact");
             lines.push("  /memory clear             — wipe all memory (asks first)");
             lines.push("  /memory count             — show count + db path");
+            lines.push("  /memory related <entity>  — find facts related to an entity");
+            lines.push("  /memory reason <e1>,<e2>  — find facts linking multiple entities");
+            lines.push("  /memory contradict        — surface contradictory facts");
           }
         }
       } catch (err) {
@@ -347,18 +425,32 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     },
   });
 
-  // --- 3. inject recall + system-prompt header ----------------------------
+  // --- 3. inject recall + system-prompt header (frozen snapshot) -----------
+  //
+  // At session start we capture a frozen snapshot of the memory context (header
+  // + top recall facts). This snapshot is injected into the system prompt for
+  // EVERY turn without re-querying, keeping the prefix cache stable across the
+  // session. Mid-session writes update live state (tool results) but do NOT
+  // change the system prompt — mirroring hermes-agent's MemoryStore frozen
+  // snapshot pattern.
+  //
+  // The snapshot is regenerated only on the first turn of a new session.
+  let frozenSnapshot: { header: string; recall: string } | null = null;
+
   pi.on("before_agent_start", (event) => {
     try {
-      const headerBlock = systemPromptBlock(store.count());
-      const recall = store.search(event.prompt, {
-        limit: 5,
-        minTrust: 0.3,
-        scope: SCOPE_PROJECT,
-        cwd: currentCwd ?? undefined,
-      });
-      const recallBlock = formatRecallBlock(recall);
-      const extras = [headerBlock, recallBlock].filter((s) => s.length > 0).join("\n\n");
+      if (!frozenSnapshot) {
+        const header = systemPromptBlock(provider.count());
+        const recall = provider.search(event.prompt, {
+          limit: 5,
+          minTrust: 0.3,
+          scope: SCOPE_PROJECT,
+          cwd: currentCwd ?? undefined,
+        });
+        frozenSnapshot = { header, recall: formatRecallBlock(recall) };
+      }
+      const extras = [frozenSnapshot.header, frozenSnapshot.recall]
+        .filter((s) => s.length > 0).join("\n\n");
       if (!extras) return {};
       return { systemPrompt: `${event.systemPrompt}\n\n${extras}` };
     } catch {
@@ -378,7 +470,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       // Only run correction patterns — keep per-turn overhead minimal.
       if (!CORRECTION_PATTERNS.some((p) => p.test(text))) return;
 
-      store.add(text.slice(0, 400), {
+      provider.add(text.slice(0, 400), {
         category: "correction",
         scope: currentCwd ? "project" : undefined,
         cwd: currentCwd ?? undefined,
@@ -394,7 +486,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.on("agent_end", (event) => {
     try {
       const messages = (event.messages ?? []) as ExtractableMessage[];
-      autoExtractFromMessages(store, messages, { cwd: currentCwd ?? undefined });
+      autoExtractFromMessages(rawStore, messages, { cwd: currentCwd ?? undefined });
     } catch {
       // best-effort
     }
@@ -402,7 +494,8 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
   pi.on("session_shutdown", () => {
     try {
-      store.close();
+      frozenSnapshot = null;  // next session gets a fresh snapshot
+      provider.shutdown();
     } catch {
       // ignore
     }
