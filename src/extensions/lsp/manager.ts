@@ -479,9 +479,10 @@ export function getServersForFilePath(
  */
 export function syncDocument(
   state: LspManagerState,
+  workspaceRoot: string,
   filePath: string,
 ): string | null {
-  const absPath = filePath.startsWith("/") ? filePath : join(process.cwd(), filePath);
+  const absPath = filePath.startsWith("/") ? filePath : join(workspaceRoot, filePath);
 
   // Find the best server for this file
   for (const [, managed] of state.servers) {

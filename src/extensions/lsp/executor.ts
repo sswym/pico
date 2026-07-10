@@ -52,6 +52,15 @@ const LSP_WRITE_OR_HIGH_RISK_ACTIONS = new Set<Action>([
 	"request",
 ]);
 
+export const READONLY_ACTIONS = ACTIONS.filter((action) =>
+	action === "code_actions" || LSP_READONLY_ACTIONS.has(action),
+);
+
+export const BLOCKED_WRITE_OR_HIGH_RISK_ACTIONS = [
+	...LSP_WRITE_OR_HIGH_RISK_ACTIONS,
+	"code_actions apply=true",
+] as const;
+
 export function asAction(raw: unknown): Action | null {
 	if (typeof raw !== "string") return null;
 	return (ACTIONS as readonly string[]).includes(raw) ? (raw as Action) : null;

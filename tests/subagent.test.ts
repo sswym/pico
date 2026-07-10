@@ -96,16 +96,25 @@ class FakeProcess implements SpawnedProcessLike {
   }
 }
 
-test("subagent extension registers the 'subagent' tool", async () => {
-  const tools: Array<{ name: string }> = [];
+test("subagent extension registers the 'subagent' tool and delegates invalid requests", async () => {
+  const tools: Array<{ name: string; execute?: (...args: any[]) => Promise<any> }> = [];
   const fakePi: any = {
     on: () => {},
-    registerTool: (t: { name: string }) => tools.push(t),
+    registerTool: (t: { name: string; execute?: (...args: any[]) => Promise<any> }) => tools.push(t),
     registerCommand: () => {},
     sendMessage: () => {},
   };
   await subagentExtension(fakePi);
   expect(tools.map((t) => t.name)).toContain("subagent");
+
+  const tool = tools.find((t) => t.name === "subagent")!;
+  const result = await tool.execute!("tool-1", {}, undefined, undefined, {
+    cwd: process.cwd(),
+    hasUI: false,
+    ui: { confirm: async () => true },
+  });
+  expect(result.content[0].text).toContain("Invalid parameters. Provide exactly one mode.");
+  expect(result.content[0].text).toContain("Available agents:");
 });
 
 test("discoverAgents finds the six bundled roles under user scope", () => {

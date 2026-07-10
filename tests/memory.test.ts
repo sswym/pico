@@ -445,6 +445,46 @@ test("FactRetriever.search respects minTrust filter", () => {
   expect(highTrustOnly.every((r) => r.trust_score >= 0.4)).toBe(true);
 });
 
+test("FactRetriever.search isolates project-scoped facts by cwd", () => {
+  const cwdA = "/tmp/retriever-project-a";
+  const cwdB = "/tmp/retriever-project-b";
+  store.add("Apollo uses Redis queues", { category: "project", scope: "project", cwd: cwdA });
+  store.add("Apollo uses RabbitMQ queues", { category: "project", scope: "project", cwd: cwdB });
+  store.add("Apollo uses TypeScript", { category: "general" });
+
+  const retriever = store.retriever();
+  const projectHits = retriever.search("Apollo uses", { minTrust: 0, scope: "project", cwd: cwdA, limit: 10 });
+  const projectContents = projectHits.map((r) => r.content);
+  expect(projectContents).toContain("Apollo uses Redis queues");
+  expect(projectContents).toContain("Apollo uses TypeScript");
+  expect(projectContents).not.toContain("Apollo uses RabbitMQ queues");
+
+  const globalHits = retriever.search("Apollo uses", { minTrust: 0, scope: "global", limit: 10 });
+  const globalContents = globalHits.map((r) => r.content);
+  expect(globalContents).toEqual(["Apollo uses TypeScript"]);
+});
+
+test("FactRetriever.related and reason isolate project-scoped facts by cwd", () => {
+  const cwdA = "/tmp/retriever-related-a";
+  const cwdB = "/tmp/retriever-related-b";
+  store.add("Alice and Billing Service use Redis", { category: "project", scope: "project", cwd: cwdA });
+  store.add("Alice and Billing Service use SQS", { category: "project", scope: "project", cwd: cwdB });
+  store.add("Alice and Billing Service use TypeScript", { category: "general" });
+
+  const retriever = store.retriever();
+  const related = retriever.related("Alice", { minTrust: 0, scope: "project", cwd: cwdA, limit: 10 });
+  const relatedContents = related.map((r) => r.content);
+  expect(relatedContents).toContain("Alice and Billing Service use Redis");
+  expect(relatedContents).toContain("Alice and Billing Service use TypeScript");
+  expect(relatedContents).not.toContain("Alice and Billing Service use SQS");
+
+  const reasoned = retriever.reason(["Alice", "Billing Service"], { minTrust: 0, scope: "project", cwd: cwdA, limit: 10 });
+  const reasonedContents = reasoned.map((r) => r.content);
+  expect(reasonedContents).toContain("Alice and Billing Service use Redis");
+  expect(reasonedContents).toContain("Alice and Billing Service use TypeScript");
+  expect(reasonedContents).not.toContain("Alice and Billing Service use SQS");
+});
+
 test("store.clear removes entities and entity links", () => {
   store.add("Helen manages infra", { category: "project" });
   expect(store.probe("Helen", { minTrust: 0 })).toHaveLength(1);

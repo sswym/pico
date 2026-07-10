@@ -50,6 +50,8 @@ import {
   isLspReadonlyInput,
   isLspWriteOrHighRiskInput,
   ok,
+  READONLY_ACTIONS,
+  BLOCKED_WRITE_OR_HIGH_RISK_ACTIONS,
 } from "./executor.ts";
 
 export function isLspReadonlyToolCall(input: unknown): boolean {
@@ -63,7 +65,11 @@ export function isLspWriteOrHighRiskToolCall(input: unknown): boolean {
 // ── Unified tool schema ───────────────────────────────────────────────────
 
 const LspParams = Type.Object({
-  action: Type.String({ description: `LSP action. One of: ${ACTIONS.join(", ")}` }),
+  action: Type.String({
+    description:
+      `LSP action. Read-only actions: ${READONLY_ACTIONS.join(", ")}. ` +
+      `Currently blocked high-risk/write actions: ${BLOCKED_WRITE_OR_HIGH_RISK_ACTIONS.join(", ")}.`,
+  }),
   file: Type.Optional(Type.String({ description: "File path (relative to cwd or absolute)." })),
   line: Type.Optional(Type.Integer({ description: "1-based line number." })),
   character: Type.Optional(Type.Integer({ description: "0-based character offset." })),
@@ -120,9 +126,9 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       name: "lsp",
       label: "LSP",
       description:
-        "Query LSP (language server) for diagnostics, hover info, references, and code intelligence. " +
-        "Actions: hover, definition, type_definition, implementation, references, diagnostics, " +
-        "symbols, code_actions, rename, rename_file, capabilities, status, reload, request. " +
+        "Read-only LSP (language server) code intelligence: diagnostics, hover info, definitions, references, symbols, capabilities, and status. " +
+        `Read-only actions: ${READONLY_ACTIONS.join(", ")}. ` +
+        `High-risk/write actions are currently blocked by policy: ${BLOCKED_WRITE_OR_HIGH_RISK_ACTIONS.join(", ")}. ` +
         "Use symbol to auto-resolve column position from a name on the given line.",
       parameters: LspParams,
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -162,7 +168,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           if (!params.file || params.file === "*") {
             return executeWorkspaceDiagnosticsAction(state);
           }
-          const uri = syncDocument(state, params.file);
+          const uri = syncDocument(state, ctx.cwd, params.file);
           if (!uri) return fail(`Cannot open file: ${params.file}`);
           try {
             await new Promise<void>((resolve) => { setTimeout(() => resolve(), 500); });
@@ -201,7 +207,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             }
           }
           if (!params.file) return fail("Provide a file path for document symbols, or a query for workspace search.");
-          const uri = syncDocument(state, params.file);
+          const uri = syncDocument(state, ctx.cwd, params.file);
           if (!uri) return fail(`Cannot open file: ${params.file}`);
           try {
             const result = await client.textDocumentDocumentSymbol(uri);
@@ -255,7 +261,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           } catch {}
 
           // Step 5: Sync new file into document cache
-          try { syncDocument(state, absNew); } catch {}
+          try { syncDocument(state, ctx.cwd, absNew); } catch {}
 
           const lines = [`Renamed: ${params.file} → ${params.newName}`];
           if (workspaceEdit) lines.push("Applied workspace edits from LSP server.");
@@ -275,7 +281,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         }
         if (character === undefined) return fail(`${action} requires 'character' parameter (or 'symbol' for auto-resolve).`);
 
-        const uri = syncDocument(state, params.file);
+        const uri = syncDocument(state, ctx.cwd, params.file);
         if (!uri) return fail(`Cannot open file: ${params.file}`);
         const pos = positionToLsp(params.line, character);
 
@@ -374,7 +380,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     };
   });
 
-  pi.on("tool_result", async (event) => {
+  pi.on("tool_result", async (event, ctx) => {
     if (event.toolName !== "write" && event.toolName !== "edit") return;
 
     const input = event.input;
@@ -392,7 +398,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     if (!client) return;
 
     try {
-      const uri = syncDocument(state, filePath);
+      const uri = syncDocument(state, ctx.cwd, filePath);
       if (!uri) return;
 
       // Format-on-write
@@ -404,7 +410,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           const formatted = applyTextEditsToString(currentContent, edits);
           if (formatted !== currentContent) {
             writeFileSync(filePath, formatted, "utf8");
-            syncDocument(state, filePath);
+            syncDocument(state, ctx.cwd, filePath);
           }
         }
       } catch {

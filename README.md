@@ -289,11 +289,11 @@ srcode/
 │   │   ├── ask/        # askUserQuestion 工具（schema、提示词、对话框分发）
 │   │   ├── hooks/      # 配置加载 + 沙箱运行器 + 事件连线
 │   │   ├── init/       # /init 提示词（AGENTS.md，绝不写 CLAUDE.md）
-│   │   ├── lsp/        # LSP 代码智能（types, client, config, manager, format-options, index）
+│   │   ├── lsp/        # LSP 代码智能（只读工具层、client/config/manager、write-through 诊断）
 │   │   ├── mcp/        # MCP 客户端（types, config, client, 扩展工厂）
-│   │   ├── memory/     # bun:sqlite + FTS5 长期记忆
+│   │   ├── memory/     # bun:sqlite + FTS5/TF-IDF 长期记忆，含项目 scope 检索
 │   │   ├── plan/       # EnterPlanMode / ExitPlanMode + tool_call 拦截
-│   │   ├── subagent/   # 源自 pi-coding-agent 示例 + memory 钩子
+│   │   ├── subagent/   # 子代理工具 adapter + orchestrator + runner/process/chain/parallel/gate 模块
 │   │   ├── todo/       # todoWrite 工具 + /todo 命令 + 按会话存储
 │   │   ├── web/        # webFetch + webSearch + LRU 缓存
 │   │   ├── events.ts   # 扩展间轻量事件总线
@@ -306,9 +306,9 @@ srcode/
     ├── events.test.ts   # 扩展事件总线
     ├── hooks.test.ts    # 配置加载、运行器、占位符替换
     ├── init.test.ts     # /init 提示词内容 + 命令连线
-    ├── lsp.test.ts      # workspace edit、diagnostics ledger、action helpers、权限分类
+    ├── lsp.test.ts      # workspace edit、diagnostics ledger、action helpers、权限分类、session cwd
     ├── mcp.test.ts      # MCP 扩展工厂、session cwd、失败隔离
-    ├── memory.test.ts   # SQLite store、检索、scope、extract、provider hooks
+    ├── memory.test.ts   # SQLite store、检索、project scope、extract、provider hooks
     ├── plan.test.ts     # tool_call 拦截 + ExitPlanMode 流程
     ├── skills.test.ts   # 内置技能加载并包含非空描述
     ├── subagent.test.ts # 工厂连线、代理发现、runner/process/chain/parallel/fallback/output/worktree/gate 逻辑
@@ -322,7 +322,7 @@ srcode/
 bun test
 ```
 
-191 个用例，完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`；MCP 测试使用 fake client，不启动真实服务器。
+195 个用例，完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`；MCP 测试使用 fake client，不启动真实服务器。
 
 ## 路线图
 

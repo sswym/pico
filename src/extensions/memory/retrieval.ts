@@ -9,6 +9,7 @@
 import type { Database } from "bun:sqlite";
 import { tokenize, filterStopwords, cosineSimilarity, vectorFromJson, type SparseVector } from "./tfidf.ts";
 import { expandQuery, normalizeTerm } from "./synonyms.ts";
+import { SCOPE_GLOBAL, SCOPE_PROJECT, type Scope } from "./schema.ts";
 
 /** FTS5 stopwords. */
 const FTS_STOPWORDS: Record<string, true> = {
@@ -118,6 +119,41 @@ export interface RetrieverOptions {
   temporalDecayHalfLife?: number;
 }
 
+export interface RetrievalQueryOptions {
+  category?: string;
+  minTrust?: number;
+  limit?: number;
+  scope?: Scope;
+  cwd?: string;
+}
+
+function projectScopeKey(cwd: string): string {
+  return `${SCOPE_PROJECT}:${cwd}`;
+}
+
+function scopeFilter(opts: Pick<RetrievalQueryOptions, "scope" | "cwd">): {
+  clause: string;
+  params: string[];
+  projectScope?: string;
+} {
+  if (opts.scope === SCOPE_PROJECT && opts.cwd) {
+    const projectScope = projectScopeKey(opts.cwd);
+    return {
+      clause: "AND (f.scope = ? OR f.scope = ?)",
+      params: [SCOPE_GLOBAL, projectScope],
+      projectScope,
+    };
+  }
+  return {
+    clause: "AND f.scope = ?",
+    params: [opts.scope ?? SCOPE_GLOBAL],
+  };
+}
+
+function scoreScopeBoost(score: number, factScope: string, projectScope: string | undefined): number {
+  return projectScope && factScope === projectScope ? score * 1.5 : score;
+}
+
 export class FactRetriever {
   private readonly db: Database;
   readonly ftsWeight: number;
@@ -136,7 +172,7 @@ export class FactRetriever {
   /**
    * Hybrid search: FTS5 candidates -> Jaccard rerank -> TF-IDF similarity -> trust weighting.
    */
-  search(query: string, opts: { category?: string; minTrust?: number; limit?: number } = {}): ScoredFact[] {
+  search(query: string, opts: RetrievalQueryOptions = {}): ScoredFact[] {
     const minTrust = opts.minTrust ?? 0.3;
     const limit = Math.max(1, opts.limit ?? 10);
 
@@ -145,7 +181,7 @@ export class FactRetriever {
     const expandedTerms = expandQuery(filterStopwords(tokenize(query))).map((e) => e.term);
     const expandedQuery = expandedTerms.join(" ");
 
-    const candidates = this.ftsCandidates(expandedQuery, opts.category, minTrust, limit * 3);
+    const candidates = this.ftsCandidates(expandedQuery, opts, minTrust, limit * 3);
     if (candidates.length === 0) return [];
 
     const queryTokens = jaccardTokens(expandedQuery);
@@ -177,7 +213,7 @@ export class FactRetriever {
         this.ftsWeight * ftsRank +
         this.jaccardWeight * jac +
         this.tfidfWeight * tfidfSim;
-      let score = relevance * fact.trust_score;
+      let score = scoreScopeBoost(relevance * fact.trust_score, fact.scope, scopeFilter(opts).projectScope);
       score *= this._temporalDecay(fact.updated_at);
       scored.push({ ...fact, score });
     }
@@ -189,7 +225,7 @@ export class FactRetriever {
   /**
    * Entity probe: find facts linked to a specific entity.
    */
-  probe(entity: string, opts: { category?: string; minTrust?: number; limit?: number } = {}): ScoredFact[] {
+  probe(entity: string, opts: RetrievalQueryOptions = {}): ScoredFact[] {
     const minTrust = opts.minTrust ?? 0.3;
     const limit = Math.max(1, opts.limit ?? 10);
     const name = entity.trim().toLowerCase();
@@ -203,41 +239,38 @@ export class FactRetriever {
 
     if (!entityRow) return this.search(`"${entity}"`, opts);
 
-    const categoryClause = opts.category ? "AND f.category = ?" : "";
-    const params: [number, number, ...string[], number] = opts.category
-      ? [entityRow.entity_id, minTrust, opts.category, limit] as unknown as [number, number, ...string[], number]
-      : [entityRow.entity_id, minTrust, limit] as unknown as [number, number, ...string[], number];
+    const scope = scopeFilter(opts);
 
     // Build parameterized query
     if (opts.category) {
       const rows = this.db
-        .query<FactRow, [number, number, string, number]>(
+        .query<FactRow, [number, number, ...string[], string, number]>(
           `SELECT f.* FROM facts f
            JOIN fact_entities fe ON fe.fact_id = f.fact_id
-           WHERE fe.entity_id = ? AND f.trust_score >= ? AND f.category = ?
+           WHERE fe.entity_id = ? AND f.trust_score >= ? ${scope.clause} AND f.category = ?
            ORDER BY f.trust_score DESC, f.fact_id DESC
            LIMIT ?`,
         )
-        .all(entityRow.entity_id, minTrust, opts.category, limit) as FactRow[];
-      return rows.map((r) => ({ ...r, score: r.trust_score }));
+        .all(entityRow.entity_id, minTrust, ...scope.params, opts.category, limit) as FactRow[];
+      return rows.map((r) => ({ ...r, score: scoreScopeBoost(r.trust_score, r.scope, scope.projectScope) }));
     }
 
     const rows = this.db
-      .query<FactRow, [number, number, number]>(
+      .query<FactRow, [number, number, ...string[], number]>(
         `SELECT f.* FROM facts f
          JOIN fact_entities fe ON fe.fact_id = f.fact_id
-         WHERE fe.entity_id = ? AND f.trust_score >= ?
+         WHERE fe.entity_id = ? AND f.trust_score >= ? ${scope.clause}
          ORDER BY f.trust_score DESC, f.fact_id DESC
          LIMIT ?`,
       )
-      .all(entityRow.entity_id, minTrust, limit) as FactRow[];
-    return rows.map((r) => ({ ...r, score: r.trust_score }));
+      .all(entityRow.entity_id, minTrust, ...scope.params, limit) as FactRow[];
+    return rows.map((r) => ({ ...r, score: scoreScopeBoost(r.trust_score, r.scope, scope.projectScope) }));
   }
 
   /**
    * Related: find facts that share entities with the given entity.
    */
-  related(entity: string, opts: { category?: string; minTrust?: number; limit?: number } = {}): ScoredFact[] {
+  related(entity: string, opts: RetrievalQueryOptions = {}): ScoredFact[] {
     const minTrust = opts.minTrust ?? 0.3;
     const limit = Math.max(1, opts.limit ?? 10);
     const name = entity.trim().toLowerCase();
@@ -250,43 +283,44 @@ export class FactRetriever {
       .get(name, `%,${name},%`);
 
     if (!entityRow) return this.search(entity, opts);
+    const scope = scopeFilter(opts);
 
     if (opts.category) {
       const rows = this.db
-        .query<FactRow & { co_occurrence: number }, [number, number, string, number]>(
+        .query<FactRow & { co_occurrence: number }, [number, number, ...string[], string, number]>(
           `SELECT f3.*, COUNT(DISTINCT fe2.entity_id) as co_occurrence
            FROM fact_entities fe1
            JOIN fact_entities fe2 ON fe2.entity_id = fe1.entity_id AND fe2.fact_id != fe1.fact_id
            JOIN facts f3 ON f3.fact_id = fe2.fact_id
-           WHERE fe1.entity_id = ? AND f3.trust_score >= ? AND f3.category = ?
+           WHERE fe1.entity_id = ? AND f3.trust_score >= ? ${scope.clause.replaceAll("f.", "f3.")} AND f3.category = ?
            GROUP BY f3.fact_id
            ORDER BY co_occurrence DESC, f3.trust_score DESC
            LIMIT ?`,
         )
-        .all(entityRow.entity_id, minTrust, opts.category, limit) as (FactRow & { co_occurrence: number })[];
-      return rows.map((r) => ({ ...r, score: (r.co_occurrence * 0.5) + (r.trust_score * 0.5) }));
+        .all(entityRow.entity_id, minTrust, ...scope.params, opts.category, limit) as (FactRow & { co_occurrence: number })[];
+      return rows.map((r) => ({ ...r, score: scoreScopeBoost((r.co_occurrence * 0.5) + (r.trust_score * 0.5), r.scope, scope.projectScope) }));
     }
 
     const rows = this.db
-      .query<FactRow & { co_occurrence: number }, [number, number, number]>(
+      .query<FactRow & { co_occurrence: number }, [number, number, ...string[], number]>(
         `SELECT f3.*, COUNT(DISTINCT fe2.entity_id) as co_occurrence
          FROM fact_entities fe1
          JOIN fact_entities fe2 ON fe2.entity_id = fe1.entity_id AND fe2.fact_id != fe1.fact_id
          JOIN facts f3 ON f3.fact_id = fe2.fact_id
-         WHERE fe1.entity_id = ? AND f3.trust_score >= ?
+         WHERE fe1.entity_id = ? AND f3.trust_score >= ? ${scope.clause.replaceAll("f.", "f3.")}
          GROUP BY f3.fact_id
          ORDER BY co_occurrence DESC, f3.trust_score DESC
          LIMIT ?`,
       )
-      .all(entityRow.entity_id, minTrust, limit) as (FactRow & { co_occurrence: number })[];
-    return rows.map((r) => ({ ...r, score: (r.co_occurrence * 0.5) + (r.trust_score * 0.5) }));
+      .all(entityRow.entity_id, minTrust, ...scope.params, limit) as (FactRow & { co_occurrence: number })[];
+    return rows.map((r) => ({ ...r, score: scoreScopeBoost((r.co_occurrence * 0.5) + (r.trust_score * 0.5), r.scope, scope.projectScope) }));
   }
 
   /**
    * Reason: multi-entity compositional query.
    * Finds facts linked to ALL given entities (AND semantics).
    */
-  reason(entities: string[], opts: { category?: string; minTrust?: number; limit?: number } = {}): ScoredFact[] {
+  reason(entities: string[], opts: RetrievalQueryOptions = {}): ScoredFact[] {
     if (entities.length === 0) return [];
     const minTrust = opts.minTrust ?? 0.3;
     const limit = Math.max(1, opts.limit ?? 10);
@@ -306,36 +340,37 @@ export class FactRetriever {
 
     // Build IN clause
     const placeholders = entityIds.map(() => "?").join(",");
+    const scope = scopeFilter(opts);
 
     if (opts.category) {
       const rows = this.db
-        .query<FactRow, [...number[], string, number, number, number]>(
+        .query<FactRow, Array<number | string>>(
           `SELECT f.* FROM facts f
            JOIN fact_entities fe ON fe.fact_id = f.fact_id
-           WHERE fe.entity_id IN (${placeholders}) AND f.category = ?
+           WHERE fe.entity_id IN (${placeholders}) AND f.category = ? ${scope.clause}
            GROUP BY f.fact_id
            HAVING COUNT(DISTINCT fe.entity_id) = ?
            AND f.trust_score >= ?
            ORDER BY f.trust_score DESC
            LIMIT ?`,
         )
-        .all(...entityIds, opts.category, entityIds.length, minTrust, limit) as FactRow[];
-      return rows.map((r) => ({ ...r, score: r.trust_score }));
+        .all(...entityIds, opts.category, ...scope.params, entityIds.length, minTrust, limit) as FactRow[];
+      return rows.map((r) => ({ ...r, score: scoreScopeBoost(r.trust_score, r.scope, scope.projectScope) }));
     }
 
     const rows = this.db
-      .query<FactRow, [...number[], number, number, number]>(
+        .query<FactRow, Array<number | string>>(
         `SELECT f.* FROM facts f
          JOIN fact_entities fe ON fe.fact_id = f.fact_id
-         WHERE fe.entity_id IN (${placeholders})
+         WHERE fe.entity_id IN (${placeholders}) ${scope.clause}
          GROUP BY f.fact_id
          HAVING COUNT(DISTINCT fe.entity_id) = ?
          AND f.trust_score >= ?
          ORDER BY f.trust_score DESC
          LIMIT ?`,
       )
-      .all(...entityIds, entityIds.length, minTrust, limit) as FactRow[];
-    return rows.map((r) => ({ ...r, score: r.trust_score }));
+      .all(...entityIds, ...scope.params, entityIds.length, minTrust, limit) as FactRow[];
+    return rows.map((r) => ({ ...r, score: scoreScopeBoost(r.trust_score, r.scope, scope.projectScope) }));
   }
 
   /**
@@ -419,22 +454,23 @@ export class FactRetriever {
   }
 
   /** Get raw FTS5 candidates from the store. */
-  private ftsCandidates(query: string, category: string | undefined, minTrust: number, limit: number): FactRow[] {
+  private ftsCandidates(query: string, opts: RetrievalQueryOptions, minTrust: number, limit: number): FactRow[] {
     const matchQuery = sanitizeFtsQuery(query);
     if (!matchQuery) return [];
+    const scope = scopeFilter(opts);
 
     try {
-      if (category) {
+      if (opts.category) {
         const rows = this.db
-          .query<FactRow & { fts_rank_raw: number }, [string, number, string, number]>(
+          .query<FactRow & { fts_rank_raw: number }, [string, number, ...string[], string, number]>(
             `SELECT f.*, facts_fts.rank as fts_rank_raw
              FROM facts_fts
              JOIN facts f ON f.fact_id = facts_fts.rowid
-             WHERE facts_fts MATCH ? AND f.trust_score >= ? AND f.category = ?
+             WHERE facts_fts MATCH ? AND f.trust_score >= ? ${scope.clause} AND f.category = ?
              ORDER BY facts_fts.rank
              LIMIT ?`,
           )
-          .all(matchQuery, minTrust, category, limit) as (FactRow & { fts_rank_raw: number })[];
+          .all(matchQuery, minTrust, ...scope.params, opts.category, limit) as (FactRow & { fts_rank_raw: number })[];
 
         if (rows.length === 0) return [];
         const rawRanks = rows.map((r) => Math.abs(r.fts_rank_raw));
@@ -446,15 +482,15 @@ export class FactRetriever {
       }
 
       const rows = this.db
-        .query<FactRow & { fts_rank_raw: number }, [string, number, number]>(
+        .query<FactRow & { fts_rank_raw: number }, [string, number, ...string[], number]>(
           `SELECT f.*, facts_fts.rank as fts_rank_raw
            FROM facts_fts
            JOIN facts f ON f.fact_id = facts_fts.rowid
-           WHERE facts_fts MATCH ? AND f.trust_score >= ?
+           WHERE facts_fts MATCH ? AND f.trust_score >= ? ${scope.clause}
            ORDER BY facts_fts.rank
            LIMIT ?`,
         )
-        .all(matchQuery, minTrust, limit) as (FactRow & { fts_rank_raw: number })[];
+        .all(matchQuery, minTrust, ...scope.params, limit) as (FactRow & { fts_rank_raw: number })[];
 
       if (rows.length === 0) return [];
       const rawRanks = rows.map((r) => Math.abs(r.fts_rank_raw));

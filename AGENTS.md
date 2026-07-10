@@ -7,7 +7,7 @@
 ```bash
 bun run start              # 源码模式启动（开发用）
 bun run build              # 3 阶段编译：嵌入资源生成 → bun compile → 生成 package.json
-bun test                   # Bun 原生测试运行器，121 个用例，完全离线
+bun test                   # Bun 原生测试运行器，195 个用例，完全离线
 bun test tests/memory.test.ts  # 运行单个测试文件
 ```
 
@@ -106,4 +106,4 @@ function makeFakePi() {
 - `src/generated/` 是构建时生成的，不要手动编辑
 - 扩展间通过事件链解耦，不要在扩展间直接 import
 - 修改扩展时检查对应的 `tests/<feature>.test.ts`，可能需要同步更新 `__reset*ForTests()` 钩子
-- LSP 扩展最复杂（14 种 action、workspace edit 引擎、diagnostics ledger），改动前先读 `src/extensions/lsp/` 全部文件
+- LSP 扩展最复杂（只读 action + 被阻断的写入/高风险 action、workspace edit 引擎、diagnostics ledger），改动前先读 `src/extensions/lsp/` 全部文件

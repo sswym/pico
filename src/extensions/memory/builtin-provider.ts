@@ -182,6 +182,8 @@ export class BuiltinMemoryProvider implements MemoryProvider {
       category: opts.category,
       minTrust: opts.minTrust,
       limit: opts.limit,
+      scope: opts.scope,
+      cwd: opts.cwd,
     }).map(toScoredFact);
   }
 
@@ -191,6 +193,8 @@ export class BuiltinMemoryProvider implements MemoryProvider {
       category: opts.category,
       minTrust: opts.minTrust,
       limit: opts.limit,
+      scope: opts.scope,
+      cwd: opts.cwd,
     }).map(toScoredFact);
   }
   

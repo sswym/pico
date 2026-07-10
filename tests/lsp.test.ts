@@ -30,6 +30,7 @@ import {
   __recordInitFailureForTests,
   createLspManager,
   setIdleTimeout,
+  syncDocument,
   stopServer,
 } from "../src/extensions/lsp/manager.ts";
 import type { TextEdit } from "../src/extensions/lsp/types.ts";
@@ -159,6 +160,22 @@ describe("LSP action risk classification", () => {
     expect(blocked.block).toBe(true);
     expect(blocked.reason).toMatch(/mutate files|permission tier/i);
   });
+
+  test("registered tool description presents write and high-risk actions as blocked", () => {
+    let registered: any = null;
+    const fakePi: any = {
+      on: () => {},
+      registerTool: (tool: any) => {
+        registered = tool;
+      },
+    };
+    lspExtension(fakePi);
+
+    expect(registered.description).toContain("Read-only actions:");
+    expect(registered.description).toContain("High-risk/write actions are currently blocked");
+    expect(registered.description).toContain("rename_file");
+    expect(registered.parameters.properties.action.description).toContain("Currently blocked");
+  });
 });
 
 describe("LspManager runtime state", () => {
@@ -190,6 +207,46 @@ describe("LspManager runtime state", () => {
 
     await stopServer(b);
     expect(b.runtime.idleCheckInterval).toBeNull();
+  });
+
+  test("syncDocument resolves relative paths from session cwd, not process cwd", () => {
+    const processDir = mkdtempSync(join(tmpdir(), "srcode-lsp-process-"));
+    const sessionDir = mkdtempSync(join(tmpdir(), "srcode-lsp-session-"));
+    const oldCwd = process.cwd();
+    writeFileSync(join(processDir, "same.ts"), "const fromProcess = true;\n", "utf8");
+    writeFileSync(join(sessionDir, "same.ts"), "const fromSession = true;\n", "utf8");
+
+    const opened: Array<{ filePath: string; text: string; languageId: string }> = [];
+    const state = createLspManager();
+    state.servers.set("tsserver", {
+      config: { fileTypes: [".ts"], isLinter: false },
+      client: {
+        ready: true,
+        ensureOpen: (filePath: string, text: string, languageId: string) => {
+          opened.push({ filePath, text, languageId });
+          return `file://${filePath}`;
+        },
+      },
+      openDocuments: new Map(),
+      lastActivity: Date.now(),
+    } as any);
+
+    try {
+      process.chdir(processDir);
+      const uri = syncDocument(state, sessionDir, "same.ts");
+      expect(uri).toBe(`file://${join(sessionDir, "same.ts")}`);
+      expect(opened).toEqual([
+        {
+          filePath: join(sessionDir, "same.ts"),
+          text: "const fromSession = true;\n",
+          languageId: "typescript",
+        },
+      ]);
+    } finally {
+      process.chdir(oldCwd);
+      rmSync(processDir, { recursive: true, force: true });
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
   });
 });
 

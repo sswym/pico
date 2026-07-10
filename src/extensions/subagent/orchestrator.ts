@@ -1,0 +1,562 @@
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import { buildChainTask } from "./chain.ts";
+import { mapWithConcurrencyLimit } from "./concurrency.ts";
+import { runWithFallbackModels } from "./fallback.ts";
+import { runGateAfterSuccess } from "./gates.ts";
+import { spillLargeFileOnlyOutput } from "./output.ts";
+import {
+	createParallelPlaceholders,
+	formatParallelProgress,
+	summarizeParallelResults,
+} from "./parallel.ts";
+import {
+	applyProcessExit,
+	buildAgentProcessArgs,
+	createInitialResult,
+	createUnknownAgentResult,
+	runJsonProcess,
+} from "./process.ts";
+import {
+	getFinalOutput,
+	getResultOutput,
+	isFailedResult,
+	type SingleResult,
+	type SubagentDetails,
+} from "./results.ts";
+import { tryForkSession } from "./session.ts";
+import {
+	cleanupWorktrees,
+	mergeParallelWorktrees,
+	prepareParallelWorktrees,
+	type WorktreeHandle,
+} from "./worktree.ts";
+import { publishExtensionEvent } from "../events.ts";
+
+const MAX_PARALLEL_TASKS = 8;
+const MAX_CONCURRENCY = 4;
+const PER_TASK_OUTPUT_CAP = 50 * 1024;
+
+type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
+type SubagentToolResult = AgentToolResult<SubagentDetails> & { isError?: boolean };
+
+export interface SubagentTaskItem {
+	agent: string;
+	task: string;
+	cwd?: string;
+	context?: "fresh" | "fork";
+}
+
+export interface SubagentChainItem extends SubagentTaskItem {
+	label?: string;
+	model?: string;
+	output?: string;
+	reads?: string[];
+	phase?: string;
+}
+
+export interface SubagentRequest {
+	agent?: string;
+	task?: string;
+	tasks?: SubagentTaskItem[];
+	chain?: SubagentChainItem[];
+	agentScope?: AgentScope;
+	confirmProjectAgents?: boolean;
+	cwd?: string;
+	context?: "fresh" | "fork";
+	isolation?: "none" | "worktree";
+}
+
+export interface SubagentRunContext {
+	cwd: string;
+	hasUI?: boolean;
+	ui: {
+		confirm(title: string, message: string): Promise<boolean>;
+	};
+	sessionManager?: unknown;
+}
+
+async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
+	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "srcode-subagent-"));
+	const safeName = agentName.replace(/[^\w.-]+/g, "_");
+	const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
+	await withFileMutationQueue(filePath, async () => {
+		await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
+	});
+	return { dir: tmpDir, filePath };
+}
+
+function getPiInvocation(args: string[]): { command: string; args: string[] } {
+	const currentScript = process.argv[1];
+	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
+	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
+		return { command: process.execPath, args: [currentScript, ...args] };
+	}
+
+	const execName = path.basename(process.execPath).toLowerCase();
+	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
+	if (!isGenericRuntime) {
+		return { command: process.execPath, args };
+	}
+
+	return { command: "srcode", args };
+}
+
+async function runSingleAgent(
+	defaultCwd: string,
+	agents: AgentConfig[],
+	agentName: string,
+	task: string,
+	cwd: string | undefined,
+	step: number | undefined,
+	signal: AbortSignal | undefined,
+	onUpdate: OnUpdateCallback | undefined,
+	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	forkSessionPath?: string,
+): Promise<SingleResult> {
+	const agent = agents.find((a) => a.name === agentName);
+
+	if (!agent) {
+		return createUnknownAgentResult(agentName, task, agents, step);
+	}
+
+	let tmpPromptDir: string | null = null;
+	let tmpPromptPath: string | null = null;
+
+	const currentResult = createInitialResult(agent, agentName, task, step);
+
+	const emitUpdate = () => {
+		if (onUpdate) {
+			onUpdate({
+				content: [{ type: "text", text: getFinalOutput(currentResult.messages) || "(running...)" }],
+				details: makeDetails([currentResult]),
+			});
+		}
+	};
+
+	try {
+		if (agent.systemPrompt.trim()) {
+			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
+			tmpPromptDir = tmp.dir;
+			tmpPromptPath = tmp.filePath;
+		}
+
+		const args = buildAgentProcessArgs(agent, task, forkSessionPath, tmpPromptPath ?? undefined);
+		const invocation = getPiInvocation(args);
+		const processResult = await runJsonProcess({
+			command: invocation.command,
+			args: invocation.args,
+			cwd: cwd ?? defaultCwd,
+			result: currentResult,
+			signal,
+			timeoutMs: agent.maxExecutionTimeMs,
+			spawn: (command, args, options) => spawn(command, args, options),
+			onMessage: emitUpdate,
+		});
+
+		applyProcessExit(currentResult, processResult.exitCode, processResult.timedOut, agent.maxExecutionTimeMs);
+		if (processResult.wasAborted) throw new Error("Subagent was aborted");
+
+		try {
+			await spillLargeFileOnlyOutput(currentResult, agent.name, agent.outputMode, PER_TASK_OUTPUT_CAP, {
+				tmpPrefix: path.join(os.tmpdir(), "srcode-agent-output-"),
+				mkdtemp: (prefix) => fs.promises.mkdtemp(prefix),
+				writeFile: (filePath, content) => fs.promises.writeFile(filePath, content, { encoding: "utf-8", mode: 0o600 }),
+				now: () => Date.now(),
+			});
+		} catch {
+			/* ignore - fall back to inline output */
+		}
+
+		return currentResult;
+	} finally {
+		if (tmpPromptPath)
+			try {
+				fs.unlinkSync(tmpPromptPath);
+			} catch {
+				/* ignore */
+			}
+		if (tmpPromptDir)
+			try {
+				fs.rmdirSync(tmpPromptDir);
+			} catch {
+				/* ignore */
+			}
+	}
+}
+
+async function checkGateAfterSuccess(
+	agent: AgentConfig | undefined,
+	result: SingleResult,
+	defaultCwd: string,
+	cwd: string | undefined,
+	agents: AgentConfig[],
+	task: string,
+	step: number | undefined,
+	signal: AbortSignal | undefined,
+	onUpdate: OnUpdateCallback | undefined,
+	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	forkSessionPath?: string,
+): Promise<SingleResult> {
+	return await runGateAfterSuccess({
+		agent,
+		result,
+		task,
+		runCwd: cwd ?? defaultCwd,
+		context: undefined,
+		signal,
+		runRepair: (agentName, repairTask) => runSingleAgent(
+			defaultCwd,
+			agents,
+			agentName,
+			repairTask,
+			cwd,
+			step,
+			signal,
+			onUpdate,
+			makeDetails,
+			forkSessionPath,
+		),
+	});
+}
+
+async function runWithFallback(
+	defaultCwd: string,
+	agents: AgentConfig[],
+	agentName: string,
+	task: string,
+	cwd: string | undefined,
+	step: number | undefined,
+	signal: AbortSignal | undefined,
+	onUpdate: OnUpdateCallback | undefined,
+	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	forkSessionPath?: string,
+): Promise<SingleResult> {
+	return await runWithFallbackModels({
+		agents,
+		agentName,
+		context: undefined,
+		signal,
+		run: (runAgents) => runSingleAgent(
+			defaultCwd,
+			runAgents,
+			agentName,
+			task,
+			cwd,
+			step,
+			signal,
+			onUpdate,
+			makeDetails,
+			forkSessionPath,
+		),
+		onSuccessOrNoFallback: (agent, result) => checkGateAfterSuccess(
+			agent,
+			result,
+			defaultCwd,
+			cwd,
+			agents,
+			task,
+			step,
+			signal,
+			onUpdate,
+			makeDetails,
+			forkSessionPath,
+		),
+	});
+}
+
+export async function runSubagentRequest(
+	params: SubagentRequest,
+	signal: AbortSignal | undefined,
+	onUpdate: OnUpdateCallback | undefined,
+	ctx: SubagentRunContext,
+): Promise<SubagentToolResult> {
+	const agentScope: AgentScope = params.agentScope ?? "user";
+	const discovery = discoverAgents(ctx.cwd, agentScope);
+	const agents = discovery.agents;
+	const confirmProjectAgents = params.confirmProjectAgents ?? true;
+
+	const hasChain = (params.chain?.length ?? 0) > 0;
+	const hasTasks = (params.tasks?.length ?? 0) > 0;
+	const hasSingle = Boolean(params.agent && params.task);
+	const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle);
+
+	const makeDetails =
+		(mode: "single" | "parallel" | "chain") =>
+		(results: SingleResult[]): SubagentDetails => ({
+			mode,
+			agentScope,
+			projectAgentsDir: discovery.projectAgentsDir,
+			results,
+		});
+
+	if (modeCount !== 1) {
+		const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
+		return {
+			content: [
+				{
+					type: "text",
+					text: `Invalid parameters. Provide exactly one mode.\nAvailable agents: ${available}`,
+				},
+			],
+			details: makeDetails("single")([]),
+		};
+	}
+
+	if ((agentScope === "project" || agentScope === "both") && confirmProjectAgents && ctx.hasUI) {
+		const requestedAgentNames = new Set<string>();
+		if (params.chain) for (const step of params.chain) requestedAgentNames.add(step.agent);
+		if (params.tasks) for (const t of params.tasks) requestedAgentNames.add(t.agent);
+		if (params.agent) requestedAgentNames.add(params.agent);
+
+		const projectAgentsRequested = Array.from(requestedAgentNames)
+			.map((name) => agents.find((a) => a.name === name))
+			.filter((a): a is AgentConfig => a?.source === "project");
+
+		if (projectAgentsRequested.length > 0) {
+			const names = projectAgentsRequested.map((a) => a.name).join(", ");
+			const dir = discovery.projectAgentsDir ?? "(unknown)";
+			const ok = await ctx.ui.confirm(
+				"Run project-local agents?",
+				`Agents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
+			);
+			if (!ok)
+				return {
+					content: [{ type: "text", text: "Canceled: project-local agents not approved." }],
+					details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
+				};
+		}
+	}
+
+	const chain = params.chain;
+	if (chain && chain.length > 0) {
+		const results: SingleResult[] = [];
+		let previousOutput = "";
+		const outputs: Record<string, string> = {};
+
+		for (const [i, step] of chain.entries()) {
+			const taskWithContext = buildChainTask(
+				step,
+				previousOutput,
+				outputs,
+				(filePath) => fs.readFileSync(filePath, "utf-8"),
+			);
+
+			const stepAgents = step.model
+				? agents.map((a) => (a.name === step.agent ? { ...a, model: step.model } : a))
+				: agents;
+
+			let stepForkPath: string | undefined;
+			let stepForkFallback: string | undefined;
+			if (step.context === "fork") {
+				stepForkPath = tryForkSession(ctx.sessionManager);
+				if (!stepForkPath) stepForkFallback = "context=fork requested but session forking unavailable; using fresh context";
+			}
+
+			const chainUpdate: OnUpdateCallback | undefined = onUpdate
+				? (partial) => {
+						const currentResult = partial.details?.results[0];
+						if (currentResult) {
+							const allResults = [...results, currentResult];
+							onUpdate({
+								content: partial.content,
+								details: makeDetails("chain")(allResults),
+							});
+						}
+					}
+				: undefined;
+
+			const result = await runWithFallback(
+				ctx.cwd,
+				stepAgents,
+				step.agent,
+				taskWithContext,
+				step.cwd,
+				i + 1,
+				signal,
+				chainUpdate,
+				makeDetails("chain"),
+				stepForkPath,
+			);
+
+			if (step.label) result.label = step.label;
+			if (step.phase) result.phase = step.phase;
+			if (stepForkFallback) result.contextFallback = stepForkFallback;
+
+			results.push(result);
+			publishExtensionEvent("subagent_completed", { task: step.task, result: getResultOutput(result) });
+
+			const isError = isFailedResult(result);
+			if (isError) {
+				const errorMsg = getResultOutput(result);
+				return {
+					content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}` }],
+					details: makeDetails("chain")(results),
+					isError: true,
+				};
+			}
+			previousOutput = getFinalOutput(result.messages);
+
+			if (step.output) {
+				outputs[step.output] = previousOutput;
+			}
+		}
+		const lastResult = results.at(-1);
+		return {
+			content: [{ type: "text", text: lastResult ? getFinalOutput(lastResult.messages) || "(no output)" : "(no output)" }],
+			details: makeDetails("chain")(results),
+		};
+	}
+
+	if (params.tasks && params.tasks.length > 0) {
+		if (params.tasks.length > MAX_PARALLEL_TASKS)
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`,
+					},
+				],
+				details: makeDetails("parallel")([]),
+			};
+
+		const useWorktree = params.isolation === "worktree";
+		const worktreeHandles: Array<WorktreeHandle | null> = new Array(params.tasks.length).fill(null);
+
+		if (useWorktree) {
+			const prepared = prepareParallelWorktrees(ctx.cwd, params.tasks);
+			worktreeHandles.splice(0, worktreeHandles.length, ...prepared.handles);
+			if (prepared.errorText) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: prepared.errorText,
+						},
+					],
+					details: makeDetails("parallel")([]),
+					isError: true,
+				};
+			}
+		}
+
+		const allResults = createParallelPlaceholders(params.tasks);
+
+		const emitParallelUpdate = () => {
+			if (onUpdate) {
+				onUpdate({
+					content: [
+						{ type: "text", text: formatParallelProgress(allResults) },
+					],
+					details: makeDetails("parallel")([...allResults]),
+				});
+			}
+		};
+
+		try {
+			const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
+				const handle = worktreeHandles[index];
+				const taskCwd = handle ? handle.worktreeDir : t.cwd;
+
+				let forkPath: string | undefined;
+				let forkFallbackNote: string | undefined;
+				if (t.context === "fork") {
+					forkPath = tryForkSession(ctx.sessionManager);
+					if (!forkPath) forkFallbackNote = "context=fork requested but session forking unavailable; using fresh context";
+				}
+
+				const result = await runWithFallback(
+					ctx.cwd,
+					agents,
+					t.agent,
+					t.task,
+					taskCwd,
+					undefined,
+					signal,
+					(partial) => {
+						if (partial.details?.results[0]) {
+							allResults[index] = partial.details.results[0];
+							emitParallelUpdate();
+						}
+					},
+					makeDetails("parallel"),
+					forkPath,
+				);
+				if (forkFallbackNote) result.contextFallback = forkFallbackNote;
+				allResults[index] = result;
+				emitParallelUpdate();
+				return result;
+			});
+
+			const mergeNotes = useWorktree ? mergeParallelWorktrees(ctx.cwd, results, worktreeHandles) : [];
+
+			for (let i = 0; i < results.length; i++) {
+				const t = params.tasks[i];
+				const r = results[i];
+				if (t && r) publishExtensionEvent("subagent_completed", { task: t.task, result: getResultOutput(r) });
+			}
+
+			const text = summarizeParallelResults(
+				results,
+				PER_TASK_OUTPUT_CAP,
+				useWorktree ? mergeNotes : [],
+			);
+			return {
+				content: [{ type: "text", text }],
+				details: makeDetails("parallel")(results),
+			};
+		} finally {
+			if (useWorktree) {
+				cleanupWorktrees(worktreeHandles);
+			}
+		}
+	}
+
+	if (params.agent && params.task) {
+		let forkPath: string | undefined;
+		let forkFallbackNote: string | undefined;
+		if (params.context === "fork") {
+			forkPath = tryForkSession(ctx.sessionManager);
+			if (!forkPath) forkFallbackNote = "context=fork requested but session forking unavailable; using fresh context";
+		}
+		const result = await runWithFallback(
+			ctx.cwd,
+			agents,
+			params.agent,
+			params.task,
+			params.cwd,
+			undefined,
+			signal,
+			onUpdate,
+			makeDetails("single"),
+			forkPath,
+		);
+		publishExtensionEvent("subagent_completed", { task: params.task, result: getResultOutput(result) });
+		if (forkFallbackNote) result.contextFallback = forkFallbackNote;
+		const isError = isFailedResult(result);
+		if (isError) {
+			const errorMsg = getResultOutput(result);
+			return {
+				content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${errorMsg}` }],
+				details: makeDetails("single")([result]),
+				isError: true,
+			};
+		}
+		const fallbackPrefix = forkFallbackNote ? `_note: ${forkFallbackNote}_\n\n` : "";
+		return {
+			content: [{ type: "text", text: fallbackPrefix + (getFinalOutput(result.messages) || "(no output)") }],
+			details: makeDetails("single")([result]),
+		};
+	}
+
+	const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
+	return {
+		content: [{ type: "text", text: `Invalid parameters. Available agents: ${available}` }],
+		details: makeDetails("single")([]),
+	};
+}

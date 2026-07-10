@@ -41,9 +41,11 @@ default tools. srcode adds behaviour through ExtensionFactory modules.
 ## Refactoring Notes
 
 - `src/extensions/subagent/index.ts`: mode adapter for single, parallel, and
-  chain subagent runs. It no longer uses `@ts-nocheck`. Pure seams for
-  concurrency, session forking, and result/display helpers have been extracted
-  under `src/extensions/subagent/`.
+  chain subagent runs. It no longer uses `@ts-nocheck`. The pi tool adapter is
+  intentionally shallow; execution orchestration now lives in
+  `src/extensions/subagent/orchestrator.ts`. Pure seams for concurrency,
+  session forking, and result/display helpers have been extracted under
+  `src/extensions/subagent/`.
   TUI rendering has also been extracted to `src/extensions/subagent/renderer.ts`.
   JSON-mode runner event reduction has been extracted to
   `src/extensions/subagent/runner.ts`. Chain task construction now lives in
@@ -65,4 +67,8 @@ default tools. srcode adds behaviour through ExtensionFactory modules.
   risk classification, status/capabilities/request actions, workspace
   diagnostics formatting, and symbol result formatting live in
   `src/extensions/lsp/executor.ts`. File mutation actions intentionally remain
-  blocked by ADR-0001 until a separate write permission tier exists.
+  blocked by ADR-0001 until a separate write permission tier exists. Relative
+  document paths are resolved from session `ctx.cwd`, not `process.cwd()`.
+- `src/extensions/memory/retrieval.ts`: hybrid retrieval shares the same
+  project-scope semantics as `MemoryStore.search`: project queries see global
+  plus current-project facts and exclude other project facts.
