@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>srcode TUI — Tokyo Storm</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #0f0f1a;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  font-family: 'SF Mono', 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+}
+
+/* Terminal frame */
+.terminal {
+  width: 960px;
+  max-width: 96vw;
+  background: #1a1b2e;
+  border: 1px solid #2f3050;
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  overflow: hidden;
+}
+
+/* Title bar */
+.titlebar {
+  background: #14152b;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #2f3050;
+  user-select: none;
+}
+.titlebar .dot { width: 12px; height: 12px; border-radius: 50%; }
+.titlebar .dot.r { background: #ff5f5f; }
+.titlebar .dot.y { background: #ffbd2e; }
+.titlebar .dot.g { background: #28ca41; }
+.titlebar .title {
+  color: #565f89;
+  font-size: 12px;
+  margin-left: 8px;
+  font-family: system-ui, sans-serif;
+}
+
+/* TUI content */
+.tui { padding: 0; }
+
+/* Logo header */
+.header {
+  background: #1a1b2e;
+  padding: 20px 24px 12px;
+  text-align: center;
+  border-bottom: 1px solid #242545;
+}
+.header .logo {
+  color: #7aa2f7;
+  font-weight: bold;
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: 0.5px;
+  white-space: pre;
+}
+.header .tagline {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.header .tagline .name { color: #7dcfff; font-weight: bold; }
+.header .tagline .version { color: #565f89; }
+.header .tagline .sep { color: #3b4261; }
+.header .tagline .hint { color: #565f89; }
+
+/* Message area */
+.messages {
+  padding: 12px 16px;
+  background: #1a1b2e;
+  max-height: 560px;
+  overflow-y: auto;
+}
+
+/* User message */
+.user-msg {
+  background: #242545;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+}
+.user-msg .label { color: #565f89; font-size: 11px; margin-bottom: 4px; }
+.user-msg .text { color: #c0caf5; font-size: 13px; line-height: 1.6; }
+
+/* Tool call / result */
+.tool {
+  border-radius: 8px;
+  margin-bottom: 10px;
+  overflow: hidden;
+  border: 1px solid #2f3050;
+}
+.tool.pending { background: #1f2335; border-color: #2f3050; }
+.tool.success { background: #1f2a20; border-color: #2f3a2f; }
+.tool.error  { background: #2f1f1f; border-color: #3a2f2f; }
+
+.tool-header {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid #2f3050;
+  display: flex;
+  justify-content: space-between;
+}
+.tool.pending .tool-header { border-color: #2f3050; }
+.tool.success .tool-header { border-color: #2f3a2f; }
+.tool.error .tool-header  { border-color: #3a2f2f; }
+
+.tool-title { color: #c0caf5; font-weight: bold; }
+.tool-status { color: #565f89; }
+.tool-status.success { color: #9ece6a; }
+.tool-body {
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.tool-body .output { color: #a9b1d6; }
+.tool-body .dim { color: #565f89; }
+.tool-body .accent { color: #7dcfff; }
+.tool-body .warning { color: #e0af68; }
+.tool-body .success { color: #9ece6a; }
+.tool-body .error { color: #f7768e; }
+
+/* Markdown content */
+.assistant {
+  margin-bottom: 10px;
+  padding: 6px 14px;
+}
+.assistant .content { color: #c0caf5; font-size: 13px; line-height: 1.7; }
+.assistant .content h1, .assistant .content h2, .assistant .content h3 {
+  color: #e0af68;
+  margin: 10px 0 4px;
+}
+.assistant .content h1 { font-size: 15px; }
+.assistant .content h2 { font-size: 14px; }
+.assistant .content h3 { font-size: 13px; }
+.assistant .content p { margin: 4px 0; }
+.assistant .content code {
+  background: #1f2335;
+  color: #7dcfff;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.assistant .content pre {
+  background: #1f2335;
+  border: 1px solid #2f3050;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 6px 0;
+  font-size: 12px;
+  color: #9ece6a;
+  overflow-x: auto;
+}
+.assistant .content pre .kw { color: #7aa2f7; }
+.assistant .content pre .fn { color: #c0caf5; }
+.assistant .content pre .str { color: #9ece6a; }
+.assistant .content pre .cm { color: #565f89; }
+.assistant .content a { color: #7dcfff; text-decoration: none; }
+.assistant .content ul { margin: 4px 0 4px 18px; }
+.assistant .content li { margin: 2px 0; }
+.assistant .content li::marker { color: #7dcfff; }
+.assistant .content blockquote {
+  border-left: 3px solid #3b4261;
+  color: #565f89;
+  padding-left: 10px;
+  margin: 6px 0;
+}
+
+/* Thinking block */
+.thinking {
+  border-left: 3px solid #7dcfff;
+  margin: 6px 0 10px 14px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #565f89;
+  background: #1f2335;
+  border-radius: 0 6px 6px 0;
+}
+
+/* Input area */
+.input-area {
+  background: #14152b;
+  border-top: 1px solid #2f3050;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.input-area .prompt {
+  color: #565f89;
+  font-size: 13px;
+}
+.input-area .prompt .accent { color: #7dcfff; }
+.input-area input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #c0caf5;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  caret-color: #7dcfff;
+}
+.input-area input::placeholder { color: #3b4261; }
+
+/* Footer */
+.footer {
+  background: #14152b;
+  padding: 6px 16px;
+  display: flex;
+  justify-content: space-between;
+  border-top: 1px solid #242545;
+  font-size: 11px;
+}
+.footer .left { color: #565f89; }
+.footer .left .accent { color: #7dcfff; font-weight: bold; }
+.footer .right { color: #3b4261; }
+.footer .right .model { color: #565f89; }
+
+/* Label tag */
+.tag { 
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 6px;
+}
+.tag.pending { background: #2f3050; color: #a9b1d6; }
+.tag.success { background: #1f3a1f; color: #9ece6a; }
+.tag.error { background: #3a1f1f; color: #f7768e; }
+
+/* Scrollbar */
+.messages::-webkit-scrollbar { width: 6px; }
+.messages::-webkit-scrollbar-track { background: #1a1b2e; }
+.messages::-webkit-scrollbar-thumb { background: #2f3050; border-radius: 3px; }
+
+/* Theme label */
+.theme-label {
+  text-align: center;
+  padding: 8px;
+  font-size: 11px;
+  color: #3b4261;
+  border-top: 1px solid #242545;
+  background: #14152b;
+  letter-spacing: 1px;
+}
+</style>
+</head>
+<body>
+
+<div class="terminal">
+  <!-- Title bar -->
+  <div class="titlebar">
+    <span class="dot r"></span>
+    <span class="dot y"></span>
+    <span class="dot g"></span>
+    <span class="title">srcode — ~/my-project</span>
+  </div>
+
+  <div class="tui">
+    <!-- Logo header -->
+    <div class="header">
+      <div class="logo">
+ ____  ____  ____  ____  ____  _____
+/ ___\/(  __\/   _\/  _ \/  _ \/  __/
+|    \|  \/||  /  | / \|| | \||  \
+\___ ||    /|  \_ | \_/|| |_/||  /_
+\____/\_/\_\\____/\____/\____/\____\
+      </div>
+      <div class="tagline">
+        <span class="name">srcode</span><span class="version"> v0.1.4</span><span class="sep"> · </span><span class="hint">/ commands</span><span class="sep"> · </span><span class="hint">! bash</span>
+      </div>
+    </div>
+
+    <!-- Messages -->
+    <div class="messages">
+
+      <!-- User message -->
+      <div class="user-msg">
+        <div class="label">user</div>
+        <div class="text">这个项目用了哪些技术栈？帮我分析一下项目结构。</div>
+      </div>
+
+      <!-- Tool: read -->
+      <div class="tool pending">
+        <div class="tool-header">
+          <span><span class="tool-title">read</span> <span class="accent">AGENTS.md</span> <span class="tag pending">running</span></span>
+          <span class="tool-status">116 lines</span>
+        </div>
+        <div class="tool-body">
+          <div class="output"># AGENTS.md</div>
+          <div class="dim">│</div>
+          <div class="dim">│ srcode — 基于 pi-coding-agent 的 vibe coding agent</div>
+          <div class="dim">│</div>
+          <div class="dim">│ ## 命令</div>
+          <div class="dim">│</div>
+          <div class="dim">│ bun run start       # 源码模式启动</div>
+          <div class="dim">│ bun run build       # 3 阶段编译</div>
+          <div class="dim">│ bun test            # 121 个测试用例</div>
+        </div>
+      </div>
+
+      <!-- Assistant response (thinking) -->
+      <div class="thinking">Thinking through the project structure...</div>
+
+      <!-- Assistant response -->
+      <div class="assistant">
+        <div class="content">
+          <h2>技术栈概览</h2>
+          <p>这个项目使用 <strong>Bun</strong> 作为运行时，构建在 <code>@earendil-works/pi-coding-agent</code> 之上。</p>
+          <h3>核心依赖</h3>
+          <ul>
+            <li><strong>运行时</strong>：Bun（非 Node.js），编译产出 ~102MB 独立二进制</li>
+            <li><strong>TUI 框架</strong>：<code>@earendil-works/pi-tui</code>（pixel‑perfect terminal UI）</li>
+            <li><strong>插件系统</strong>：13 个 <code>ExtensionFactory</code>，通过事件钩子注入功能</li>
+          </ul>
+          <pre><span class="cm"># 目录结构关键文件</span>
+bin/srcode.ts           <span class="cm"># 入口</span>
+src/extensions/         <span class="cm"># 13 个功能插件</span>
+│ ├── logo/             <span class="cm"># 自定义 Header</span>
+│ ├── memory/           <span class="cm"># 长期记忆</span>
+│ ├── lsp/              <span class="cm"># 语言服务器</span>
+│ └── mcp/              <span class="cm"># MCP 协议支持</span>
+tests/                  <span class="cm"># 121 个测试</span></pre>
+          <p>需要我深入分析某个具体部分吗？</p>
+        </div>
+      </div>
+
+      <!-- Tool: bash -->
+      <div class="tool success">
+        <div class="tool-header">
+          <span><span class="tool-title">$</span> <span class="accent">bun test</span> <span class="tag success">passed</span></span>
+          <span class="tool-status success">✓ done (121 tests)</span>
+        </div>
+        <div class="tool-body">
+          <div class="dim">bun test v1.2.3</div>
+          <div class="success">✓ memory.test.ts (42 tests) 142ms</div>
+          <div class="success">✓ logo.test.ts             (8 tests)  23ms</div>
+          <div class="success">✓ lsp.test.ts             (18 tests) 89ms</div>
+          <div class="dim">...</div>
+          <div class="success">✓ all tests passed (121)</div>
+        </div>
+      </div>
+
+      <!-- User message -->
+      <div class="user-msg">
+        <div class="label">user</div>
+        <div class="text">我想把默认主题改成 Tokyo Night 风格的配色，能帮我创建一个插件吗？</div>
+      </div>
+
+      <!-- Thinking -->
+      <div class="thinking" style="border-color: #e0af68;">Preparing theme extension...</div>
+
+    </div>
+
+    <!-- Input -->
+    <div class="input-area">
+      <span class="prompt"><span class="accent">●</span></span>
+      <input type="text" placeholder="Type / for commands, ! for bash, or enter your message..." autofocus>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <div class="left">
+        <span class="accent">srcode</span> · 4 messages · <span class="accent">LSP</span>: typescript
+      </div>
+      <div class="right">
+        <span class="model">deepseek‑v4‑flash</span> · 8.2k tokens
+      </div>
+    </div>
+
+    <!-- Theme label -->
+    <div class="theme-label">TOKYO STORM · #7aa2f7 / #7dcfff / #9ece6a / #c0caf5</div>
+  </div>
+</div>
+
+</body>
+</html>

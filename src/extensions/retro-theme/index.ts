@@ -1,0 +1,71 @@
+/**
+ * retro-theme extension — applies a Claude Code‑inspired warm‑dark colour
+ * scheme with purple/orange accents, and customizes the working indicator.
+ *
+ * Applies the theme on session_start by:
+ *   1. Syncing the bundled retro-terminal.json to the custom themes
+ *      directory (~/.srcode/agent/themes/) so pi's discovery can find it.
+ *   2. Calling ctx.ui.setTheme("retro-terminal") which loads it via the
+ *      theme discovery system (getCustomThemeInfos → loadThemeJson).
+ */
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import type {
+  ExtensionAPI,
+  ExtensionFactory,
+} from "@earendil-works/pi-coding-agent";
+import retroTheme from "../../theme/retro-terminal.json" with { type: "json" };
+
+export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
+  pi.on("session_start", async (_event, ctx) => {
+    // ── Sync theme to filesystem so discovery finds it ───────────────
+    // ctx.ui.setTheme() checks instanceof Theme for objects, but we can
+    // only pass a plain JSON import. So we write the file to the custom
+    // themes dir (~/.srcode/agent/themes/) and load it by name instead.
+    // We always overwrite so edits to the JSON are picked up on restart.
+    const agentDir =
+      process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".srcode", "agent");
+    const themeDir = join(agentDir, "themes");
+    if (!existsSync(themeDir)) {
+      mkdirSync(themeDir, { recursive: true });
+    }
+    writeFileSync(
+      join(themeDir, "retro-terminal.json"),
+      JSON.stringify(retroTheme, null, 2),
+      "utf-8",
+    );
+
+    // ── Apply the retro-terminal theme by name ───────────────────────
+    // Now the file is in place, pi's loadTheme("retro-terminal") will
+    // find it via getCustomThemeInfos scan.
+    const result = ctx.ui.setTheme("retro-terminal");
+    if (!result.success) {
+      // Edge case: first run race with extension init. Retry once.
+      ctx.ui.setTheme("retro-terminal");
+    }
+
+    // ── Custom working indicator: subtle pulse ───────────────────────
+    // A two-frame pulse using the Claude-purple accent.
+    ctx.ui.setWorkingIndicator({
+      frames: [
+        ctx.ui.theme.fg("dim", "●"),
+        ctx.ui.theme.fg("accent", "●"),
+      ],
+      intervalMs: 600,
+    });
+
+    // ── Status indicator ─────────────────────────────────────────────
+    ctx.ui.setStatus(
+      "retro",
+      ctx.ui.theme.fg("dim", "theme") +
+        ctx.ui.theme.fg("muted", " · ") +
+        ctx.ui.theme.fg("accent", "claude"),
+    );
+  });
+
+  // Clean up status on shutdown.
+  pi.on("session_shutdown", async (_event, ctx) => {
+    ctx.ui.setStatus("retro", undefined);
+  });
+};

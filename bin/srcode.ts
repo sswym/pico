@@ -31,6 +31,7 @@ import "./env-bootstrap.ts";
 import { main } from "@earendil-works/pi-coding-agent";
 import { askExtension } from "../src/extensions/ask/index.ts";
 import { initExtension } from "../src/extensions/init/index.ts";
+import { retroThemeExtension } from "../src/extensions/retro-theme/index.ts";
 import { logoExtension } from "../src/extensions/logo/index.ts";
 import { memoryExtension } from "../src/extensions/memory/index.ts";
 import { planExtension } from "../src/extensions/plan/index.ts";
@@ -188,6 +189,7 @@ await main(args, {
   extensionFactories: [
     vibeExtension,
     omaExtension,
+    retroThemeExtension,
     languageExtension,
     logoExtension,
     memoryExtension,
