@@ -16,9 +16,8 @@ import {
   type ExtensionContext,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import { positionToLsp, uriToPath, pathToUri, lspPositionToDisplay, LspError, COMMAND_NOT_FOUND } from "./client.ts";
+import { positionToLsp, pathToUri, LspError, COMMAND_NOT_FOUND } from "./client.ts";
 import type { Location, Position, WorkspaceSymbol, WorkspaceEdit, FileRenameEvent } from "./types.ts";
-import { loadConfig } from "./config.ts";
 import {
   createLspManager,
   ensureServer,
@@ -28,110 +27,38 @@ import {
   formatHoverResult,
   formatLocations,
   formatDiagnosticsForFile,
-  flattenDocumentSymbols,
-  formatDocumentSymbols,
 } from "./manager.ts";
-import type { DocumentSymbolFlat, LspManagerState } from "./manager.ts";
+import type { LspManagerState } from "./manager.ts";
 import { resolveFormattingOptions } from "./format-options.ts";
 import { getInstallHint, installServer, formatInstallHint } from "./install.ts";
 import { applyWorkspaceEdit, applyTextEditsToString } from "./edits.ts";
 import { DiagnosticsLedger } from "./diagnostics-ledger.ts";
+import {
+  normalizeLocations,
+  resolveSymbolColumn,
+} from "./actions.ts";
+import {
+  ACTIONS,
+  type Action,
+  executeCapabilitiesAction,
+  executeRequestAction,
+  executeStatusAction,
+  executeWorkspaceDiagnosticsAction,
+  fail,
+  formatDocumentSymbolsResult,
+  formatWorkspaceSymbolsResult,
+  isLspReadonlyInput,
+  isLspWriteOrHighRiskInput,
+  ok,
+} from "./executor.ts";
 
-// ── Result helpers ────────────────────────────────────────────────────────
-
-const TEXT: "text" = "text";
-
-interface LspDetails {
-  serverName?: string;
-  action?: string;
-  success: boolean;
+export function isLspReadonlyToolCall(input: unknown): boolean {
+  return isLspReadonlyInput(input);
 }
 
-function ok(text: string, details?: LspDetails) {
-  return { content: [{ type: TEXT, text }], details: details ?? { success: true } };
+export function isLspWriteOrHighRiskToolCall(input: unknown): boolean {
+  return isLspWriteOrHighRiskInput(input);
 }
-
-function fail(text: string, details?: LspDetails) {
-  return { content: [{ type: TEXT, text }], details: details ?? { success: false }, isError: true };
-}
-
-// ── Type guards ───────────────────────────────────────────────────────────
-
-interface HierarchicalSymbol {
-  name: string;
-  kind: number;
-  range: { start: { line: number; character: number }; end: { line: number; character: number } };
-  selectionRange: { start: { line: number; character: number }; end: { line: number; character: number } };
-  detail?: string;
-  children?: HierarchicalSymbol[];
-}
-
-interface FlatSymbolInfo {
-  name: string;
-  kind: number;
-  location: { uri: string; range: { start: { line: number } } };
-  containerName?: string;
-}
-
-interface WorkspaceSymbolItem {
-  name: string;
-  kind: number;
-  location: unknown;
-  containerName?: string;
-}
-
-function isHierarchicalSymbolArray(symbols: unknown[]): symbols is HierarchicalSymbol[] {
-  return symbols.length > 0 && symbols[0] !== null && typeof symbols[0] === "object" && "selectionRange" in symbols[0];
-}
-
-function isFlatSymbolInfoArray(symbols: unknown[]): symbols is FlatSymbolInfo[] {
-  return symbols.length > 0 && symbols[0] !== null && typeof symbols[0] === "object" && "location" in symbols[0];
-}
-
-function isWorkspaceSymbolArray(symbols: unknown[]): symbols is WorkspaceSymbolItem[] {
-  return symbols.length > 0 && symbols[0] !== null && typeof symbols[0] === "object" && "location" in symbols[0];
-}
-
-function extractLocationFields(obj: unknown): { uri: string; line: number } | null {
-  if (typeof obj !== "object" || obj === null) return null;
-  if (!("uri" in obj) || !("range" in obj)) return null;
-  const uriVal = obj.uri;
-  if (typeof uriVal !== "string") return null;
-  const rangeVal = obj.range;
-  if (typeof rangeVal !== "object" || rangeVal === null || !("start" in rangeVal)) return null;
-  const startVal = rangeVal.start;
-  if (typeof startVal !== "object" || startVal === null || !("line" in startVal)) return null;
-  const lineVal = startVal.line;
-  if (typeof lineVal !== "number") return null;
-  return { uri: uriVal, line: lineVal };
-}
-
-function normalizeLocations(result: unknown): Location[] {
-  if (result === null || result === undefined) return [];
-  if (!Array.isArray(result)) {
-    if (typeof result === "object" && "uri" in result && "range" in result) return [result as Location];
-    return [];
-  }
-  if (result.length === 0) return [];
-  const first = result[0]!;
-  if (first && typeof first === "object" && "targetUri" in first) {
-    return (result as Array<{ targetUri: string; targetRange: { start: Position; end: Position } }>).map((link) => ({
-      uri: link.targetUri,
-      range: link.targetRange,
-    }));
-  }
-  return result as Location[];
-}
-
-// ── Actions ───────────────────────────────────────────────────────────────
-
-const ACTIONS = [
-  "hover", "definition", "type_definition", "implementation", "references",
-  "diagnostics", "symbols", "code_actions", "rename", "rename_file",
-  "capabilities", "status", "reload", "request",
-] as const;
-
-type Action = (typeof ACTIONS)[number];
 
 // ── Unified tool schema ───────────────────────────────────────────────────
 
@@ -147,29 +74,6 @@ const LspParams = Type.Object({
   payload: Type.Optional(Type.Any({ description: "For request: raw JSON params to send." })),
   occurrence: Type.Optional(Type.Integer({ description: "When symbol appears multiple times on the line, pick the Nth (1-based)." })),
 });
-
-// ── Resolve symbol to column ──────────────────────────────────────────────
-
-function resolveSymbolColumn(filePath: string, line: number, symbol: string, occurrence: number): number | undefined {
-  try {
-    const text = readFileSync(filePath, "utf8");
-    const lines = text.split("\n");
-    const lineText = lines[line - 1];
-    if (!lineText) return undefined;
-    let idx = 0;
-    let count = 0;
-    while (true) {
-      const found = lineText.indexOf(symbol, idx);
-      if (found === -1) return undefined;
-      count++;
-      if (count >= occurrence) return found;
-      idx = found + 1;
-    }
-  } catch {
-    return undefined;
-  }
-}
-
 
 // ── Extension factory ─────────────────────────────────────────────────────
 
@@ -229,20 +133,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
         // ── Actions that don't need a running server ────────────────────
         if (action === "status") {
-          if (!state.config) state.config = loadConfig(ctx.cwd);
-          const serverNames = Object.keys(state.config.servers);
-          if (serverNames.length === 0) return ok("No language servers configured for this project.");
-          const active = getActiveClients(state);
-          if (active.length === 0) {
-            return ok(`Configured servers: ${serverNames.join(", ")}\nNo servers started yet.`);
-          }
-          const lines: string[] = [];
-          for (const [name, client] of active) {
-            const ver = client.displayVersion || "unknown";
-            const openCount = client.getAllDiagnostics().size;
-            lines.push(`  ${name} v${ver} — ${client.status} (${openCount} files with diagnostics)`);
-          }
-          return ok(`Active language servers:\n${lines.join("\n")}`, { action: "status", success: true });
+          return executeStatusAction(state, ctx.cwd);
         }
 
         // ── Actions that need a running server ──────────────────────────
@@ -259,49 +150,17 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         }
 
         if (action === "capabilities") {
-          const caps = client.capabilities;
-          const lines: string[] = [];
-          for (const [key, value] of Object.entries(caps)) {
-            if (value === true) lines.push(`  ${key}: supported`);
-            else if (typeof value === "object" && value !== null) lines.push(`  ${key}: ${JSON.stringify(value)}`);
-          }
-          return ok(`Capabilities of ${client.serverName}:\n${lines.join("\n")}`, { serverName: client.serverName, action: "capabilities", success: true });
+          return executeCapabilitiesAction(client);
         }
 
         if (action === "request") {
-          if (!params.query) return fail("request action requires 'query' (LSP method name).");
-          try {
-            const result = await client.rawRequest(params.query, params.payload ?? null);
-            return ok(JSON.stringify(result, null, 2));
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            return fail(`LSP request failed: ${msg}`);
-          }
+          return await executeRequestAction(client, params.query, params.payload);
         }
 
         // ── File-level actions ──────────────────────────────────────────
         if (action === "diagnostics") {
           if (!params.file || params.file === "*") {
-            // Collect from ALL active servers
-            const activeClients = getActiveClients(state);
-            if (activeClients.length === 0) return ok("No active language servers.");
-            const allMessages: string[] = [];
-            for (const [serverName, managed] of activeClients) {
-              const allDiags = managed.getAllDiagnostics();
-              for (const [uri, diags] of allDiags) {
-                if (diags.length === 0) continue;
-                const filePath = uriToPath(uri);
-                for (const d of diags) {
-                  const pos = lspPositionToDisplay(d.range.start);
-                  const sev = d.severity === 1 ? "ERROR" : d.severity === 2 ? "WARNING" : d.severity === 3 ? "INFO" : "HINT";
-                  const code = d.code ? ` [${d.code}]` : "";
-                  const src = d.source ? ` (${d.source})` : "";
-                  allMessages.push(`${filePath}:${pos.line}:${pos.character} ${sev}${code}${src}: ${d.message}`);
-                }
-              }
-            }
-            if (allMessages.length === 0) return ok("No diagnostics found.", { action: "diagnostics", success: true });
-            return ok(`Workspace diagnostics (${allMessages.length}):\n${allMessages.join("\n")}`, { action: "diagnostics", success: true });
+            return executeWorkspaceDiagnosticsAction(state);
           }
           const uri = syncDocument(state, params.file);
           if (!uri) return fail(`Cannot open file: ${params.file}`);
@@ -335,18 +194,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             };
             try {
               const result = await tryWorkspaceSymbol();
-              if (!result || result.length === 0) return ok(`No symbols found matching "${params.query}".`);
-              if (!isWorkspaceSymbolArray(result)) return ok(`No symbols found matching "${params.query}".`);
-              const lines: string[] = [];
-              for (const sym of result) {
-                const loc = extractLocationFields(sym.location);
-                if (loc) {
-                  lines.push(`  ${sym.name} [${sym.kind}] ${loc.uri.replace("file://", "")}:${loc.line + 1}`);
-                } else {
-                  lines.push(`  ${sym.name} [${sym.kind}] (no location)`);
-                }
-              }
-              return ok(`Workspace symbols matching "${params.query}" (${result.length}):\n${lines.join("\n")}`);
+              return formatWorkspaceSymbolsResult(params.query, result);
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               return fail(`Workspace symbol search failed: ${msg}`);
@@ -357,21 +205,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           if (!uri) return fail(`Cannot open file: ${params.file}`);
           try {
             const result = await client.textDocumentDocumentSymbol(uri);
-            if (!result || result.length === 0) return ok(`No symbols found in ${params.file}.`);
-            if (isHierarchicalSymbolArray(result)) {
-              const flat: DocumentSymbolFlat[] = flattenDocumentSymbols(result);
-              return ok(formatDocumentSymbols(flat));
-            }
-            if (isFlatSymbolInfoArray(result)) {
-              const lines: string[] = [];
-              for (const sym of result) {
-                const file = sym.location.uri.replace("file://", "");
-                const container = sym.containerName ? ` (${sym.containerName})` : "";
-                lines.push(`  ${sym.name} [${sym.kind}] ${file}:${sym.location.range.start.line + 1}${container}`);
-              }
-              return ok(`Symbols in ${params.file} (${result.length}):\n${lines.join("\n")}`);
-            }
-            return ok(`No symbols found in ${params.file}.`);
+            return formatDocumentSymbolsResult(params.file, result);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             return fail(`LSP symbols failed: ${msg}`);
@@ -528,17 +362,16 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     ".svelte", ".astro", ".swift", ".dart", ".graphql", ".prisma",
     ".sql", ".tf", ".c", ".cpp", ".h", ".hpp",
   ]);
-  const LSP_READONLY_ACTIONS: Record<string, true> = {
-    hover: true, definition: true, type_definition: true, implementation: true,
-    references: true, diagnostics: true, symbols: true, status: true, capabilities: true,
-  };
-
   pi.on("tool_call", async (event) => {
     if (event.toolName !== "lsp") return;
-    const action = String((event.input as Record<string, unknown>)?.action ?? "").toLowerCase();
-    if (LSP_READONLY_ACTIONS[action]) return;
-    // Write-tier actions (rename, rename_file, code_actions(apply), reload, request)
-    // go through srcode's permission system by default
+    if (isLspReadonlyToolCall(event.input)) return;
+    if (!isLspWriteOrHighRiskToolCall(event.input)) return;
+    return {
+      block: true,
+      reason:
+        "This lsp action can mutate files or language-server state. " +
+        "Use explicit edit/write tools for file changes until LSP write actions are split into a separate permission tier.",
+    };
   });
 
   pi.on("tool_result", async (event) => {

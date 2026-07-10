@@ -10,24 +10,30 @@ import type { LspServerConfig, LspConfig } from "./config.ts";
 import { loadConfig, getServersForFile, detectServers, resolveCommand } from "./config.ts";
 import { LspClient, locationToDisplay, lspPositionToDisplay, LspError, COMMAND_NOT_FOUND } from "./client.ts";
 
-// ── Idle timeout ────────────────────────────────────────────────────────────
+// ── Runtime state ───────────────────────────────────────────────────────────
 
-let idleTimeoutMs: number | null = null;
-let idleCheckInterval: ReturnType<typeof setInterval> | null = null;
 const IDLE_CHECK_INTERVAL_MS = 60_000;
+const INIT_FAILURE_BACKOFF_MS = 3 * 60 * 1000;
+
+interface LspManagerRuntime {
+  idleTimeoutMs: number | null;
+  idleCheckInterval: ReturnType<typeof setInterval> | null;
+  initFailures: Map<string, { at: number; message: string }>;
+}
 
 export function setIdleTimeout(state: LspManagerState, ms: number | null | undefined): void {
-  idleTimeoutMs = ms ?? null;
-  if (idleTimeoutMs && idleTimeoutMs > 0) {
+  state.runtime.idleTimeoutMs = ms ?? null;
+  if (state.runtime.idleTimeoutMs && state.runtime.idleTimeoutMs > 0) {
     startIdleChecker(state);
   } else {
-    stopIdleChecker();
+    stopIdleChecker(state);
   }
 }
 
 function startIdleChecker(state: LspManagerState): void {
-  if (idleCheckInterval) return;
-  idleCheckInterval = setInterval(() => {
+  if (state.runtime.idleCheckInterval) return;
+  state.runtime.idleCheckInterval = setInterval(() => {
+    const idleTimeoutMs = state.runtime.idleTimeoutMs;
     if (!idleTimeoutMs) return;
     const now = Date.now();
     for (const [name, managed] of state.servers) {
@@ -39,20 +45,17 @@ function startIdleChecker(state: LspManagerState): void {
   }, IDLE_CHECK_INTERVAL_MS);
 }
 
-function stopIdleChecker(): void {
-  if (idleCheckInterval) {
-    clearInterval(idleCheckInterval);
-    idleCheckInterval = null;
+function stopIdleChecker(state: LspManagerState): void {
+  if (state.runtime.idleCheckInterval) {
+    clearInterval(state.runtime.idleCheckInterval);
+    state.runtime.idleCheckInterval = null;
   }
 }
 
 // ── Init failure backoff ────────────────────────────────────────────────────
 
-const initFailures = new Map<string, { at: number; message: string }>();
-const INIT_FAILURE_BACKOFF_MS = 3 * 60 * 1000;
-
-function checkInitBackoff(serverName: string): void {
-  const failure = initFailures.get(serverName);
+function checkInitBackoff(state: LspManagerState, serverName: string): void {
+  const failure = state.runtime.initFailures.get(serverName);
   if (!failure) return;
   if (Date.now() - failure.at < INIT_FAILURE_BACKOFF_MS) {
     const remaining = Math.ceil((INIT_FAILURE_BACKOFF_MS - (Date.now() - failure.at)) / 1000);
@@ -61,11 +64,11 @@ function checkInitBackoff(serverName: string): void {
       -1,
     );
   }
-  initFailures.delete(serverName);
+  state.runtime.initFailures.delete(serverName);
 }
 
-function recordInitFailure(serverName: string, message: string): void {
-  initFailures.set(serverName, { at: Date.now(), message });
+function recordInitFailure(state: LspManagerState, serverName: string, message: string): void {
+  state.runtime.initFailures.set(serverName, { at: Date.now(), message });
 }
 
 // ── Type guards for Hover contents ────────────────────────────────────────
@@ -238,6 +241,7 @@ export interface LspManagerState {
   config: LspConfig | null;
   servers: Map<string, ManagedServer>;
   configured: boolean;
+  runtime: LspManagerRuntime;
 }
 
 export function createLspManager(): LspManagerState {
@@ -245,6 +249,11 @@ export function createLspManager(): LspManagerState {
     config: null,
     servers: new Map(),
     configured: false,
+    runtime: {
+      idleTimeoutMs: null,
+      idleCheckInterval: null,
+      initFailures: new Map(),
+    },
   };
 }
 
@@ -283,7 +292,12 @@ export async function ensureServer(
   for (const [name, serverConfig] of matching) {
     if (serverConfig.isLinter) continue;
 
-    checkInitBackoff(name);
+    try {
+      checkInitBackoff(state, name);
+    } catch (err) {
+      // Backoff still active; skip this server and try the next one
+      continue;
+    }
 
     const client = new LspClient(
       { language: name, extensions: serverConfig.fileTypes, command: serverConfig.command, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
@@ -319,7 +333,7 @@ export async function ensureServer(
         }
         const msg = err instanceof LspError ? err.message : String(err);
         console.error(`[lsp] Failed to start ${name}:`, msg);
-        recordInitFailure(name, msg);
+        recordInitFailure(state, name, msg);
         state.servers.delete(name);
       } finally {
         managed.initializing = null;
@@ -364,7 +378,7 @@ export async function ensureNamedServer(
   }
 
   // Start this server
-  checkInitBackoff(name);
+  checkInitBackoff(state, name);
 
   const client = new LspClient(
     { language: name, extensions: serverConfig.fileTypes, command: serverConfig.command, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
@@ -394,7 +408,7 @@ export async function ensureNamedServer(
       }
       const msg = err instanceof LspError ? err.message : String(err);
       console.error(`[lsp] Failed to start ${name}:`, msg);
-      recordInitFailure(name, msg);
+      recordInitFailure(state, name, msg);
       state.servers.delete(name);
     } finally {
       newManaged.initializing = null;
@@ -411,7 +425,7 @@ export async function ensureNamedServer(
 
 /** Shut down all managed servers. */
 export async function stopServer(state: LspManagerState): Promise<void> {
-  stopIdleChecker();
+  stopIdleChecker(state);
   for (const [, managed] of state.servers) {
     for (const [, doc] of managed.openDocuments) {
       managed.client.didClose(doc.uri);
@@ -422,6 +436,14 @@ export async function stopServer(state: LspManagerState): Promise<void> {
   state.servers.clear();
   state.config = null;
   state.configured = false;
+}
+
+export function __recordInitFailureForTests(state: LspManagerState, serverName: string, message: string): void {
+  recordInitFailure(state, serverName, message);
+}
+
+export function __checkInitBackoffForTests(state: LspManagerState, serverName: string): void {
+  checkInitBackoff(state, serverName);
 }
 
 /** Get all ready clients. */

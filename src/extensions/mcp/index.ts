@@ -36,7 +36,7 @@ import {
   mcpCallTool,
   closeMcpServer,
 } from "./client.ts";
-import type { McpServerHandle } from "./types.ts";
+import type { McpServerConfig, McpServerHandle, McpTool, McpToolCallResult, McpInitializeResult } from "./types.ts";
 
 interface ServerStatus {
   id: string;
@@ -56,8 +56,19 @@ interface ServerFailure {
 
 type ServerEntry = ServerStatus | ServerFailure;
 
-export const mcpExtension: ExtensionFactory = async (pi: ExtensionAPI) => {
+export interface McpExtensionDeps {
+  load: (cwd: string) => Record<string, McpServerConfig>;
+  spawn: (id: string, config: McpServerConfig) => McpServerHandle;
+  initialize: (handle: McpServerHandle) => Promise<McpInitializeResult>;
+  listTools: (handle: McpServerHandle) => Promise<McpTool[]>;
+  callTool: (handle: McpServerHandle, toolName: string, params: Record<string, unknown>) => Promise<McpToolCallResult>;
+  close: (handle: McpServerHandle) => void;
+}
+
+export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
+  return (pi: ExtensionAPI) => {
   const entries: ServerEntry[] = [];
+  let connectedCwd: string | null = null;
 
   // ── Register /mcp command BEFORE async server connections ──────────────
 
@@ -90,86 +101,110 @@ export const mcpExtension: ExtensionFactory = async (pi: ExtensionAPI) => {
     },
   });
 
-  // ── Connect to MCP servers (async, after command registration) ─────────
+  // ── Connect to MCP servers once the session cwd is known ────────────────
 
-  const cwd = process.cwd();
-  const servers = loadMcpConfig(cwd);
+  async function connect(cwd: string): Promise<void> {
+    if (connectedCwd === cwd) return;
+    for (const entry of entries) {
+      if (entry.handle) deps.close(entry.handle);
+    }
+    entries.length = 0;
+    connectedCwd = cwd;
 
-  for (const [id, config] of Object.entries(servers)) {
-    let handle: McpServerHandle | undefined;
-    try {
-      handle = spawnMcpServer(id, config);
-      const initResult = await mcpInitialize(handle);
-      const tools = await mcpListTools(handle);
+    const servers = deps.load(cwd);
 
-      const { name: serverName, version: serverVersion } = initResult.serverInfo;
-      console.error(`[mcp] Connected "${id}" (${serverName} ${serverVersion}) — ${tools.length} tools`);
+    for (const [id, config] of Object.entries(servers)) {
+      let handle: McpServerHandle | undefined;
+      try {
+        handle = deps.spawn(id, config);
+        const initResult = await deps.initialize(handle);
+        const tools = await deps.listTools(handle);
 
-      const toolNames: string[] = [];
-      for (const tool of tools) {
-        const piToolName = `mcp__${id}__${tool.name}`;
-        toolNames.push(piToolName);
-        const schema = tool.inputSchema ?? { type: "object" as const, properties: {} };
+        const { name: serverName, version: serverVersion } = initResult.serverInfo;
+        console.error(`[mcp] Connected "${id}" (${serverName} ${serverVersion}) — ${tools.length} tools`);
 
-        pi.registerTool(
-          defineTool({
-            name: piToolName,
-            label: `MCP: ${id} › ${tool.name}`,
-            description: tool.description ?? `MCP tool "${tool.name}" from server "${id}"`,
-            promptSnippet:
-              `${piToolName} — call "${tool.name}" on MCP server "${id}"`,
-            parameters: Type.Unsafe(schema),
-            async execute(_tcId, params, _signal) {
-              try {
-                const result = await mcpCallTool(handle!, tool.name, params as Record<string, unknown>);
-                return {
-                  content: result.content.map((c) => {
-                    if (c.type === "text") return { type: "text" as const, text: c.text };
-                    if (c.type === "image") {
+        const toolNames: string[] = [];
+        for (const tool of tools) {
+          const piToolName = `mcp__${id}__${tool.name}`;
+          toolNames.push(piToolName);
+          const schema = tool.inputSchema ?? { type: "object" as const, properties: {} };
+          const toolHandle = handle;
+
+          pi.registerTool(
+            defineTool({
+              name: piToolName,
+              label: `MCP: ${id} › ${tool.name}`,
+              description: tool.description ?? `MCP tool "${tool.name}" from server "${id}"`,
+              promptSnippet:
+                `${piToolName} — call "${tool.name}" on MCP server "${id}"`,
+              parameters: Type.Unsafe(schema),
+              async execute(_tcId, params, _signal) {
+                try {
+                  const result = await deps.callTool(toolHandle, tool.name, params as Record<string, unknown>);
+                  return {
+                    content: result.content.map((c) => {
+                      if (c.type === "text") return { type: "text" as const, text: c.text };
+                      if (c.type === "image") {
+                        return {
+                          type: "text" as const,
+                          text: `[Image: ${c.mimeType} (${c.data.length} bytes base64)]`,
+                        };
+                      }
                       return {
                         type: "text" as const,
-                        text: `[Image: ${c.mimeType} (${c.data.length} bytes base64)]`,
+                        text: c.type === "resource"
+                          ? (c.resource.text ?? "[binary resource]")
+                          : JSON.stringify(c),
                       };
-                    }
-                    return {
-                      type: "text" as const,
-                      text: c.type === "resource"
-                        ? (c.resource.text ?? "[binary resource]")
-                        : JSON.stringify(c),
-                    };
-                  }),
-                  details: { server: id, tool: tool.name },
-                  isError: result.isError ?? false,
-                };
-              } catch (e) {
-                const msg = e instanceof Error ? e.message : String(e);
-                return {
-                  content: [{ type: "text" as const, text: `MCP tool "${tool.name}" failed: ${msg}` }],
-                  details: { server: id, tool: tool.name },
-                  isError: true,
-                };
-              }
-            },
-          }),
-        );
-      }
+                    }),
+                    details: { server: id, tool: tool.name },
+                    isError: result.isError ?? false,
+                  };
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  return {
+                    content: [{ type: "text" as const, text: `MCP tool "${tool.name}" failed: ${msg}` }],
+                    details: { server: id, tool: tool.name },
+                    isError: true,
+                  };
+                }
+              },
+            }),
+          );
+        }
 
-      entries.push({ id, serverName, serverVersion, toolCount: tools.length, toolNames, handle });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[mcp] Failed to connect "${id}": ${msg}`);
-      if (handle) closeMcpServer(handle);
-      entries.push({ id, error: msg });
+        entries.push({ id, serverName, serverVersion, toolCount: tools.length, toolNames, handle });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[mcp] Failed to connect "${id}": ${msg}`);
+        if (handle) deps.close(handle);
+        entries.push({ id, error: msg });
+      }
     }
   }
+
+  pi.on("session_start", async (_event, ctx) => {
+    await connect(ctx.cwd);
+  });
 
   // Cleanup on shutdown
   pi.on("session_shutdown", () => {
     for (const entry of entries) {
-      if (entry.handle) closeMcpServer(entry.handle);
+      if (entry.handle) deps.close(entry.handle);
     }
     entries.length = 0;
+    connectedCwd = null;
   });
-};
+  };
+}
+
+export const mcpExtension: ExtensionFactory = createMcpExtension({
+  load: loadMcpConfig,
+  spawn: spawnMcpServer,
+  initialize: mcpInitialize,
+  listTools: mcpListTools,
+  callTool: mcpCallTool,
+  close: closeMcpServer,
+});
 
 export default mcpExtension;

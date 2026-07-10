@@ -1,18 +1,13 @@
-/**
- * DelegationRegistry — cross-extension bridge for subagent delegation hooks.
- *
- * The memory extension registers a callback; the subagent extension calls it
- * when a subagent completes. This avoids circular imports between extensions.
- */
+import { publishExtensionEvent, subscribeExtensionEvent } from "../events.ts";
 
 type DelegationCallback = (task: string, result: string, childSessionId?: string) => void;
 
-let registeredCallback: DelegationCallback | null = null;
-
 export function registerDelegationCallback(cb: DelegationCallback): void {
-  registeredCallback = cb;
+  subscribeExtensionEvent("subagent_completed", (event) => {
+    cb(event.task, event.result, event.childSessionId);
+  });
 }
 
 export function fireDelegationCallback(task: string, result: string, childSessionId?: string): void {
-  registeredCallback?.(task, result, childSessionId);
+  publishExtensionEvent("subagent_completed", { task, result, childSessionId });
 }

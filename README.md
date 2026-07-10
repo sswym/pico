@@ -133,7 +133,7 @@ subagent(chain=[
 ### 6. 网页（`webFetch` + `webSearch` 工具）
 
 - `webFetch(url, prompt)` —— 通过 `Bun.fetch` 抓取 URL，将 HTML 转为 Markdown（去除 `<script>/<style>/<nav>/<footer>`），8 KB 上限，15 分钟 LRU 缓存（50 条）。
-- `webSearch(query, max_results?, allowed_domains?, blocked_domains?)` —— 默认使用 DuckDuckGo HTML；设置 `SRCODE_SEARCH_PROVIDER=tavily` 与 `TAVILY_API_KEY` 可切换至 Tavily。
+- `webSearch(query, max_results?, allowed_domains?, blocked_domains?)` —— 默认使用 Exa MCP；若存在 `TAVILY_API_KEY`，默认合并 Exa + Tavily 结果并按 URL 去重。设置 `SRCODE_SEARCH_PROVIDER=exa` 或 `SRCODE_SEARCH_PROVIDER=tavily` 可强制单一 provider。
 
 ### 7. `/init`（生成 AGENTS.md）
 
@@ -143,7 +143,9 @@ subagent(chain=[
 
 基于 `tool_call` 事件的工具调用前置权限网关。配置按用户级 → 项目级 → 会话级合并；规则语法兼容 Claude Code 的 `ToolName` / `ToolName(content)` 格式，例如 `Bash(npm:*)`、`Edit(./src/**)`。
 
-默认模式 `default` 下，`read` / `grep` / `find` / `ls` / `lsp` 被视为低风险只读工具，在没有命中显式 `deny` / `ask` 规则时会自动允许；`bash` / `edit` / `write` 以及其他自定义工具在无匹配 `allow` 规则时会弹出 TUI 审批。显式规则优先级为 `deny > ask > allow`，因此低风险自动允许不会覆盖用户写下的黑名单或强制询问规则。
+默认模式 `default` 下，`read` / `grep` / `find` / `ls` / `lsp` 的只读 action 被视为低风险工具，在没有命中显式 `deny` / `ask` 规则时会自动允许；`bash` / `edit` / `write` 以及其他自定义工具在无匹配 `allow` 规则时会弹出 TUI 审批。显式规则优先级为 `deny > ask > allow`，因此低风险自动允许不会覆盖用户写下的黑名单或强制询问规则。
+
+`lsp` 中的写入或高风险 action（`rename`、`rename_file`、`code_actions apply=true`、`reload`、`request`）当前会在 `tool_call` 阶段被阻断，直到这些能力拆入独立的写权限工具。
 
 ```json
 {
@@ -224,7 +226,7 @@ srcode 支持连接外部 MCP（Model Context Protocol）服务器，自动发�
 
 **行为**：
 
-- 启动时异步连接所有配置的 MCP 服务器，调用 `initialize` + `tools/list` 发现工具
+- 会话启动时按当前 `ctx.cwd` 加载配置并连接 MCP 服务器，调用 `initialize` + `tools/list` 发现工具
 - 每个 MCP 工具注册为一个独立的 pi 工具，LLM 可直接调用
 - 工具调用通过 JSON-RPC 2.0 stdio 转发至 MCP 服务器
 - 单服务器故障不影响其他服务器，超时 30 秒
@@ -234,7 +236,7 @@ srcode 支持连接外部 MCP（Model Context Protocol）服务器，自动发�
 
 ### 13. LSP 代码智能（`lsp` 工具）
 
-通过 Language Server Protocol 为 LLM 提供精确的代码智能。支持 13 种操作，自动检测并启动对应的语言服务器。
+通过 Language Server Protocol 为 LLM 提供精确的代码智能。支持 14 种操作，自动检测并启动对应的语言服务器。
 
 **支持的操作**：
 
@@ -249,10 +251,13 @@ srcode 支持连接外部 MCP（Model Context Protocol）服务器，自动发�
 | `symbols` | 文件符号列表或工作区符号搜索 | 可选 |
 | `code_actions` | 列出/应用代码修复、重构、导入建议 | ✓ |
 | `rename` | 跨文件符号重命名 | ✓ |
+| `rename_file` | 文件重命名并应用语言服务器返回的引用更新 | — |
 | `capabilities` | 显示语言服务器能力 | — |
 | `status` | 显示服务器状态 | — |
 | `reload` | 重启语言服务器 | — |
 | `request` | 原始 LSP 请求（逃生舱） | — |
+
+只读 action（`hover`、`definition`、`type_definition`、`implementation`、`references`、`diagnostics`、`symbols`、`capabilities`、`status`，以及未设置 `apply=true` 的 `code_actions`）可直接使用。写入或高风险 action 当前会被阻断，避免 `lsp` 这个只读权限层执行文件修改。
 
 **示例**：
 
@@ -262,7 +267,6 @@ lsp(action="definition", file="src/index.ts", line=10, symbol="LspClient")
 lsp(action="references", file="src/index.ts", line=10, symbol="LspClient")
 lsp(action="diagnostics", file="src/index.ts")
 lsp(action="symbols", file="src/index.ts")
-lsp(action="rename", file="src/index.ts", line=10, symbol="oldName", newName="newName")
 ```
 
 **自动检测**：根据工作区文件自动选择语言服务器（`tsconfig.json` → `typescript-language-server`，`Cargo.toml` → `rust-analyzer`，`pyproject.toml` → `pyright` 等）。惰性启动，`session_shutdown` 时关闭。
@@ -288,25 +292,26 @@ srcode/
 │   │   ├── lsp/        # LSP 代码智能（types, client, config, manager, format-options, index）
 │   │   ├── mcp/        # MCP 客户端（types, config, client, 扩展工厂）
 │   │   ├── memory/     # bun:sqlite + FTS5 长期记忆
-│   │   ├── permissions/# tool_call 权限规则、审批与 /permissions
 │   │   ├── plan/       # EnterPlanMode / ExitPlanMode + tool_call 拦截
 │   │   ├── subagent/   # 源自 pi-coding-agent 示例 + memory 钩子
 │   │   ├── todo/       # todoWrite 工具 + /todo 命令 + 按会话存储
 │   │   ├── web/        # webFetch + webSearch + LRU 缓存
+│   │   ├── events.ts   # 扩展间轻量事件总线
 │   │   └── vibe.ts     # 将 vibe-system.md 追加到系统提示词
 │   ├── prompts/vibe-system.md
 │   ├── skills/{verify,recap,agents-init}/SKILL.md
 │   └── types/markdown.d.ts
 └── tests/
-    ├── mcp/             # MCP 客户端单元测试
     ├── ask.test.ts      # 8 个用例——schema 合法性、对话框分发、hasUI 回退
+    ├── events.test.ts   # 扩展事件总线
     ├── hooks.test.ts    # 配置加载、运行器、占位符替换
     ├── init.test.ts     # /init 提示词内容 + 命令连线
-    ├── memory.test.ts   # 23 个用例——add/search/feedback/update/remove/probe/clear/extract/secrets/scope/correction
-    ├── permissions.test.ts # 规则解析、匹配、决策、扩展拦截
+    ├── lsp.test.ts      # workspace edit、diagnostics ledger、action helpers、权限分类
+    ├── mcp.test.ts      # MCP 扩展工厂、session cwd、失败隔离
+    ├── memory.test.ts   # SQLite store、检索、scope、extract、provider hooks
     ├── plan.test.ts     # tool_call 拦截 + ExitPlanMode 流程
     ├── skills.test.ts   # 内置技能加载并包含非空描述
-    ├── subagent.test.ts # 工厂连线、代理发现、worker 提示词
+    ├── subagent.test.ts # 工厂连线、代理发现、runner/process/chain/parallel/fallback/output/worktree/gate 逻辑
     ├── todo.test.ts     # 9 个用例——id 分配、折叠、不变量
     └── web.test.ts      # 缓存命中、搜索解析、allowed_domains
 ```
@@ -317,7 +322,7 @@ srcode/
 bun test
 ```
 
-121 个用例，完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`。
+191 个用例，完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`；MCP 测试使用 fake client，不启动真实服务器。
 
 ## 路线图
 

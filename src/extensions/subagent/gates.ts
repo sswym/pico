@@ -8,11 +8,90 @@
  */
 import { execSync } from "node:child_process";
 import type { AcceptanceConfig } from "./agents.ts";
+import { isFailedResult, type SingleResult } from "./results.ts";
 
 export interface GateResult {
 	passed: boolean;
 	failedCriteria: string[];
 	evidenceResults: Array<{ command: string; output: string; passed: boolean }>;
+}
+
+export function summarizeGateFailure(gateResult: GateResult): string {
+	const failed = gateResult.evidenceResults.filter((e) => !e.passed);
+	const lines: string[] = [];
+	if (gateResult.failedCriteria.length > 0) {
+		lines.push(`Failed criteria: ${gateResult.failedCriteria.join("; ")}`);
+	}
+	if (failed.length > 0) {
+		lines.push("Failed evidence:");
+		for (const evidence of failed) {
+			lines.push(`- $ ${evidence.command}\n  ${evidence.output.split("\n").slice(0, 5).join("\n  ")}`);
+		}
+	}
+	return lines.join("\n");
+}
+
+export function buildRepairTask(task: string, attempt: number, maxAttempts: number, failureSummary: string): string {
+	return [
+		task,
+		"",
+		`## Acceptance gate failed (self-repair attempt ${attempt} of ${maxAttempts})`,
+		failureSummary,
+		"",
+		"Please fix the issues above and complete the task. The same checks will run again.",
+	].join("\n");
+}
+
+export function markGateFailed(result: SingleResult, message: string): SingleResult {
+	result.stopReason = "gate_failed";
+	result.errorMessage = message;
+	return result;
+}
+
+export interface GateAfterSuccessRequest<TContext> {
+	agent: { name: string; acceptance?: AcceptanceConfig } | undefined;
+	result: SingleResult;
+	task: string;
+	runCwd: string;
+	context: TContext;
+	signal?: AbortSignal;
+	checkGate?: (acceptance: AcceptanceConfig, cwd: string, signal?: AbortSignal) => Promise<GateResult>;
+	runRepair: (agentName: string, repairTask: string, context: TContext) => Promise<SingleResult>;
+}
+
+export async function runGateAfterSuccess<TContext>(
+	request: GateAfterSuccessRequest<TContext>,
+): Promise<SingleResult> {
+	const { agent, result, task, runCwd, context, signal } = request;
+	if (!agent?.acceptance || isFailedResult(result)) return result;
+
+	const checkGate = request.checkGate ?? checkAcceptanceGate;
+	const acceptance = agent.acceptance;
+	const gateResult = await checkGate(acceptance, runCwd, signal);
+	if (gateResult.passed) return result;
+	const failureSummary = summarizeGateFailure(gateResult);
+
+	if (!acceptance.selfRepair) {
+		return markGateFailed(result, `Acceptance gate failed.\n${failureSummary}`);
+	}
+
+	const maxAttempts = acceptance.maxRepairAttempts ?? 1;
+	let lastResult = result;
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		if (signal?.aborted) break;
+		const repairTask = buildRepairTask(task, attempt, maxAttempts, failureSummary);
+		const repairResult = await request.runRepair(agent.name, repairTask, context);
+		lastResult = repairResult;
+		if (!isFailedResult(repairResult)) {
+			const recheck = await checkGate(acceptance, runCwd, signal);
+			if (recheck.passed) return repairResult;
+		}
+	}
+
+	return markGateFailed(
+		lastResult,
+		`Acceptance gate failed after ${maxAttempts} self-repair attempt(s).\n${failureSummary}`,
+	);
 }
 
 /**

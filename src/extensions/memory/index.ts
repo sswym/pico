@@ -20,7 +20,7 @@ import {
 } from "./extract.ts";
 import { formatFactLine, formatRecallBlock, systemPromptBlock } from "./prompt.ts";
 import { type Fact, type MemoryWriteMetadata, type MemoryProvider } from "./provider.ts";
-import { registerDelegationCallback } from "./delegation-registry.ts";
+import { subscribeExtensionEvent } from "../events.ts";
 import { MemoryStore } from "./store.ts";
 import { resolveDbPath, ProviderManager, sanitizeContext, buildMemoryContextBlock } from "./provider-manager.ts";
 import { CORRECTED_BOOST, SCOPE_PROJECT, VALID_CATEGORIES, type Category } from "./schema.ts";
@@ -101,11 +101,21 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   /** Expose raw MemoryStore for extract.ts which needs low-level access. */
   const rawStore = provider.getRawStore() as MemoryStore;
   // Register delegation hook for subagent completion tracking.
-  registerDelegationCallback((task, result, childSessionId) => {
-    provider.onDelegation?.(task, result, childSessionId);
+  subscribeExtensionEvent("subagent_completed", (event) => {
+    provider.onDelegation?.(event.task, event.result, event.childSessionId);
   });
   /** Track current working directory for project-scoped memory. */
   let currentCwd: string | null = null;
+
+  pi.on("session_start", (_event, ctx) => {
+    if (ctx.cwd) currentCwd = ctx.cwd;
+    try {
+      const sessionId = ctx.sessionManager?.getSessionId?.() ?? "default";
+      provider.initialize(sessionId);
+    } catch {
+      // Memory should never prevent a session from starting.
+    }
+  });
 
   // --- 1. memory tool (LLM) ------------------------------------------------
   pi.registerTool(

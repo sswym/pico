@@ -8,11 +8,21 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { isFailedResult, type SingleResult } from "./results.ts";
 
 export interface WorktreeHandle {
 	worktreeDir: string;
 	branchName: string;
 	cleanup: () => void;
+}
+
+export interface WorktreeTask {
+	agent: string;
+}
+
+export interface PreparedWorktrees {
+	handles: Array<WorktreeHandle | null>;
+	errorText?: string;
 }
 
 /**
@@ -53,6 +63,47 @@ export function createWorktree(
 	};
 }
 
+export function prepareParallelWorktrees(
+	cwd: string,
+	tasks: WorktreeTask[],
+	create: (cwd: string, agentName: string, index: number) => WorktreeHandle = createWorktree,
+): PreparedWorktrees {
+	const handles: Array<WorktreeHandle | null> = new Array(tasks.length).fill(null);
+	const errors: string[] = [];
+
+	for (let i = 0; i < tasks.length; i++) {
+		const task = tasks[i];
+		if (!task) continue;
+		try {
+			handles[i] = create(cwd, task.agent, i);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			errors.push(`task ${i} (${task.agent}): ${message}`);
+		}
+	}
+
+	if (errors.length > 0) {
+		cleanupWorktrees(handles);
+		return {
+			handles,
+			errorText: `Failed to set up git worktrees:\n${errors.join("\n")}`,
+		};
+	}
+
+	return { handles };
+}
+
+export function cleanupWorktrees(handles: Array<WorktreeHandle | null>): void {
+	for (const handle of handles) {
+		if (!handle) continue;
+		try {
+			handle.cleanup();
+		} catch {
+			/* ignore cleanup failures */
+		}
+	}
+}
+
 /**
  * Attempt to merge a worktree branch back into the current branch.
  *
@@ -71,6 +122,38 @@ export function mergeWorktree(cwd: string, branchName: string): { success: boole
 		}
 		return { success: false, conflict: `Merge failed: ${stderr.slice(0, 200)}` };
 	}
+}
+
+export function mergeParallelWorktrees(
+	cwd: string,
+	results: SingleResult[],
+	handles: Array<WorktreeHandle | null>,
+	getDiff: (cwd: string, branchName: string) => string = getWorktreeDiff,
+	merge: (cwd: string, branchName: string) => { success: boolean; conflict?: string } = mergeWorktree,
+): string[] {
+	const mergeNotes: string[] = [];
+	for (let i = 0; i < results.length; i++) {
+		const handle = handles[i];
+		if (!handle) continue;
+		const result = results[i];
+		if (!result) continue;
+		if (isFailedResult(result)) {
+			mergeNotes.push(`task ${i} (${result.agent}): skipped merge (task failed)`);
+			continue;
+		}
+		const diff = getDiff(cwd, handle.branchName);
+		if (!diff.trim()) {
+			mergeNotes.push(`task ${i} (${result.agent}): no changes to merge`);
+			continue;
+		}
+		const mergeResult = merge(cwd, handle.branchName);
+		if (mergeResult.success) {
+			mergeNotes.push(`task ${i} (${result.agent}): merged\n${diff.trimEnd()}`);
+		} else {
+			mergeNotes.push(`task ${i} (${result.agent}): ${mergeResult.conflict}`);
+		}
+	}
+	return mergeNotes;
 }
 
 /**

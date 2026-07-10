@@ -15,6 +15,7 @@ import { autoExtractFromMessages } from "../src/extensions/memory/extract.ts";
 import { scanSecrets } from "../src/extensions/memory/secrets.ts";
 import { WriteQueue, type MemoryProvider, type MemoryWriteMetadata } from "../src/extensions/memory/provider.ts";
 import { ProviderManager } from "../src/extensions/memory/provider-manager.ts";
+import { memoryExtension } from "../src/extensions/memory/index.ts";
 
 let dbPath: string;
 let store: MemoryStore;
@@ -259,6 +260,49 @@ test("list with scope filters correctly", () => {
 
   const globalList = store.list({ limit: 10, scope: "global" });
   expect(globalList.map((f) => f.content)).toEqual(["global thing"]);
+});
+
+test("memoryExtension captures cwd on session_start before first recall", async () => {
+  const oldEnv = process.env.SRCODE_MEMORY_DB;
+  const tempDb = join(tmpdir(), `srcode-ext-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const cwd = "/tmp/srcode-memory-project";
+  const seedStore = new MemoryStore(tempDb);
+  seedStore.add("this project uses redux toolkit", { category: "project", scope: "project", cwd });
+  seedStore.close();
+  process.env.SRCODE_MEMORY_DB = tempDb;
+
+  const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
+  const fakePi: any = {
+    on: (event: string, handler: (event: any, ctx: any) => any) => {
+      (handlers[event] ??= []).push(handler);
+    },
+    registerTool: () => {},
+    registerCommand: () => {},
+    sendMessage: () => {},
+  };
+
+  try {
+    memoryExtension(fakePi);
+    await handlers["session_start"]![0]!({}, {
+      cwd,
+      sessionManager: { getSessionId: () => "memory-session" },
+    });
+    const result = await handlers["before_agent_start"]![0]!({
+      prompt: "what state library does this project use?",
+      systemPrompt: "BASE",
+    }, { cwd });
+
+    expect(result.systemPrompt).toContain("BASE");
+    expect(result.systemPrompt).toContain("this project uses redux toolkit");
+
+    await handlers["session_shutdown"]![0]!({}, { cwd });
+  } finally {
+    if (oldEnv === undefined) delete process.env.SRCODE_MEMORY_DB;
+    else process.env.SRCODE_MEMORY_DB = oldEnv;
+    try { rmSync(tempDb); } catch { }
+    try { rmSync(`${tempDb}-wal`); } catch { }
+    try { rmSync(`${tempDb}-shm`); } catch { }
+  }
 });
 
 // ---- Entity system tests --------------------------------------------------

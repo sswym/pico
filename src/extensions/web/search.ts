@@ -32,6 +32,15 @@ export interface SearchOptions {
   env?: { provider?: string; tavilyKey?: string };
 }
 
+interface ExaTextContent {
+  type?: string;
+  text?: string;
+}
+
+interface ExaToolResult {
+  content: ExaTextContent[];
+}
+
 const DEFAULT_MAX = 10;
 const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
 
@@ -96,18 +105,23 @@ async function exaSearch(query: string, max: number, opts: SearchOptions): Promi
     throw new Error(`Exa search error [${parsed.error.code ?? "?"}]: ${parsed.error.message ?? "unknown"}`);
   }
 
-  const content = parsed.result?.content;
-  if (!content || !Array.isArray(content)) {
+  if (!isExaToolResult(parsed.result)) {
     throw new Error("Exa search: unexpected response structure (missing result.content)");
   }
 
   // content is an array of { type: "text", text: "..." }
-  const text = content
-    .filter((c: { type?: string; text?: string }) => c.type === "text" && c.text)
-    .map((c: { text: string }) => c.text)
+  const text = parsed.result.content
+    .filter((c): c is ExaTextContent & { text: string } => c.type === "text" && typeof c.text === "string")
+    .map((c) => c.text)
     .join("\n");
 
   return parseExaTextResults(text);
+}
+
+function isExaToolResult(value: unknown): value is ExaToolResult {
+  if (typeof value !== "object" || value === null || !("content" in value)) return false;
+  const content = (value as { content: unknown }).content;
+  return Array.isArray(content);
 }
 
 /**
