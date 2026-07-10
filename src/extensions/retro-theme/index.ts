@@ -10,12 +10,12 @@
  */
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import type {
   ExtensionAPI,
   ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import retroTheme from "../../theme/retro-terminal.json" with { type: "json" };
+import { srcodeAgentHome } from "../paths.ts";
 
 export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.on("session_start", async (_event, ctx) => {
@@ -25,7 +25,7 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     // themes dir (~/.srcode/agent/themes/) and load it by name instead.
     // We always overwrite so edits to the JSON are picked up on restart.
     const agentDir =
-      process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".srcode", "agent");
+      process.env.PI_CODING_AGENT_DIR ?? srcodeAgentHome();
     const themeDir = join(agentDir, "themes");
     if (!existsSync(themeDir)) {
       mkdirSync(themeDir, { recursive: true });

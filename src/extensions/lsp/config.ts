@@ -14,8 +14,8 @@
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname, extname } from "node:path";
-import { homedir } from "node:os";
 import defaultServers from "./defaults.json" with { type: "json" };
+import { srcodeLspConfigPath } from "../paths.ts";
 
 // ── Config types ──────────────────────────────────────────────────────────
 
@@ -45,6 +45,7 @@ export interface LspServerConfig {
 export interface LspConfig {
   servers: Record<string, LspServerConfig>;
   idleTimeoutMs?: number;
+  formatOnWrite?: boolean;
 }
 
 // ── Config loading ────────────────────────────────────────────────────────
@@ -98,14 +99,18 @@ export function loadConfig(workspaceRoot: string): LspConfig {
     defaultServers as Record<string, unknown>,
   );
   let idleTimeoutMs: number | undefined;
+  let formatOnWrite: boolean | undefined;
 
   // Merge user-level config
-  const userConfigPath = join(homedir(), ".srcode", "lsp.json");
+  const userConfigPath = srcodeLspConfigPath();
   const userConfig = parseJsonFile(userConfigPath);
   if (userConfig) {
     merged = { ...merged, ...parseServerMap(userConfig) };
     if (typeof userConfig["idleTimeoutMs"] === "number") {
       idleTimeoutMs = userConfig["idleTimeoutMs"] as number;
+    }
+    if (typeof userConfig["formatOnWrite"] === "boolean") {
+      formatOnWrite = userConfig["formatOnWrite"] as boolean;
     }
   }
 
@@ -113,13 +118,27 @@ export function loadConfig(workspaceRoot: string): LspConfig {
   const projectConfigPath = join(workspaceRoot, ".srcode", "lsp.json");
   const projectConfig = parseJsonFile(projectConfigPath);
   if (projectConfig) {
-    merged = { ...merged, ...parseServerMap(projectConfig) };
+    // Apply additions/overrides from project config
+    merged = { ...merged, ...parseServerMap(projectConfig as Record<string, unknown>) };
+    // Remove servers explicitly disabled in project config
+    for (const [name, value] of Object.entries(projectConfig)) {
+      if (
+        typeof value === "object" && value !== null &&
+        (value as Record<string, unknown>)["disabled"] === true &&
+        name in merged
+      ) {
+        delete merged[name];
+      }
+    }
     if (typeof projectConfig["idleTimeoutMs"] === "number") {
       idleTimeoutMs = projectConfig["idleTimeoutMs"] as number;
     }
+    if (typeof projectConfig["formatOnWrite"] === "boolean") {
+      formatOnWrite = projectConfig["formatOnWrite"] as boolean;
+    }
   }
 
-  return { servers: merged, idleTimeoutMs };
+  return { servers: merged, idleTimeoutMs, formatOnWrite };
 }
 
 // ── Local binary resolution ───────────────────────────────────────────────

@@ -243,10 +243,6 @@ export interface MemoryProvider {
    * Return { ok: false, reason: "..." } to deny the write.
    * Return void or { ok: true } to allow it.
    */
-  // TODO: Integrate onBeforeWrite into index.ts tool handler (next phase).
-  // Current state: interface defined, but add/update/remove paths do not call
-  // this hook yet. Integration requires checking the return value before
-  // proceeding with provider.add() / provider.update() / provider.remove().
   onBeforeWrite?(metadata: MemoryWriteMetadata): { ok: boolean; reason?: string } | void;
 
   /**

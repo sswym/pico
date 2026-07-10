@@ -23,3 +23,31 @@ export function srcodeHome(): string {
   if (override && override.length > 0) return override;
   return join(homedir(), ".srcode");
 }
+
+export function srcodeAgentHome(): string {
+  return join(srcodeHome(), "agent");
+}
+
+export function srcodeSessionDir(): string {
+  return join(srcodeAgentHome(), "sessions");
+}
+
+export function srcodeSettingsPath(): string {
+  return join(srcodeAgentHome(), "settings.json");
+}
+
+export function srcodeMemoryDbPath(): string {
+  return process.env.SRCODE_MEMORY_DB ?? join(srcodeHome(), "memory.db");
+}
+
+export function srcodeHolographicMemoryPath(): string {
+  return process.env.SRCODE_MEMORY_DB ?? join(srcodeHome(), "holographic-memory.json");
+}
+
+export function srcodeMcpConfigPath(): string {
+  return join(srcodeHome(), "mcp-servers.json");
+}
+
+export function srcodeLspConfigPath(): string {
+  return join(srcodeHome(), "lsp.json");
+}

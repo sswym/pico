@@ -8,7 +8,7 @@
  * or extension event wiring (requires running language servers).
  */
 import { afterEach, beforeEach, expect, test, describe } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { applyTextEditsToString } from "../src/extensions/lsp/edits.ts";
@@ -29,6 +29,7 @@ import {
   __checkInitBackoffForTests,
   __recordInitFailureForTests,
   createLspManager,
+  loadConfig,
   setIdleTimeout,
   syncDocument,
   stopServer,
@@ -175,6 +176,50 @@ describe("LSP action risk classification", () => {
     expect(registered.description).toContain("High-risk/write actions are currently blocked");
     expect(registered.description).toContain("rename_file");
     expect(registered.parameters.properties.action.description).toContain("Currently blocked");
+  });
+
+  test("registered tool executor blocks write and high-risk actions before server startup", async () => {
+    let registered: any = null;
+    const fakePi: any = {
+      on: () => {},
+      registerTool: (tool: any) => {
+        registered = tool;
+      },
+    };
+    lspExtension(fakePi);
+
+    const result = await registered.execute(
+      "tc1",
+      { action: "rename", file: "a.ts", line: 1, character: 0, newName: "b" },
+      undefined,
+      undefined,
+      { cwd: process.cwd(), ui: { notify: () => {}, confirm: async () => false, setStatus: () => {} } },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/read-only/i);
+  });
+});
+
+describe("LSP config", () => {
+  test("loadConfig reads user config from SRCODE_HOME and parses formatOnWrite", () => {
+    const oldHome = process.env.SRCODE_HOME;
+    const home = mkdtempSync(join(tmpdir(), "srcode-lsp-home-"));
+    const workspace = mkdtempSync(join(tmpdir(), "srcode-lsp-workspace-"));
+    process.env.SRCODE_HOME = home;
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "lsp.json"), JSON.stringify({ formatOnWrite: true, idleTimeoutMs: 1234 }), "utf8");
+
+    try {
+      const config = loadConfig(workspace);
+      expect(config.formatOnWrite).toBe(true);
+      expect(config.idleTimeoutMs).toBe(1234);
+    } finally {
+      if (oldHome === undefined) delete process.env.SRCODE_HOME;
+      else process.env.SRCODE_HOME = oldHome;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });
 

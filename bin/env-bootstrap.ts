@@ -22,9 +22,11 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const home = homedir();
-const agentDir = join(home, ".srcode", "agent");
-const sessionDir = join(home, ".srcode", "agent", "sessions");
+const srcodeHome = process.env.SRCODE_HOME && process.env.SRCODE_HOME.length > 0
+  ? process.env.SRCODE_HOME
+  : join(homedir(), ".srcode");
+const agentDir = join(srcodeHome, "agent");
+const sessionDir = join(agentDir, "sessions");
 
 process.env.PI_CODING_AGENT_DIR ??= agentDir;
 process.env.PI_CODING_AGENT_SESSION_DIR ??= sessionDir;
@@ -81,4 +83,3 @@ try {
 } catch {
   // settings.json doesn't exist or is invalid — no env vars to hydrate.
 }
-

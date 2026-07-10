@@ -24,6 +24,7 @@ import { subscribeExtensionEvent } from "../events.ts";
 import { MemoryStore } from "./store.ts";
 import { resolveDbPath, ProviderManager, sanitizeContext, buildMemoryContextBlock } from "./provider-manager.ts";
 import { CORRECTED_BOOST, SCOPE_PROJECT, VALID_CATEGORIES, type Category } from "./schema.ts";
+import { executeMemoryToolAction, type MemoryToolParams } from "./tool.ts";
 const CATEGORY_LIST = VALID_CATEGORIES.join(" | ");
 
 const MemoryParams = Type.Object({
@@ -58,22 +59,6 @@ function asCategory(raw: unknown): Category | undefined {
   return (VALID_CATEGORIES as readonly string[]).includes(raw) ? (raw as Category) : undefined;
 }
 
-function jsonResult(payload: unknown) {
-  const text = JSON.stringify(payload, null, 2);
-  return {
-    content: [{ type: "text" as const, text }],
-    details: payload,
-  };
-}
-
-function errorResult(message: string) {
-  const payload = { error: message };
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
-    details: payload,
-  };
-}
-
 // ---- /memory subcommand parsing ------------------------------------------
 
 interface ParsedCommand {
@@ -90,14 +75,9 @@ function parseCommand(args: string): ParsedCommand {
 
 // --------------------------------------------------------------------------
 
-/** Module-level reference set by memoryExtension for cross-extension hooks. */
-let activeMemoryProvider: MemoryProvider | null = null;
-
 export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   const manager = new ProviderManager();
   const provider: MemoryProvider = manager.provider;
-  // Expose for subagent extension's onDelegation hook.
-  activeMemoryProvider = provider;
   /** Expose raw MemoryStore for extract.ts which needs low-level access. */
   const rawStore = provider.getRawStore() as MemoryStore;
   // Register delegation hook for subagent completion tracking.
@@ -147,151 +127,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         // Capture cwd for project-scoped memory.
         if (ctx.cwd) currentCwd = ctx.cwd;
 
-        try {
-          switch (params.action) {
-            case "add": {
-              if (!params.content) return errorResult("'content' is required for add");
-              const cat = asCategory(params.category);
-              if (params.category && !cat) return errorResult(`invalid category '${params.category}'`);
-              const scope = (params.scope === "project" || params.scope === "global") ? params.scope : undefined;
-              const beforeAdd = provider.onBeforeWrite?.({ action: "add", content: params.content, category: cat, scope, tags: params.tags, source: "manual" });
-              if (beforeAdd && beforeAdd.ok === false) return errorResult(beforeAdd.reason ?? "memory write denied");
-              const id = provider.add(params.content, {
-                category: cat,
-                tags: params.tags,
-                scope,
-                cwd: scope === "project" ? (currentCwd ?? undefined) : undefined,
-                correctionOf: params.correction_of,
-                source: "manual",
-              });
-              manager.notifyMemoryToolWrite({
-                action: "add",
-                content: params.content,
-                tags: params.tags,
-                category: cat,
-                scope,
-                source: "manual",
-                factId: id,
-              });
-              const fact = provider.get(id);
-              return jsonResult({ status: "added", fact_id: id, fact });
-            }
-            case "search": {
-              if (!params.query) return errorResult("'query' is required for search");
-              const cat = asCategory(params.category);
-              const scope = (params.scope === "project" || params.scope === "global") ? params.scope : undefined;
-              const results = provider.search(params.query, {
-                category: cat,
-                minTrust: params.min_trust,
-                limit: params.limit,
-                scope,
-                cwd: scope === "project" ? (currentCwd ?? undefined) : undefined,
-              });
-              return jsonResult({ count: results.length, results });
-            }
-            case "probe": {
-              const target = params.entity ?? params.query;
-              if (!target) return errorResult("'entity' is required for probe");
-              const cat = asCategory(params.category);
-              const scope = (params.scope === "project" || params.scope === "global") ? params.scope : undefined;
-              const results = provider.probe(target, {
-                category: cat,
-                minTrust: params.min_trust,
-                limit: params.limit,
-                scope,
-                cwd: scope === "project" ? (currentCwd ?? undefined) : undefined,
-              });
-              return jsonResult({ count: results.length, results });
-            }
-            case "list": {
-              const cat = asCategory(params.category);
-              const scope = (params.scope === "project" || params.scope === "global") ? params.scope : undefined;
-              const results = provider.list({
-                category: cat,
-                minTrust: params.min_trust,
-                limit: params.limit,
-                scope,
-                cwd: scope === "project" ? (currentCwd ?? undefined) : undefined,
-              });
-              return jsonResult({ count: results.length, facts: results });
-            }
-            case "related": {
-              const target = params.entity ?? params.query;
-              if (!target) return errorResult("'entity' is required for related");
-              const cat = asCategory(params.category);
-              const results = provider.related(target, {
-                category: cat,
-                minTrust: params.min_trust,
-                limit: params.limit,
-              });
-              return jsonResult({ count: results.length, results });
-            }
-            case "reason": {
-              const entities = params.entities;
-              if (!entities || entities.length === 0) return errorResult("'entities' list is required for reason");
-              const cat = asCategory(params.category);
-              const results = provider.reason(entities, {
-                category: cat,
-                minTrust: params.min_trust,
-                limit: params.limit,
-              });
-              return jsonResult({ count: results.length, results });
-            }
-            case "contradict": {
-              const cat = asCategory(params.category);
-              const results = provider.contradict({
-                category: cat,
-                limit: params.limit,
-              });
-              return jsonResult({ count: results.length, contradictions: results });
-            }
-            case "update": {
-              if (params.fact_id === undefined) return errorResult("'fact_id' is required for update");
-              const cat = asCategory(params.category);
-              if (params.category && !cat) return errorResult(`invalid category '${params.category}'`);
-              // Fetch previous content BEFORE update so previousContent
-              // reflects the old value, not the new one (reviewer caught this).
-              const prevFact = provider.get(params.fact_id);
-              const beforeUpd = provider.onBeforeWrite?.({ action: "update", content: params.content, factId: params.fact_id, category: cat, tags: params.tags, previousContent: prevFact?.content });
-              if (beforeUpd && beforeUpd.ok === false) return errorResult(beforeUpd.reason ?? "memory write denied");
-              const ok = provider.update(params.fact_id, {
-                content: params.content,
-                category: cat,
-                tags: params.tags,
-              });
-              manager.notifyMemoryToolWrite({
-                action: "update",
-                content: params.content,
-                tags: params.tags,
-                category: cat,
-                factId: params.fact_id,
-                previousContent: prevFact?.content,
-              });
-              return jsonResult({ status: ok ? "updated" : "not_found", fact_id: params.fact_id });
-            }
-            case "remove": {
-              if (params.fact_id === undefined) return errorResult("'fact_id' is required for remove");
-              const beforeRm = provider.onBeforeWrite?.({ action: "remove", factId: params.fact_id });
-              if (beforeRm && beforeRm.ok === false) return errorResult(beforeRm.reason ?? "memory write denied");
-              const ok = provider.remove(params.fact_id);
-              manager.notifyMemoryToolWrite({
-                action: "remove",
-                factId: params.fact_id,
-              });
-              return jsonResult({ status: ok ? "removed" : "not_found", fact_id: params.fact_id });
-            }
-            case "feedback": {
-              if (params.fact_id === undefined) return errorResult("'fact_id' is required for feedback");
-              if (params.helpful === undefined) return errorResult("'helpful' is required for feedback");
-              const fact = provider.feedback(params.fact_id, params.helpful);
-              if (!fact) return jsonResult({ status: "not_found", fact_id: params.fact_id });
-              return jsonResult({ status: "ok", fact });
-            }
-          }
-        } catch (err) {
-          return errorResult(err instanceof Error ? err.message : String(err));
-        }
-        return errorResult("unreachable");
+        return executeMemoryToolAction(params as MemoryToolParams, { provider, manager, currentCwd });
       },
     }),
   );

@@ -11,10 +11,9 @@
  *   - Tool schema injection for external providers
  */
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { MemoryProvider, MemoryWriteMetadata } from "./provider.ts";
 import { BuiltinMemoryProvider } from "./builtin-provider.ts";
+import { srcodeMemoryDbPath, srcodeSettingsPath } from "../paths.ts";
 
 // ---- Settings ------------------------------------------------------------
 
@@ -24,7 +23,7 @@ export interface MemorySettings {
 }
 
 function getSettingsPath(): string {
-  return join(homedir(), ".srcode", "agent", "settings.json");
+  return srcodeSettingsPath();
 }
 
 function readMemorySettings(): MemorySettings {
@@ -43,9 +42,7 @@ function readMemorySettings(): MemorySettings {
 }
 
 export function resolveDbPath(): string {
-  const override = process.env.SRCODE_MEMORY_DB;
-  if (override) return override;
-  return join(homedir(), ".srcode", "memory.db");
+  return srcodeMemoryDbPath();
 }
 
 // ---- Context fencing helpers --------------------------------------------

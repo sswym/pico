@@ -7,8 +7,8 @@
  *
  * Lazy server startup on first call. Graceful degradation when no server available.
  */
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
-import { dirname, basename } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { basename } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
   defineTool,
@@ -16,8 +16,8 @@ import {
   type ExtensionContext,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import { positionToLsp, pathToUri, LspError, COMMAND_NOT_FOUND } from "./client.ts";
-import type { Location, Position, WorkspaceSymbol, WorkspaceEdit, FileRenameEvent } from "./types.ts";
+import { positionToLsp, LspError, COMMAND_NOT_FOUND } from "./client.ts";
+import type { Location, Position, WorkspaceSymbol } from "./types.ts";
 import {
   createLspManager,
   ensureServer,
@@ -31,7 +31,7 @@ import {
 import type { LspManagerState } from "./manager.ts";
 import { resolveFormattingOptions } from "./format-options.ts";
 import { getInstallHint, installServer, formatInstallHint } from "./install.ts";
-import { applyWorkspaceEdit, applyTextEditsToString } from "./edits.ts";
+import { applyTextEditsToString } from "./edits.ts";
 import { DiagnosticsLedger } from "./diagnostics-ledger.ts";
 import {
   normalizeLocations,
@@ -41,7 +41,6 @@ import {
   ACTIONS,
   type Action,
   executeCapabilitiesAction,
-  executeRequestAction,
   executeStatusAction,
   executeWorkspaceDiagnosticsAction,
   fail,
@@ -136,6 +135,12 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         if (!ACTIONS.includes(action)) {
           return fail(`Unknown action: ${action}. Valid: ${ACTIONS.join(", ")}`);
         }
+        if (isLspWriteOrHighRiskInput(params)) {
+          return fail(
+            "This lsp tool is read-only. Use explicit edit/write tools for file changes until LSP write actions have a separate permission tier.",
+            { action, success: false },
+          );
+        }
 
         // ── Actions that don't need a running server ────────────────────
         if (action === "status") {
@@ -147,20 +152,8 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         if (!client) return fail("No language server available for this project.");
         ctx.ui.setStatus("lsp", `LSP: ${client.serverName} ${client.displayVersion}`.trim());
 
-        if (action === "reload") {
-          await stopServer(state);
-          const refreshed = await ensureServerWithInstall(ctx.cwd, ctx);
-          if (!refreshed) return fail("Failed to restart language server.");
-          ctx.ui.setStatus("lsp", `LSP: ${refreshed.serverName} ${refreshed.displayVersion}`.trim());
-          return ok(`Restarted ${refreshed.serverName} v${refreshed.displayVersion || "unknown"}`, { serverName: refreshed.serverName, action: "reload", success: true });
-        }
-
         if (action === "capabilities") {
           return executeCapabilitiesAction(client);
-        }
-
-        if (action === "request") {
-          return await executeRequestAction(client, params.query, params.payload);
         }
 
         // ── File-level actions ──────────────────────────────────────────
@@ -218,55 +211,6 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           }
         }
 
-
-        if (action === "rename_file") {
-          if (!params.file || !params.newName) {
-            return fail("rename_file requires both 'file' (source) and 'newName' (destination).");
-          }
-          const absPath = params.file.startsWith("/") ? params.file : `${ctx.cwd}/${params.file}`;
-          const absNew = params.newName.startsWith("/") ? params.newName : `${ctx.cwd}/${params.newName}`;
-
-          // Step 1: willRenameFiles
-          let workspaceEdit: WorkspaceEdit | null = null;
-          try {
-            workspaceEdit = await client.workspaceWillRenameFiles([
-              { oldUri: pathToUri(absPath), newUri: pathToUri(absNew) } satisfies FileRenameEvent,
-            ]);
-          } catch {
-            // Server may not support willRenameFiles — continue with just the rename
-          }
-
-          // Step 2: Apply workspace edits if any
-          if (workspaceEdit) {
-            const result = applyWorkspaceEdit(workspaceEdit, ctx.cwd);
-            if (!result.ok) {
-              return fail(`Failed to apply workspace edits:\n${result.messages.join("\n")}`);
-            }
-          }
-
-          // Step 3: Filesystem rename
-          try {
-            mkdirSync(dirname(absNew), { recursive: true });
-            renameSync(absPath, absNew);
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            return fail(`Filesystem rename failed: ${msg}`);
-          }
-
-          // Step 4: didRenameFiles notification
-          try {
-            client.workspaceDidRenameFiles([
-              { oldUri: pathToUri(absPath), newUri: pathToUri(absNew) } satisfies FileRenameEvent,
-            ]);
-          } catch {}
-
-          // Step 5: Sync new file into document cache
-          try { syncDocument(state, ctx.cwd, absNew); } catch {}
-
-          const lines = [`Renamed: ${params.file} → ${params.newName}`];
-          if (workspaceEdit) lines.push("Applied workspace edits from LSP server.");
-          return ok(lines.join("\n"), { action: "rename_file", success: true });
-        }
         // ── Position-based actions ──────────────────────────────────────
         if (!params.file) return fail(`${action} requires 'file' parameter.`);
         if (!params.line) return fail(`${action} requires 'line' parameter.`);
@@ -313,23 +257,6 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               const context = { diagnostics: lineDiags, only: params.query ? [params.query] : undefined };
               const actions = await client.textDocumentCodeAction(uri, { start: pos, end: pos }, context);
               if (!actions || actions.length === 0) return ok("No code actions available at this position.");
-              if (params.apply) {
-                const matchTitle = params.query;
-                const target = matchTitle
-                  ? actions.find((a) => a.title.toLowerCase().includes(matchTitle.toLowerCase())) ?? actions[0]
-                  : actions[0];
-                if (!target) return fail("No matching code action found.");
-                let resolved = target;
-                try { resolved = await client.codeActionResolve(target); } catch {}
-                if (resolved.edit) {
-                  const applyResult = applyWorkspaceEdit(resolved.edit, ctx.cwd);
-                  return ok(`Applied: ${resolved.title}\n${applyResult.messages.join("\n")}`);
-                }
-                if (resolved.command) {
-                  return ok(`Action requires command execution (not yet supported): ${resolved.title}`);
-                }
-                return ok(`Applied: ${resolved.title}`);
-              }
               const lines: string[] = [];
               for (let i = 0; i < actions.length; i++) {
                 const a = actions[i]!;
@@ -338,13 +265,6 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
                 lines.push(`  ${i + 1}. ${a.title}${kind}${preferred}`);
               }
               return ok(`Code actions (${actions.length}):\n${lines.join("\n")}\n\nUse apply=true with query=<title substring> to apply one.`);
-            }
-            case "rename": {
-              if (!params.newName) return fail("rename requires 'newName' parameter.");
-              const edit = await client.textDocumentRename(uri, pos, params.newName);
-              if (!edit) return ok("No rename edits returned.");
-              const applyResult = applyWorkspaceEdit(edit, ctx.cwd);
-              return ok(`Renamed to "${params.newName}"\n${applyResult.messages.join("\n")}`);
             }
             default:
               return fail(`Unknown action: ${action}`);
@@ -357,7 +277,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     }),
   );
 
-  // ── Write/Edit writethrough: formatOnWrite + diagnosticsOnWrite ─────────
+  // ── Write/Edit writethrough: optional formatOnWrite + diagnosticsOnWrite ─
 
   const CODE_EXTENSIONS = new Set([
     ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts",
@@ -401,20 +321,24 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       const uri = syncDocument(state, ctx.cwd, filePath);
       if (!uri) return;
 
-      // Format-on-write
-      try {
-        const formatOpts = resolveFormattingOptions(filePath);
-        const edits = await client.textDocumentFormatting(uri, formatOpts);
-        if (edits && edits.length > 0) {
-          const currentContent = readFileSync(filePath, "utf8");
-          const formatted = applyTextEditsToString(currentContent, edits);
-          if (formatted !== currentContent) {
-            writeFileSync(filePath, formatted, "utf8");
-            syncDocument(state, ctx.cwd, filePath);
+      if (state.config?.formatOnWrite === true) {
+        try {
+          const formatOpts = resolveFormattingOptions(filePath);
+          const edits = await client.textDocumentFormatting(uri, formatOpts);
+          if (edits && edits.length > 0) {
+            const currentContent = readFileSync(filePath, "utf8");
+            const formatted = applyTextEditsToString(currentContent, edits);
+            if (formatted !== currentContent) {
+              writeFileSync(filePath, formatted, "utf8");
+              syncDocument(state, ctx.cwd, filePath);
+            }
           }
+        } catch {
+          event.content = [
+            ...event.content,
+            { type: "text", text: "\n[LSP] formatOnWrite failed; diagnostics still ran." },
+          ];
         }
-      } catch {
-        // Format failure is non-fatal
       }
 
       client.didSave(uri);

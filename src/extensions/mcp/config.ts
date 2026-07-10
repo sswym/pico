@@ -10,10 +10,8 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import type { McpConfig, McpServerConfig } from "./types.ts";
-
-const HOME_CONFIG_PATH = join(homedir(), ".srcode", "mcp-servers.json");
+import { srcodeMcpConfigPath } from "../paths.ts";
 
 /**
  * Load the MCP server configuration by merging home and project configs.
@@ -38,7 +36,7 @@ export function loadMcpConfig(cwd: string): Record<string, McpServerConfig> {
     }
   };
 
-  const homeServers = merger(HOME_CONFIG_PATH);
+  const homeServers = merger(srcodeMcpConfigPath());
   const projectServers = merger(join(cwd, ".srcode", "mcp-servers.json"));
 
   const merged: Record<string, McpServerConfig> = { ...homeServers };

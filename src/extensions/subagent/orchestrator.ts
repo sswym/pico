@@ -81,6 +81,22 @@ export interface SubagentRunContext {
 	sessionManager?: unknown;
 }
 
+interface AgentRunRequest {
+	agentName: string;
+	task: string;
+	cwd?: string;
+	step?: number;
+}
+
+interface AgentRunSupport {
+	defaultCwd: string;
+	agents: AgentConfig[];
+	signal?: AbortSignal;
+	onUpdate?: OnUpdateCallback;
+	makeDetails: (results: SingleResult[]) => SubagentDetails;
+	forkSessionPath?: string;
+}
+
 async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
 	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "srcode-subagent-"));
 	const safeName = agentName.replace(/[^\w.-]+/g, "_");
@@ -108,17 +124,11 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 }
 
 async function runSingleAgent(
-	defaultCwd: string,
-	agents: AgentConfig[],
-	agentName: string,
-	task: string,
-	cwd: string | undefined,
-	step: number | undefined,
-	signal: AbortSignal | undefined,
-	onUpdate: OnUpdateCallback | undefined,
-	makeDetails: (results: SingleResult[]) => SubagentDetails,
-	forkSessionPath?: string,
+	request: AgentRunRequest,
+	support: AgentRunSupport,
 ): Promise<SingleResult> {
+	const { agentName, task, cwd, step } = request;
+	const { defaultCwd, agents, signal, onUpdate, makeDetails, forkSessionPath } = support;
 	const agent = agents.find((a) => a.name === agentName);
 
 	if (!agent) {
@@ -193,80 +203,36 @@ async function runSingleAgent(
 async function checkGateAfterSuccess(
 	agent: AgentConfig | undefined,
 	result: SingleResult,
-	defaultCwd: string,
-	cwd: string | undefined,
-	agents: AgentConfig[],
-	task: string,
-	step: number | undefined,
-	signal: AbortSignal | undefined,
-	onUpdate: OnUpdateCallback | undefined,
-	makeDetails: (results: SingleResult[]) => SubagentDetails,
-	forkSessionPath?: string,
+	request: AgentRunRequest,
+	support: AgentRunSupport,
 ): Promise<SingleResult> {
 	return await runGateAfterSuccess({
 		agent,
 		result,
-		task,
-		runCwd: cwd ?? defaultCwd,
+		task: request.task,
+		runCwd: request.cwd ?? support.defaultCwd,
 		context: undefined,
-		signal,
-		runRepair: (agentName, repairTask) => runSingleAgent(
-			defaultCwd,
-			agents,
+		signal: support.signal,
+		runRepair: (agentName, repairTask) => runSingleAgent({
 			agentName,
-			repairTask,
-			cwd,
-			step,
-			signal,
-			onUpdate,
-			makeDetails,
-			forkSessionPath,
-		),
+			task: repairTask,
+			cwd: request.cwd,
+			step: request.step,
+		}, support),
 	});
 }
 
 async function runWithFallback(
-	defaultCwd: string,
-	agents: AgentConfig[],
-	agentName: string,
-	task: string,
-	cwd: string | undefined,
-	step: number | undefined,
-	signal: AbortSignal | undefined,
-	onUpdate: OnUpdateCallback | undefined,
-	makeDetails: (results: SingleResult[]) => SubagentDetails,
-	forkSessionPath?: string,
+	request: AgentRunRequest,
+	support: AgentRunSupport,
 ): Promise<SingleResult> {
 	return await runWithFallbackModels({
-		agents,
-		agentName,
+		agents: support.agents,
+		agentName: request.agentName,
 		context: undefined,
-		signal,
-		run: (runAgents) => runSingleAgent(
-			defaultCwd,
-			runAgents,
-			agentName,
-			task,
-			cwd,
-			step,
-			signal,
-			onUpdate,
-			makeDetails,
-			forkSessionPath,
-		),
-		onSuccessOrNoFallback: (agent, result) => checkGateAfterSuccess(
-			agent,
-			result,
-			defaultCwd,
-			cwd,
-			agents,
-			task,
-			step,
-			signal,
-			onUpdate,
-			makeDetails,
-			forkSessionPath,
-		),
+		signal: support.signal,
+		run: (runAgents) => runSingleAgent(request, { ...support, agents: runAgents }),
+		onSuccessOrNoFallback: (agent, result) => checkGateAfterSuccess(agent, result, request, support),
 	});
 }
 
@@ -372,16 +338,15 @@ export async function runSubagentRequest(
 				: undefined;
 
 			const result = await runWithFallback(
-				ctx.cwd,
-				stepAgents,
-				step.agent,
-				taskWithContext,
-				step.cwd,
-				i + 1,
-				signal,
-				chainUpdate,
-				makeDetails("chain"),
-				stepForkPath,
+				{ agentName: step.agent, task: taskWithContext, cwd: step.cwd, step: i + 1 },
+				{
+					defaultCwd: ctx.cwd,
+					agents: stepAgents,
+					signal,
+					onUpdate: chainUpdate,
+					makeDetails: makeDetails("chain"),
+					forkSessionPath: stepForkPath,
+				},
 			);
 
 			if (step.label) result.label = step.label;
@@ -471,21 +436,20 @@ export async function runSubagentRequest(
 				}
 
 				const result = await runWithFallback(
-					ctx.cwd,
-					agents,
-					t.agent,
-					t.task,
-					taskCwd,
-					undefined,
-					signal,
-					(partial) => {
+					{ agentName: t.agent, task: t.task, cwd: taskCwd },
+					{
+						defaultCwd: ctx.cwd,
+						agents,
+						signal,
+						onUpdate: (partial) => {
 						if (partial.details?.results[0]) {
 							allResults[index] = partial.details.results[0];
 							emitParallelUpdate();
 						}
+						},
+						makeDetails: makeDetails("parallel"),
+						forkSessionPath: forkPath,
 					},
-					makeDetails("parallel"),
-					forkPath,
 				);
 				if (forkFallbackNote) result.contextFallback = forkFallbackNote;
 				allResults[index] = result;
@@ -525,16 +489,15 @@ export async function runSubagentRequest(
 			if (!forkPath) forkFallbackNote = "context=fork requested but session forking unavailable; using fresh context";
 		}
 		const result = await runWithFallback(
-			ctx.cwd,
-			agents,
-			params.agent,
-			params.task,
-			params.cwd,
-			undefined,
-			signal,
-			onUpdate,
-			makeDetails("single"),
-			forkPath,
+			{ agentName: params.agent, task: params.task, cwd: params.cwd },
+			{
+				defaultCwd: ctx.cwd,
+				agents,
+				signal,
+				onUpdate,
+				makeDetails: makeDetails("single"),
+				forkSessionPath: forkPath,
+			},
 		);
 		publishExtensionEvent("subagent_completed", { task: params.task, result: getResultOutput(result) });
 		if (forkFallbackNote) result.contextFallback = forkFallbackNote;

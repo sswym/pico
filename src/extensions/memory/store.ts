@@ -30,6 +30,7 @@ import { extractEntities } from "./entities.ts";
 import { tokenize, filterStopwords, buildIdfMap, computeTfIdf, vectorToJson } from "./tfidf.ts";
 import { FactRetriever } from "./retrieval.ts";
 import { normalizeTerm, expandQuery } from "./synonyms.ts";
+import { projectScopeKey } from "./query-scope.ts";
 
 export interface Fact {
   fact_id: number;
@@ -81,10 +82,6 @@ export interface UpdateOptions {
 }
 
 const clampTrust = (n: number) => Math.max(TRUST_MIN, Math.min(TRUST_MAX, n));
-
-export function projectScopeKey(cwd: string): string {
-  return `${SCOPE_PROJECT}:${cwd}`;
-}
 
 function normaliseFtsQuery(raw: string): string {
   const cleaned = raw

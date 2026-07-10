@@ -9,7 +9,6 @@
  * ProviderManager falls back to builtin if this module is unavailable.
  */
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   type Fact,
@@ -22,9 +21,10 @@ import {
   WriteQueue,
 } from "./provider.ts";
 import type { Category } from "./schema.ts";
+import { srcodeHolographicMemoryPath } from "../paths.ts";
 
 function defaultDbPath(): string {
-  return process.env.SRCODE_MEMORY_DB ?? join(homedir(), ".srcode", "holographic-memory.json");
+  return srcodeHolographicMemoryPath();
 }
 
 interface StoredFact {

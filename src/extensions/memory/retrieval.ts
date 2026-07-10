@@ -9,7 +9,8 @@
 import type { Database } from "bun:sqlite";
 import { tokenize, filterStopwords, cosineSimilarity, vectorFromJson, type SparseVector } from "./tfidf.ts";
 import { expandQuery, normalizeTerm } from "./synonyms.ts";
-import { SCOPE_GLOBAL, SCOPE_PROJECT, type Scope } from "./schema.ts";
+import type { Scope } from "./schema.ts";
+import { scopeFilter, scoreScopeBoost } from "./query-scope.ts";
 
 /** FTS5 stopwords. */
 const FTS_STOPWORDS: Record<string, true> = {
@@ -125,33 +126,6 @@ export interface RetrievalQueryOptions {
   limit?: number;
   scope?: Scope;
   cwd?: string;
-}
-
-function projectScopeKey(cwd: string): string {
-  return `${SCOPE_PROJECT}:${cwd}`;
-}
-
-function scopeFilter(opts: Pick<RetrievalQueryOptions, "scope" | "cwd">): {
-  clause: string;
-  params: string[];
-  projectScope?: string;
-} {
-  if (opts.scope === SCOPE_PROJECT && opts.cwd) {
-    const projectScope = projectScopeKey(opts.cwd);
-    return {
-      clause: "AND (f.scope = ? OR f.scope = ?)",
-      params: [SCOPE_GLOBAL, projectScope],
-      projectScope,
-    };
-  }
-  return {
-    clause: "AND f.scope = ?",
-    params: [opts.scope ?? SCOPE_GLOBAL],
-  };
-}
-
-function scoreScopeBoost(score: number, factScope: string, projectScope: string | undefined): number {
-  return projectScope && factScope === projectScope ? score * 1.5 : score;
 }
 
 export class FactRetriever {
@@ -292,7 +266,7 @@ export class FactRetriever {
            FROM fact_entities fe1
            JOIN fact_entities fe2 ON fe2.entity_id = fe1.entity_id AND fe2.fact_id != fe1.fact_id
            JOIN facts f3 ON f3.fact_id = fe2.fact_id
-           WHERE fe1.entity_id = ? AND f3.trust_score >= ? ${scope.clause.replaceAll("f.", "f3.")} AND f3.category = ?
+           WHERE fe1.entity_id = ? AND f3.trust_score >= ? ${scopeFilter(opts, "f3").clause} AND f3.category = ?
            GROUP BY f3.fact_id
            ORDER BY co_occurrence DESC, f3.trust_score DESC
            LIMIT ?`,
@@ -307,7 +281,7 @@ export class FactRetriever {
          FROM fact_entities fe1
          JOIN fact_entities fe2 ON fe2.entity_id = fe1.entity_id AND fe2.fact_id != fe1.fact_id
          JOIN facts f3 ON f3.fact_id = fe2.fact_id
-         WHERE fe1.entity_id = ? AND f3.trust_score >= ? ${scope.clause.replaceAll("f.", "f3.")}
+         WHERE fe1.entity_id = ? AND f3.trust_score >= ? ${scopeFilter(opts, "f3").clause}
          GROUP BY f3.fact_id
          ORDER BY co_occurrence DESC, f3.trust_score DESC
          LIMIT ?`,

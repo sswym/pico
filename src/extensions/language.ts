@@ -5,16 +5,16 @@
  * Reads/writes the `language` field in settings.json (default: "简体中文").
  * Registers a `/language` slash command to view and change the setting.
  */
-import { readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import languageTemplate from "../prompts/language-system.md" with { type: "text" };
+import { srcodeSettingsPath } from "./paths.ts";
 
 const DEFAULT_LANGUAGE = "简体中文";
 
 function getSettingsPath(): string {
-  return join(homedir(), ".srcode", "agent", "settings.json");
+  return srcodeSettingsPath();
 }
 
 function readSettings(): Record<string, unknown> {
@@ -26,7 +26,9 @@ function readSettings(): Record<string, unknown> {
 }
 
 function writeSettings(settings: Record<string, unknown>): void {
-  writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2) + "\n");
+  const settingsPath = getSettingsPath();
+  mkdirSync(dirname(settingsPath), { recursive: true });
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
 }
 
 function readLanguage(): string {
