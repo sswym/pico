@@ -5,6 +5,7 @@
  * system, while srcode extensions use this module for local defaults that
  * would otherwise drift across tools.
  */
+import { readSettingsObject } from "./settings.ts";
 
 export type Capability =
   | "read"
@@ -67,26 +68,104 @@ export const CAPABILITIES: readonly CapabilityDescriptor[] = [
   },
 ];
 
-export function envFlag(name: string): boolean {
+export interface SafetySettings {
+  enableProjectHooks?: boolean;
+  enableProjectMcp?: boolean;
+  allowUnattendedPlanApproval?: boolean;
+  allowLspFormatOnWrite?: boolean;
+}
+
+type SafetyKey = keyof SafetySettings;
+
+export function envFlag(name: string): boolean | undefined {
   const raw = process.env[name];
-  if (!raw) return false;
-  return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+  if (raw === undefined) return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return undefined;
+}
+
+export function readSafetySettings(): SafetySettings {
+  const raw = readSettingsObject("safety");
+  const settings: SafetySettings = {};
+  if (typeof raw.enableProjectHooks === "boolean") {
+    settings.enableProjectHooks = raw.enableProjectHooks;
+  }
+  if (typeof raw.enableProjectMcp === "boolean") {
+    settings.enableProjectMcp = raw.enableProjectMcp;
+  }
+  if (typeof raw.allowUnattendedPlanApproval === "boolean") {
+    settings.allowUnattendedPlanApproval = raw.allowUnattendedPlanApproval;
+  }
+  if (typeof raw.allowLspFormatOnWrite === "boolean") {
+    settings.allowLspFormatOnWrite = raw.allowLspFormatOnWrite;
+  }
+  return settings;
+}
+
+function safetyFlag(envName: string, settingsKey: SafetyKey): boolean {
+  const env = envFlag(envName);
+  if (env !== undefined) return env;
+  return readSafetySettings()[settingsKey] ?? false;
+}
+
+export function safetyFlagSource(envName: string, settingsKey: SafetyKey): "env" | "settings" | "default" {
+  if (envFlag(envName) !== undefined) return "env";
+  if (readSafetySettings()[settingsKey] !== undefined) return "settings";
+  return "default";
+}
+
+export interface SafetyFlagStatus {
+  envName: string;
+  settingsKey: SafetyKey;
+  enabled: boolean;
+  source: "env" | "settings" | "default";
+}
+
+export function safetyStatuses(): SafetyFlagStatus[] {
+  return [
+    {
+      envName: "SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL",
+      settingsKey: "allowUnattendedPlanApproval",
+      enabled: allowUnattendedPlanApproval(),
+      source: safetyFlagSource("SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL", "allowUnattendedPlanApproval"),
+    },
+    {
+      envName: "SRCODE_ALLOW_LSP_FORMAT_ON_WRITE",
+      settingsKey: "allowLspFormatOnWrite",
+      enabled: allowLspFormatOnWrite(),
+      source: safetyFlagSource("SRCODE_ALLOW_LSP_FORMAT_ON_WRITE", "allowLspFormatOnWrite"),
+    },
+    {
+      envName: "SRCODE_ENABLE_PROJECT_HOOKS",
+      settingsKey: "enableProjectHooks",
+      enabled: allowProjectHooks(),
+      source: safetyFlagSource("SRCODE_ENABLE_PROJECT_HOOKS", "enableProjectHooks"),
+    },
+    {
+      envName: "SRCODE_ENABLE_PROJECT_MCP",
+      settingsKey: "enableProjectMcp",
+      enabled: allowProjectMcp(),
+      source: safetyFlagSource("SRCODE_ENABLE_PROJECT_MCP", "enableProjectMcp"),
+    },
+  ];
 }
 
 export function allowUnattendedPlanApproval(): boolean {
-  return envFlag("SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL");
+  return safetyFlag("SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL", "allowUnattendedPlanApproval");
 }
 
 export function allowLspFormatOnWrite(): boolean {
-  return envFlag("SRCODE_ALLOW_LSP_FORMAT_ON_WRITE");
+  return safetyFlag("SRCODE_ALLOW_LSP_FORMAT_ON_WRITE", "allowLspFormatOnWrite");
 }
 
 export function allowProjectHooks(): boolean {
-  return envFlag("SRCODE_ENABLE_PROJECT_HOOKS");
+  return safetyFlag("SRCODE_ENABLE_PROJECT_HOOKS", "enableProjectHooks");
 }
 
 export function allowProjectMcp(): boolean {
-  return envFlag("SRCODE_ENABLE_PROJECT_MCP");
+  return safetyFlag("SRCODE_ENABLE_PROJECT_MCP", "enableProjectMcp");
 }
 
 export function capabilitySummary(): string {

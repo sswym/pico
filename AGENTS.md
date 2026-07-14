@@ -105,6 +105,19 @@ function makeFakePi() {
 | `SRCODE_ENABLE_PROJECT_HOOKS` | 启用 `<repo>/.srcode/hooks.json` 项目级 shell hooks |
 | `SRCODE_ENABLE_PROJECT_MCP` | 启用 `<repo>/.srcode/mcp-servers.json` 项目级 MCP 服务器 |
 
+这些安全开关也可长期写入 `~/.srcode/agent/settings.json` 的 `safety` 字段；环境变量优先于 settings：
+
+```json
+{
+  "safety": {
+    "enableProjectHooks": false,
+    "enableProjectMcp": false,
+    "allowUnattendedPlanApproval": false,
+    "allowLspFormatOnWrite": false
+  }
+}
+```
+
 ## 编辑注意事项
 
 - `bin/env-bootstrap.ts` 有副作用（设置路径），必须在 `bin/srcode.ts` 最先导入

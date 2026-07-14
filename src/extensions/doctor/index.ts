@@ -3,28 +3,27 @@
  */
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import {
-  allowLspFormatOnWrite,
-  allowProjectHooks,
-  allowProjectMcp,
-  allowUnattendedPlanApproval,
   capabilitySummary,
+  safetyStatuses,
 } from "../policy.ts";
+import { srcodeSettingsPath } from "../paths.ts";
 
 function enabled(value: boolean): string {
   return value ? "enabled" : "disabled";
 }
 
 export function buildDoctorReport(cwd: string): string {
+  const safetyLines = safetyStatuses().map((status) => (
+    `  ${status.settingsKey}: ${enabled(status.enabled)} (${status.source}; env ${status.envName})`
+  ));
   return [
     "srcode doctor",
     "",
     `cwd: ${cwd}`,
+    `settings: ${srcodeSettingsPath()}`,
     "",
     "Safety switches:",
-    `  SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL: ${enabled(allowUnattendedPlanApproval())}`,
-    `  SRCODE_ALLOW_LSP_FORMAT_ON_WRITE: ${enabled(allowLspFormatOnWrite())}`,
-    `  SRCODE_ENABLE_PROJECT_HOOKS: ${enabled(allowProjectHooks())}`,
-    `  SRCODE_ENABLE_PROJECT_MCP: ${enabled(allowProjectMcp())}`,
+    ...safetyLines,
     "",
     "Capabilities:",
     capabilitySummary().split("\n").map((line) => `  ${line}`).join("\n"),
