@@ -16,6 +16,7 @@ import {
   type ExtensionContext,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
+import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
 import { positionToLsp, LspError, COMMAND_NOT_FOUND } from "./client.ts";
 import type { Location, Position, WorkspaceSymbol } from "./types.ts";
 import {
@@ -135,6 +136,12 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         `High-risk/write actions are currently blocked by policy: ${BLOCKED_WRITE_OR_HIGH_RISK_ACTIONS.join(", ")}. ` +
         "Use symbol to auto-resolve column position from a name on the given line.",
       parameters: LspParams,
+      renderCall(args, theme, context) {
+        return renderToolCallText("lsp", args, theme, context);
+      },
+      renderResult(result, options, theme, context) {
+        return renderToolResultText(result, options, theme, context, { collapsedLines: 10 });
+      },
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const action = params.action as Action;
         if (!ACTIONS.includes(action)) {

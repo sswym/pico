@@ -140,6 +140,7 @@ test("MCP extension loads config from session cwd and registers discovered tools
 
   expect(loadedCwds).toEqual(["/repo/project"]);
   expect(pi.tools.has("mcp__docs__lookup")).toBe(true);
+  expect(pi.tools.get("mcp__docs__lookup").renderResult).toBeFunction();
 
   const result = await pi.tools.get("mcp__docs__lookup").execute("tc1", { query: "memory" });
   expect(result.content[0].text).toBe("found docs");

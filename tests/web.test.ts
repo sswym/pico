@@ -5,6 +5,7 @@
  * don't see our stubs.
  */
 import { afterEach, describe, expect, test } from "bun:test";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { LRU } from "../src/extensions/web/cache.ts";
 import {
   clearWebFetchCache,
@@ -12,6 +13,10 @@ import {
   htmlToMarkdown,
   webFetchCacheSize,
 } from "../src/extensions/web/fetch.ts";
+import {
+  formatWebFetchDisplay,
+  formatWebSearchDisplay,
+} from "../src/extensions/web/render.ts";
 import {
   filterDomains,
   parseExaResponse,
@@ -21,6 +26,10 @@ import {
 } from "../src/extensions/web/search.ts";
 
 const realFetch = globalThis.fetch;
+const plainTheme = {
+  fg: (_color: string, text: string) => text,
+  bold: (text: string) => text,
+} as unknown as Theme;
 
 afterEach(() => {
   globalThis.fetch = realFetch;
@@ -314,6 +323,89 @@ describe("filterDomains", () => {
   test("empty filters return input unchanged", () => {
     const out = filterDomains(sample, [], []);
     expect(out).toEqual(sample);
+  });
+});
+
+describe("web tool TUI rendering", () => {
+  test("webSearch collapsed display summarizes results without snippets", () => {
+    const result = {
+      content: [
+        {
+          type: "text" as const,
+          text: "Search: q\nResults: 4\n\n1. A\n   https://a.test\n   long snippet body that should be hidden\n",
+        },
+      ],
+      details: {
+        count: 4,
+        results: [
+          { title: "A", url: "https://a.test", snippet: "long snippet body that should be hidden" },
+          { title: "B", url: "https://b.test", snippet: "hidden b" },
+          { title: "C", url: "https://c.test", snippet: "hidden c" },
+          { title: "D", url: "https://d.test", snippet: "hidden d" },
+        ],
+      },
+    };
+
+    const collapsed = formatWebSearchDisplay(
+      result,
+      { expanded: false, isPartial: false },
+      plainTheme,
+      false,
+      "Ctrl+O to expand",
+    );
+    expect(collapsed).toContain("Results: 4");
+    expect(collapsed).toContain("https://a.test");
+    expect(collapsed).toContain("... 1 more results");
+    expect(collapsed).toContain("Ctrl+O to expand");
+    expect(collapsed).not.toContain("long snippet body");
+
+    const expanded = formatWebSearchDisplay(
+      result,
+      { expanded: true, isPartial: false },
+      plainTheme,
+      false,
+      "Ctrl+O to expand",
+    );
+    expect(expanded).toContain("long snippet body that should be hidden");
+  });
+
+  test("webFetch collapsed display hides page body until expanded", () => {
+    const result = {
+      content: [
+        {
+          type: "text" as const,
+          text: "URL: https://docs.test/page\n\n# Full page\nlarge page body should be hidden",
+        },
+      ],
+      details: {
+        status: 200,
+        url: "https://docs.test/page",
+        truncated: true,
+        contentType: "text/html; charset=utf-8",
+      },
+    };
+
+    const collapsed = formatWebFetchDisplay(
+      result,
+      { expanded: false, isPartial: false },
+      plainTheme,
+      false,
+      "Ctrl+O to expand",
+    );
+    expect(collapsed).toContain("status 200");
+    expect(collapsed).toContain("https://docs.test/page");
+    expect(collapsed).toContain("truncated");
+    expect(collapsed).toContain("Ctrl+O to expand");
+    expect(collapsed).not.toContain("large page body");
+
+    const expanded = formatWebFetchDisplay(
+      result,
+      { expanded: true, isPartial: false },
+      plainTheme,
+      false,
+      "Ctrl+O to expand",
+    );
+    expect(expanded).toContain("large page body should be hidden");
   });
 });
 

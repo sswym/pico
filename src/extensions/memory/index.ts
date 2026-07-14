@@ -25,6 +25,7 @@ import { MemoryStore } from "./store.ts";
 import { resolveDbPath, ProviderManager, sanitizeContext, buildMemoryContextBlock } from "./provider-manager.ts";
 import { CORRECTED_BOOST, SCOPE_PROJECT, VALID_CATEGORIES, type Category } from "./schema.ts";
 import { executeMemoryToolAction, type MemoryToolParams } from "./tool.ts";
+import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
 const CATEGORY_LIST = VALID_CATEGORIES.join(" | ");
 
 const MemoryParams = Type.Object({
@@ -123,6 +124,12 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         "When you cite a stored fact, mention its id like `(memory:#42)` so the user can audit or correct it.",
       ],
       parameters: MemoryParams,
+      renderCall(args, theme, context) {
+        return renderToolCallText("memory", args, theme, context);
+      },
+      renderResult(result, options, theme, context) {
+        return renderToolResultText(result, options, theme, context);
+      },
       async execute(_id, params, _signal, _onUpdate, ctx) {
         // Capture cwd for project-scoped memory.
         if (ctx.cwd) currentCwd = ctx.cwd;

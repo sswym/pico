@@ -25,6 +25,7 @@ import {
   type ExtensionContext,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
+import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
 import { srcodeHome } from "../paths.ts";
 import { allowUnattendedPlanApproval } from "../policy.ts";
 import { PLAN_MODE_BLOCK } from "./prompt.ts";
@@ -99,6 +100,12 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       promptSnippet:
         "EnterPlanMode — switch to read-only research; bash/edit/write are blocked until ExitPlanMode is approved.",
       parameters: EmptyParams,
+      renderCall(args, theme, context) {
+        return renderToolCallText("EnterPlanMode", args, theme, context);
+      },
+      renderResult(result, options, theme, context) {
+        return renderToolResultText(result, options, theme, context);
+      },
       async execute(_id, _params, _signal, _onUpdate, ctx) {
         planActive = true;
         planFile = resolvePlanFile(ctx);
@@ -124,6 +131,12 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       promptSnippet:
         "ExitPlanMode — surface the plan to the user for approval; only call after the plan file is complete.",
       parameters: EmptyParams,
+      renderCall(args, theme, context) {
+        return renderToolCallText("ExitPlanMode", args, theme, context);
+      },
+      renderResult(result, options, theme, context) {
+        return renderToolResultText(result, options, theme, context);
+      },
       async execute(_id, _params, _signal, _onUpdate, ctx) {
         const path = planFile ?? resolvePlanFile(ctx);
         const plan = await readPlanFile(path);

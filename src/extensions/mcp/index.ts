@@ -28,6 +28,7 @@ import {
   type ExtensionAPI,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
+import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
 import { loadMcpConfig } from "./config.ts";
 import {
   spawnMcpServer,
@@ -141,6 +142,12 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
                 promptSnippet:
                   `${piToolName} — call "${tool.name}" on MCP server "${id}"`,
                 parameters: Type.Unsafe(schema),
+                renderCall(args, theme, context) {
+                  return renderToolCallText(piToolName, args, theme, context);
+                },
+                renderResult(result, options, theme, context) {
+                  return renderToolResultText(result, options, theme, context);
+                },
                 async execute(_tcId, params, _signal) {
                   try {
                     const active = activeTools.get(piToolName);

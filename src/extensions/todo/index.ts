@@ -11,6 +11,7 @@ import {
   type ExtensionAPI,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
+import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
 import { formatPendingReminder, formatTodoList, TODO_DESCRIPTION, TODO_PROMPT } from "./prompt.ts";
 import { TodoWriteParams } from "./schema.ts";
 import { TodoStore } from "./store.ts";
@@ -37,6 +38,12 @@ export const todoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         "todoWrite — manage the session task list. Use for multi-step work; mark exactly one task in_progress.",
       promptGuidelines: [TODO_PROMPT],
       parameters: TodoWriteParams,
+      renderCall(args, theme, context) {
+        return renderToolCallText("todoWrite", args, theme, context);
+      },
+      renderResult(result, options, theme, context) {
+        return renderToolResultText(result, options, theme, context);
+      },
       async execute(_id, params, _signal, _onUpdate, ctx) {
         const key = sessionKey(ctx);
         const result = store.commit(key, params.todos);

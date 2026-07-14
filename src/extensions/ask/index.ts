@@ -31,6 +31,7 @@ import {
   ASK_PROMPT_SNIPPET,
   ASK_TOOL_PROMPT,
 } from "./prompt.ts";
+import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
 
 // keep typebox import alive in case verbatimModuleSyntax elides it
 void Type;
@@ -141,6 +142,12 @@ export const askExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       promptSnippet: ASK_PROMPT_SNIPPET,
       promptGuidelines: ASK_GUIDELINES,
       parameters: AskUserQuestionParams,
+      renderCall(args, theme, context) {
+        return renderToolCallText("askUserQuestion", args, theme, context);
+      },
+      renderResult(result, options, theme, context) {
+        return renderToolResultText(result, options, theme, context);
+      },
       async execute(_id, params: AskUserQuestionInput, _signal, _onUpdate, ctx) {
         if (!ctx.hasUI) {
           return errorResult(

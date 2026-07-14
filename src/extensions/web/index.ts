@@ -16,6 +16,12 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { fetchAndConvert, formatFetchResult } from "./fetch.ts";
+import {
+  renderWebFetchCall,
+  renderWebFetchResult,
+  renderWebSearchCall,
+  renderWebSearchResult,
+} from "./render.ts";
 import { formatSearchResults, webSearch } from "./search.ts";
 
 const WebFetchParams = Type.Object({
@@ -65,6 +71,8 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       promptSnippet:
         "webFetch — fetch one URL and read it as Markdown. Public network access; cached 15 min; output capped at 8KB.",
       parameters: WebFetchParams,
+      renderCall: renderWebFetchCall,
+      renderResult: renderWebFetchResult,
       async execute(_id, params, signal) {
         try {
           const page = await fetchAndConvert(params.url, { signal });
@@ -100,6 +108,8 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       promptSnippet:
         "webSearch — query the public web (Exa + Tavily hybrid by default; set SRCODE_SEARCH_PROVIDER to override). Returns title/url/snippet triples.",
       parameters: WebSearchParams,
+      renderCall: renderWebSearchCall,
+      renderResult: renderWebSearchResult,
       async execute(_id, params, signal) {
         try {
           const results = await webSearch(
