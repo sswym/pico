@@ -8,7 +8,7 @@
  * Lazy server startup on first call. Graceful degradation when no server available.
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
   defineTool,
@@ -59,6 +59,10 @@ export function isLspReadonlyToolCall(input: unknown): boolean {
 
 export function isLspWriteOrHighRiskToolCall(input: unknown): boolean {
   return isLspWriteOrHighRiskInput(input);
+}
+
+export function resolveSessionFilePath(cwd: string, filePath: string): string {
+  return filePath.startsWith("/") ? filePath : resolve(cwd, filePath);
 }
 
 // ── Unified tool schema ───────────────────────────────────────────────────
@@ -320,16 +324,17 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     try {
       const uri = syncDocument(state, ctx.cwd, filePath);
       if (!uri) return;
+      const absFilePath = resolveSessionFilePath(ctx.cwd, filePath);
 
       if (state.config?.formatOnWrite === true) {
         try {
-          const formatOpts = resolveFormattingOptions(filePath);
+          const formatOpts = resolveFormattingOptions(absFilePath);
           const edits = await client.textDocumentFormatting(uri, formatOpts);
           if (edits && edits.length > 0) {
-            const currentContent = readFileSync(filePath, "utf8");
+            const currentContent = readFileSync(absFilePath, "utf8");
             const formatted = applyTextEditsToString(currentContent, edits);
             if (formatted !== currentContent) {
-              writeFileSync(filePath, formatted, "utf8");
+              writeFileSync(absFilePath, formatted, "utf8");
               syncDocument(state, ctx.cwd, filePath);
             }
           }

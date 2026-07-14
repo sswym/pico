@@ -143,3 +143,47 @@ test("MCP extension records failed server connections without blocking other ser
   await pi.handlers["session_shutdown"]![0]!({}, {});
   expect(closed).toContain("good");
 });
+
+test("MCP tools from a previous cwd stop using closed handles after reconnect", async () => {
+  const pi = makeFakePi();
+  const calls: Array<{ handle: string; toolName: string }> = [];
+  const closed: string[] = [];
+  const extension = createMcpExtension({
+    load: (cwd): Record<string, McpServerConfig> => {
+      if (cwd.endsWith("one")) return { one: { command: "one" } };
+      return { two: { command: "two" } };
+    },
+    spawn: (id) => makeHandle(id),
+    initialize: async (handle) => ({
+      protocolVersion: "test",
+      capabilities: {},
+      serverInfo: { name: handle.id, version: "1.0.0" },
+    }),
+    listTools: async (handle) => [{ name: handle.id === "one" ? "old" : "new", inputSchema: { type: "object", properties: {} } }],
+    callTool: async (handle, toolName): Promise<McpToolCallResult> => {
+      calls.push({ handle: handle.id, toolName });
+      return { content: [{ type: "text", text: "ok" }] };
+    },
+    close: (handle) => {
+      closed.push(handle.id);
+    },
+  });
+
+  extension(pi as any);
+  await pi.handlers["session_start"]![0]!({}, { cwd: "/repo/one" });
+  const oldTool = pi.tools.get("mcp__one__old");
+  expect(oldTool).toBeDefined();
+
+  await pi.handlers["session_start"]![0]!({}, { cwd: "/repo/two" });
+  expect(closed).toContain("one");
+  expect(pi.tools.has("mcp__two__new")).toBe(true);
+
+  const oldResult = await oldTool.execute("tc-old", {});
+  expect(oldResult.isError).toBe(true);
+  expect(oldResult.content[0].text).toMatch(/no longer active/i);
+  expect(calls).toEqual([]);
+
+  const newResult = await pi.tools.get("mcp__two__new").execute("tc-new", {});
+  expect(newResult.isError).toBe(false);
+  expect(calls).toEqual([{ handle: "two", toolName: "new" }]);
+});

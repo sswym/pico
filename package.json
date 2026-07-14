@@ -10,7 +10,8 @@
   "scripts": {
     "build": "bun run scripts/build.ts",
     "start": "bun run bin/srcode.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "verify": "bunx tsc --noEmit && bun test"
   },
   "devDependencies": {
     "@types/bun": "latest"

@@ -156,6 +156,12 @@ test("store.add rejects content with secrets", () => {
   expect(store.count()).toBe(0);
 });
 
+test("store.update rejects content with secrets", () => {
+  const id = store.add("safe content", { category: "general" });
+  expect(() => store.update(id, { content: "my key is AKIAIOSFODNN7EXAMPLE" })).toThrow(/secret/i);
+  expect(store.get(id)!.content).toBe("safe content");
+});
+
 test("correction reduces trust on original and boosts new fact", () => {
   const original = store.add("project uses webpack", { category: "project" });
   const before = store.get(original)!;
@@ -204,6 +210,21 @@ test("project scope ranking gives project facts a boost", () => {
 
   const hits = store.search("react use", { limit: 5, minTrust: 0, scope: "project", cwd });
   // Project fact should rank first due to 10% boost
+  expect(hits[0]!.fact_id).toBe(projectFact);
+});
+
+test("probe with project scope sees global and current project facts only", () => {
+  const cwdA = "/tmp/probe-a";
+  const cwdB = "/tmp/probe-b";
+  store.add("Alice owns global docs", { category: "general" });
+  const projectFact = store.add("Alice owns project api", { category: "project", scope: "project", cwd: cwdA });
+  store.add("Alice owns other project ui", { category: "project", scope: "project", cwd: cwdB });
+
+  const hits = store.probe("Alice", { limit: 10, minTrust: 0, scope: "project", cwd: cwdA });
+  const contents = hits.map((h) => h.content);
+  expect(contents).toContain("Alice owns global docs");
+  expect(contents).toContain("Alice owns project api");
+  expect(contents).not.toContain("Alice owns other project ui");
   expect(hits[0]!.fact_id).toBe(projectFact);
 });
 

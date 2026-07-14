@@ -5,11 +5,10 @@
  * timeout. Output streams are decoded as utf8 and truncated to 4 KiB each
  * so a runaway formatter can't blow up the agent's memory.
  *
- * `vars` carries the placeholder values. We substitute literally — no
- * shell quoting magic — so callers should pre-validate that values
- * don't contain shell metacharacters they care about. The placeholder
- * keys are uppercase ($FILE, $TOOL, $TURN, etc.); unknown ones are
- * left as-is.
+ * `vars` carries the placeholder values. Values are shell-quoted according
+ * to their surrounding quote context before the command is passed to `sh -c`.
+ * The placeholder keys are uppercase ($FILE, $TOOL, $TURN, etc.); unknown
+ * ones collapse to the empty string.
  */
 import type { Hook } from "./config.ts";
 
@@ -26,17 +25,38 @@ export type HookVars = Record<string, string | undefined>;
 const TRUNCATE_BYTES = 4 * 1024;
 const PLACEHOLDER_RE = /\$([A-Z][A-Z0-9_]*)/g;
 
-/**
- * Replace `$FOO` style placeholders in `template` from the `vars` map.
- * Missing or undefined keys collapse to the empty string. This keeps the
- * common case (no $TURN known yet) producing a clean command line rather
- * than a literal `$TURN`.
- */
 export function substitute(template: string, vars: HookVars): string {
-  return template.replace(PLACEHOLDER_RE, (_match, name: string) => {
+  return template.replace(PLACEHOLDER_RE, (match, name: string, offset: number) => {
     const v = vars[name];
-    return v === undefined ? "" : v;
+    if (v === undefined) return "";
+    return quoteForShellContext(String(v), quoteContextAt(template, offset + match.length));
   });
+}
+
+type QuoteContext = "none" | "single" | "double";
+
+function quoteContextAt(template: string, endOffset: number): QuoteContext {
+  let context: QuoteContext = "none";
+  for (let i = 0; i < endOffset; i++) {
+    const ch = template[i];
+    if (ch === "\\" && context !== "single") {
+      i++;
+      continue;
+    }
+    if (ch === "'" && context !== "double") {
+      context = context === "single" ? "none" : "single";
+    } else if (ch === '"' && context !== "single") {
+      context = context === "double" ? "none" : "double";
+    }
+  }
+  return context;
+}
+
+function quoteForShellContext(value: string, context: QuoteContext): string {
+  if (context === "double") return value.replace(/(["\\$`])/g, "\\$1").replace(/\n/g, "\\n");
+  if (context === "single") return value.replace(/'/g, "'\\''");
+  if (value.length === 0) return "''";
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function truncate(s: string): string {

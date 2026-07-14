@@ -138,6 +138,23 @@ describe("fetchAndConvert", () => {
     expect(seenUrl.startsWith("https://")).toBe(true);
   });
 
+  test("rejects localhost and private network targets by default", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response("should not fetch");
+    }) as unknown as typeof fetch;
+
+    await expect(fetchAndConvert("https://localhost/status")).rejects.toThrow(/private network/i);
+    await expect(fetchAndConvert("https://127.0.0.1/status")).rejects.toThrow(/private network/i);
+    await expect(fetchAndConvert("https://192.168.1.10/status")).rejects.toThrow(/private network/i);
+    expect(calls).toBe(0);
+  });
+
+  test("rejects non-http protocols", async () => {
+    await expect(fetchAndConvert("file:///etc/passwd")).rejects.toThrow(/https/i);
+  });
+
   test("truncates output beyond 8KB and reports it", async () => {
     const big = "<p>" + "x".repeat(20_000) + "</p>";
     globalThis.fetch = (async () =>

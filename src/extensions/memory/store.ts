@@ -194,8 +194,14 @@ export class MemoryStore {
     const fact = this.get(fact_id);
     if (!fact) return false;
 
+    const nextContent = opts.content?.trim() ?? fact.content;
+    if (opts.content !== undefined) {
+      const scan = scanSecrets(nextContent);
+      if (scan.blocked) throw new Error(`memory.update: ${scan.reason}`);
+    }
+
     const next = {
-      content: opts.content?.trim() ?? fact.content,
+      content: nextContent,
       category: opts.category ?? fact.category,
       tags: opts.tags?.trim() ?? fact.tags,
       trust_score:
@@ -404,6 +410,7 @@ export class MemoryStore {
     const trimmed = entity.trim();
     if (!trimmed) return [];
     const name = trimmed.toLowerCase();
+    const projectScope = opts.scope === SCOPE_PROJECT && opts.cwd ? projectScopeKey(opts.cwd) : null;
 
     // Try entity table first
     const entityRow = this.db
@@ -417,6 +424,29 @@ export class MemoryStore {
       const phrase = `"${trimmed.replace(/"/g, " ")}"`;
       const minTrust = opts.minTrust ?? 0.3;
       const limit = Math.max(1, opts.limit ?? 10);
+
+      if (projectScope) {
+        if (opts.category) {
+          return this.db
+            .query<Fact, [string, number, string, string, string, string, number]>(
+              `SELECT f.* FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
+               WHERE facts_fts MATCH ? AND f.trust_score >= ?
+               AND (f.scope = ? OR f.scope = ?) AND f.category = ?
+               ORDER BY (CASE WHEN f.scope = ? THEN 1.5 ELSE 1.0 END) * f.trust_score DESC,
+                        f.fact_id DESC LIMIT ?`,
+            )
+            .all(phrase, minTrust, SCOPE_GLOBAL, projectScope, opts.category, projectScope, limit);
+        }
+        return this.db
+          .query<Fact, [string, number, string, string, string, number]>(
+            `SELECT f.* FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
+             WHERE facts_fts MATCH ? AND f.trust_score >= ?
+             AND (f.scope = ? OR f.scope = ?)
+             ORDER BY (CASE WHEN f.scope = ? THEN 1.5 ELSE 1.0 END) * f.trust_score DESC,
+                      f.fact_id DESC LIMIT ?`,
+          )
+          .all(phrase, minTrust, SCOPE_GLOBAL, projectScope, projectScope, limit);
+      }
 
       if (opts.category) {
         return this.db
@@ -439,6 +469,31 @@ export class MemoryStore {
     // Use entity table for structural lookup
     const minTrust = opts.minTrust ?? 0.3;
     const limit = Math.max(1, opts.limit ?? 10);
+
+    if (projectScope) {
+      if (opts.category) {
+        return this.db
+          .query<Fact, [number, number, string, string, string, string, number]>(
+            `SELECT f.* FROM facts f
+             JOIN fact_entities fe ON fe.fact_id = f.fact_id
+             WHERE fe.entity_id = ? AND f.trust_score >= ?
+             AND (f.scope = ? OR f.scope = ?) AND f.category = ?
+             ORDER BY (CASE WHEN f.scope = ? THEN 1.5 ELSE 1.0 END) * f.trust_score DESC,
+                      f.fact_id DESC LIMIT ?`,
+          )
+          .all(entityRow.entity_id, minTrust, SCOPE_GLOBAL, projectScope, opts.category, projectScope, limit) as unknown as Fact[];
+      }
+      return this.db
+        .query<Fact, [number, number, string, string, string, number]>(
+          `SELECT f.* FROM facts f
+           JOIN fact_entities fe ON fe.fact_id = f.fact_id
+           WHERE fe.entity_id = ? AND f.trust_score >= ?
+           AND (f.scope = ? OR f.scope = ?)
+           ORDER BY (CASE WHEN f.scope = ? THEN 1.5 ELSE 1.0 END) * f.trust_score DESC,
+                    f.fact_id DESC LIMIT ?`,
+        )
+        .all(entityRow.entity_id, minTrust, SCOPE_GLOBAL, projectScope, projectScope, limit) as unknown as Fact[];
+    }
 
     if (opts.category) {
       return this.db

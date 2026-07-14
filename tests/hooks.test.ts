@@ -115,7 +115,8 @@ test("substitute fills $FILE / $TOOL / $TURN and leaves unknowns empty", () => {
     FILE: "/x/y.ts",
     TOOL: "edit",
     TURN: "3",
-  })).toBe("fmt /x/y.ts for edit turn=3");
+  })).toBe("fmt '/x/y.ts' for 'edit' turn='3'");
+  expect(substitute("fmt \"$FILE\"", { FILE: "/tmp/has space.ts" })).toBe("fmt \"/tmp/has space.ts\"");
   expect(substitute("nada $UNKNOWN", {})).toBe("nada ");
 });
 
@@ -148,6 +149,17 @@ test("runHook substitutes placeholders into the command", async () => {
     timeoutMs: 5000,
   };
   const res = await runHook(hook, { TOOL: "edit", FILE: "/tmp/x.ts" });
+  expect(res.exitCode).toBe(0);
+});
+
+test("runHook shell-quotes unquoted placeholder values", async () => {
+  const marker = join(workdir, "should-not-exist");
+  const hook: Hook = {
+    event: "PreToolUse",
+    command: `test -n $FILE && test ! -e ${marker}`,
+    timeoutMs: 5000,
+  };
+  const res = await runHook(hook, { FILE: `x; touch ${marker}` });
   expect(res.exitCode).toBe(0);
 });
 

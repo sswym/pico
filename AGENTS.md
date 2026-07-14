@@ -7,7 +7,7 @@
 ```bash
 bun run start              # 源码模式启动（开发用）
 bun run build              # 3 阶段编译：嵌入资源生成 → bun compile → 生成 package.json
-bun test                   # Bun 原生测试运行器，195 个用例，完全离线
+bun test                   # Bun 原生测试运行器，206 个用例，完全离线
 bun test tests/memory.test.ts  # 运行单个测试文件
 ```
 
@@ -32,7 +32,7 @@ bun test tests/memory.test.ts  # 运行单个测试文件
 
 ## 架构
 
-srcode 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；srcode 通过 13 个 ExtensionFactory 插件注入功能。
+srcode 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；srcode 通过 15 个 ExtensionFactory 插件注入功能。
 
 ### 入口链
 
@@ -42,7 +42,7 @@ bin/srcode.ts → bin/env-bootstrap.ts（副作用，必须最先导入）→ ma
 
 ### 扩展注册顺序
 
-`vibe → language → logo → memory → subagent → todo → ask → init → plan → web → lsp → hooks → mcp`
+`vibe → oma → retro-theme → language → logo → memory → subagent → todo → ask → init → plan → web → lsp → hooks → mcp`
 
 ### 核心模式
 
@@ -54,7 +54,7 @@ bin/srcode.ts → bin/env-bootstrap.ts（副作用，必须最先导入）→ ma
 ### 关键目录
 
 ```
-src/extensions/    — 13 个功能扩展（memory、subagent、lsp、plan 等）
+src/extensions/    — 15 个功能扩展（memory、subagent、lsp、plan 等）
 src/prompts/       — 系统提示词模板（.md）
 src/skills/        — 内置技能（verify、recap、agents-init）
 scripts/build.ts   — 唯一构建脚本

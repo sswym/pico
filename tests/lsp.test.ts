@@ -24,7 +24,7 @@ import {
   isLspReadonlyInput,
   isLspWriteOrHighRiskInput,
 } from "../src/extensions/lsp/executor.ts";
-import { isLspReadonlyToolCall, isLspWriteOrHighRiskToolCall, lspExtension } from "../src/extensions/lsp/index.ts";
+import { isLspReadonlyToolCall, isLspWriteOrHighRiskToolCall, lspExtension, resolveSessionFilePath } from "../src/extensions/lsp/index.ts";
 import {
   __checkInitBackoffForTests,
   __recordInitFailureForTests,
@@ -224,6 +224,11 @@ describe("LSP config", () => {
 });
 
 describe("LspManager runtime state", () => {
+  test("resolveSessionFilePath resolves relative paths from session cwd", () => {
+    expect(resolveSessionFilePath("/repo/session", "src/a.ts")).toBe(join("/repo/session", "src/a.ts"));
+    expect(resolveSessionFilePath("/repo/session", "/tmp/a.ts")).toBe("/tmp/a.ts");
+  });
+
   test("init failure backoff is isolated per manager state", () => {
     const a = createLspManager();
     const b = createLspManager();

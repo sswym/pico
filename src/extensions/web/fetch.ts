@@ -16,6 +16,8 @@ import { LRU } from "./cache.ts";
 export const FETCH_CACHE_TTL_MS = 15 * 60 * 1000;
 export const FETCH_CACHE_MAX = 50;
 export const FETCH_MAX_OUTPUT_BYTES = 8 * 1024;
+export const FETCH_MAX_RESPONSE_BYTES = 1024 * 1024;
+export const FETCH_TIMEOUT_MS = 15_000;
 const FETCH_UA = "srcode/0.2";
 
 export interface FetchedPage {
@@ -203,10 +205,12 @@ export interface WebFetchOptions {
   bypassCache?: boolean;
   /** Abort signal forwarded to fetch. */
   signal?: AbortSignal;
+  /** Allow localhost/private network targets. Defaults to false. */
+  allowPrivateNetwork?: boolean;
 }
 
 export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): Promise<FetchedPage> {
-  const upgraded = upgradeUrl(url);
+  const upgraded = normalizeUrl(url, opts);
 
   if (!opts.bypassCache) {
     const hit = cache.get(upgraded);
@@ -214,14 +218,20 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
   }
 
   const fetcher = opts.fetcher ?? globalThis.fetch;
-  const response = await fetcher(upgraded, {
-    headers: { "User-Agent": FETCH_UA, Accept: "text/markdown, text/html, */*" },
-    signal: opts.signal,
-    redirect: "follow",
-  });
+  const timeout = withTimeoutSignal(opts.signal, FETCH_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetcher(upgraded, {
+      headers: { "User-Agent": FETCH_UA, Accept: "text/markdown, text/html, */*" },
+      signal: timeout.signal,
+      redirect: "follow",
+    });
+  } finally {
+    timeout.cleanup();
+  }
 
   const contentType = response.headers.get("content-type") ?? "";
-  const body = await response.text();
+  const body = await readResponseText(response, FETCH_MAX_RESPONSE_BYTES);
 
   let markdown: string;
   if (contentType.includes("text/html") || /<html[\s>]/i.test(body.slice(0, 256))) {
@@ -244,17 +254,80 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
   return page;
 }
 
-function upgradeUrl(url: string): string {
+function normalizeUrl(url: string, opts: WebFetchOptions): string {
+  let parsed: URL;
   try {
-    const parsed = new URL(url);
-    if (parsed.protocol === "http:") {
-      parsed.protocol = "https:";
-      return parsed.toString();
-    }
+    parsed = new URL(url);
   } catch {
-    // Caller will see fetch reject below.
+    throw new Error("URL must be absolute and valid");
   }
-  return url;
+  if (parsed.protocol === "http:") parsed.protocol = "https:";
+  if (parsed.protocol !== "https:") throw new Error("Only https:// URLs are supported");
+  if (!opts.allowPrivateNetwork && isPrivateHost(parsed.hostname)) {
+    throw new Error("Refusing to fetch localhost or private network address");
+  }
+  return parsed.toString();
+}
+
+function isPrivateHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (host === "::1" || host === "0:0:0:0:0:0:0:1") return true;
+  if (host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:")) return true;
+
+  const parts = host.split(".").map((p) => Number(p));
+  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return false;
+  const [a, b] = parts as [number, number, number, number];
+  if (a === 10 || a === 127 || a === 0) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  return false;
+}
+
+function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(`webFetch timed out after ${timeoutMs}ms`)), timeoutMs);
+  const abort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+    },
+  };
+}
+
+async function readResponseText(response: Response, maxBytes: number): Promise<string> {
+  if (!response.body) return await response.text();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > maxBytes) {
+        const remaining = Math.max(0, maxBytes - (total - value.length));
+        if (remaining > 0) chunks.push(value.subarray(0, remaining));
+        await reader.cancel();
+        break;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const out = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return new TextDecoder("utf-8").decode(out);
 }
 
 export function formatFetchResult(page: FetchedPage, prompt: string | undefined): string {

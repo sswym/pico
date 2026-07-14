@@ -67,134 +67,142 @@ export interface McpExtensionDeps {
 
 export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
   return (pi: ExtensionAPI) => {
-  const entries: ServerEntry[] = [];
-  let connectedCwd: string | null = null;
+    const entries: ServerEntry[] = [];
+    const activeTools = new Map<string, { handle: McpServerHandle; toolName: string }>();
+    let connectedCwd: string | null = null;
 
   // ── Register /mcp command BEFORE async server connections ──────────────
 
-  pi.registerCommand("mcp", {
-    description: "List connected MCP servers and their tools",
-    handler: async (_args, ctx) => {
-      const connected = entries.filter((e): e is ServerStatus => !e.error);
-      const failed = entries.filter((e): e is ServerFailure => !!e.error);
+    pi.registerCommand("mcp", {
+      description: "List connected MCP servers and their tools",
+      handler: async (_args, ctx) => {
+        const connected = entries.filter((e): e is ServerStatus => !e.error);
+        const failed = entries.filter((e): e is ServerFailure => !!e.error);
 
-      if (entries.length === 0) {
-        ctx.ui.notify("No MCP servers configured.", "info");
-        return;
-      }
+        if (entries.length === 0) {
+          ctx.ui.notify("No MCP servers configured.", "info");
+          return;
+        }
 
-      const lines: string[] = [];
-      lines.push(`MCP Servers (${connected.length} connected, ${failed.length} failed):\n`);
+        const lines: string[] = [];
+        lines.push(`MCP Servers (${connected.length} connected, ${failed.length} failed):\n`);
 
-      for (const entry of entries) {
-        if (!("serverName" in entry)) {
-          lines.push(`  ✗ ${entry.id} — FAILED: ${entry.error}`);
-        } else {
-          lines.push(`  ✓ ${entry.id} (${entry.serverName} ${entry.serverVersion}) — ${entry.toolCount} tools`);
-          for (const name of entry.toolNames) {
-            lines.push(`      ${name}`);
+        for (const entry of entries) {
+          if (!("serverName" in entry)) {
+            lines.push(`  ✗ ${entry.id} — FAILED: ${entry.error}`);
+          } else {
+            lines.push(`  ✓ ${entry.id} (${entry.serverName} ${entry.serverVersion}) — ${entry.toolCount} tools`);
+            for (const name of entry.toolNames) {
+              lines.push(`      ${name}`);
+            }
           }
         }
-      }
 
-      ctx.ui.notify(lines.join("\n"), failed.length > 0 ? "warning" : "info");
-    },
-  });
+        ctx.ui.notify(lines.join("\n"), failed.length > 0 ? "warning" : "info");
+      },
+    });
 
   // ── Connect to MCP servers once the session cwd is known ────────────────
 
-  async function connect(cwd: string): Promise<void> {
-    if (connectedCwd === cwd) return;
-    for (const entry of entries) {
-      if (entry.handle) deps.close(entry.handle);
-    }
-    entries.length = 0;
-    connectedCwd = cwd;
+    async function connect(cwd: string): Promise<void> {
+      if (connectedCwd === cwd) return;
+      for (const entry of entries) {
+        if (entry.handle) deps.close(entry.handle);
+      }
+      entries.length = 0;
+      activeTools.clear();
+      connectedCwd = cwd;
 
-    const servers = deps.load(cwd);
+      const servers = deps.load(cwd);
 
-    for (const [id, config] of Object.entries(servers)) {
-      let handle: McpServerHandle | undefined;
-      try {
-        handle = deps.spawn(id, config);
-        const initResult = await deps.initialize(handle);
-        const tools = await deps.listTools(handle);
+      for (const [id, config] of Object.entries(servers)) {
+        let handle: McpServerHandle | undefined;
+        try {
+          handle = deps.spawn(id, config);
+          const initResult = await deps.initialize(handle);
+          const tools = await deps.listTools(handle);
 
-        const { name: serverName, version: serverVersion } = initResult.serverInfo;
-        console.error(`[mcp] Connected "${id}" (${serverName} ${serverVersion}) — ${tools.length} tools`);
+          const { name: serverName, version: serverVersion } = initResult.serverInfo;
+          console.error(`[mcp] Connected "${id}" (${serverName} ${serverVersion}) — ${tools.length} tools`);
 
-        const toolNames: string[] = [];
-        for (const tool of tools) {
-          const piToolName = `mcp__${id}__${tool.name}`;
-          toolNames.push(piToolName);
-          const schema = tool.inputSchema ?? { type: "object" as const, properties: {} };
-          const toolHandle = handle;
+          const toolNames: string[] = [];
+          for (const tool of tools) {
+            const piToolName = `mcp__${id}__${tool.name}`;
+            toolNames.push(piToolName);
+            const schema = tool.inputSchema ?? { type: "object" as const, properties: {} };
+            const toolHandle = handle;
+            activeTools.set(piToolName, { handle: toolHandle, toolName: tool.name });
 
-          pi.registerTool(
-            defineTool({
-              name: piToolName,
-              label: `MCP: ${id} › ${tool.name}`,
-              description: tool.description ?? `MCP tool "${tool.name}" from server "${id}"`,
-              promptSnippet:
-                `${piToolName} — call "${tool.name}" on MCP server "${id}"`,
-              parameters: Type.Unsafe(schema),
-              async execute(_tcId, params, _signal) {
-                try {
-                  const result = await deps.callTool(toolHandle, tool.name, params as Record<string, unknown>);
-                  return {
-                    content: result.content.map((c) => {
-                      if (c.type === "text") return { type: "text" as const, text: c.text };
-                      if (c.type === "image") {
+            pi.registerTool(
+              defineTool({
+                name: piToolName,
+                label: `MCP: ${id} › ${tool.name}`,
+                description: tool.description ?? `MCP tool "${tool.name}" from server "${id}"`,
+                promptSnippet:
+                  `${piToolName} — call "${tool.name}" on MCP server "${id}"`,
+                parameters: Type.Unsafe(schema),
+                async execute(_tcId, params, _signal) {
+                  try {
+                    const active = activeTools.get(piToolName);
+                    if (!active || active.handle !== toolHandle) {
+                      throw new Error(`MCP tool "${piToolName}" is no longer active for this session`);
+                    }
+                    const result = await deps.callTool(active.handle, active.toolName, params as Record<string, unknown>);
+                    return {
+                      content: result.content.map((c) => {
+                        if (c.type === "text") return { type: "text" as const, text: c.text };
+                        if (c.type === "image") {
+                          return {
+                            type: "text" as const,
+                            text: `[Image: ${c.mimeType} (${c.data.length} bytes base64)]`,
+                          };
+                        }
                         return {
                           type: "text" as const,
-                          text: `[Image: ${c.mimeType} (${c.data.length} bytes base64)]`,
+                          text: c.type === "resource"
+                            ? (c.resource.text ?? "[binary resource]")
+                            : JSON.stringify(c),
                         };
-                      }
-                      return {
-                        type: "text" as const,
-                        text: c.type === "resource"
-                          ? (c.resource.text ?? "[binary resource]")
-                          : JSON.stringify(c),
-                      };
-                    }),
-                    details: { server: id, tool: tool.name },
-                    isError: result.isError ?? false,
-                  };
-                } catch (e) {
-                  const msg = e instanceof Error ? e.message : String(e);
-                  return {
-                    content: [{ type: "text" as const, text: `MCP tool "${tool.name}" failed: ${msg}` }],
-                    details: { server: id, tool: tool.name },
-                    isError: true,
-                  };
-                }
-              },
-            }),
-          );
-        }
+                      }),
+                      details: { server: id, tool: tool.name },
+                      isError: result.isError ?? false,
+                    };
+                  } catch (e) {
+                    const msg = e instanceof Error ? e.message : String(e);
+                    return {
+                      content: [{ type: "text" as const, text: `MCP tool "${tool.name}" failed: ${msg}` }],
+                      details: { server: id, tool: tool.name },
+                      isError: true,
+                    };
+                  }
+                },
+              }),
+            );
+          }
 
-        entries.push({ id, serverName, serverVersion, toolCount: tools.length, toolNames, handle });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.error(`[mcp] Failed to connect "${id}": ${msg}`);
-        if (handle) deps.close(handle);
-        entries.push({ id, error: msg });
+          entries.push({ id, serverName, serverVersion, toolCount: tools.length, toolNames, handle });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`[mcp] Failed to connect "${id}": ${msg}`);
+          if (handle) deps.close(handle);
+          entries.push({ id, error: msg });
+        }
       }
     }
-  }
 
-  pi.on("session_start", async (_event, ctx) => {
-    await connect(ctx.cwd);
-  });
+    pi.on("session_start", async (_event, ctx) => {
+      await connect(ctx.cwd);
+    });
 
   // Cleanup on shutdown
-  pi.on("session_shutdown", () => {
-    for (const entry of entries) {
-      if (entry.handle) deps.close(entry.handle);
-    }
-    entries.length = 0;
-    connectedCwd = null;
-  });
+    pi.on("session_shutdown", () => {
+      for (const entry of entries) {
+        if (entry.handle) deps.close(entry.handle);
+      }
+      entries.length = 0;
+      activeTools.clear();
+      connectedCwd = null;
+    });
   };
 }
 

@@ -132,45 +132,18 @@ subagent(chain=[
 
 ### 6. 网页（`webFetch` + `webSearch` 工具）
 
-- `webFetch(url, prompt)` —— 通过 `Bun.fetch` 抓取 URL，将 HTML 转为 Markdown（去除 `<script>/<style>/<nav>/<footer>`），8 KB 上限，15 分钟 LRU 缓存（50 条）。
+- `webFetch(url, prompt)` —— 通过 `Bun.fetch` 抓取公开 HTTPS URL，将 HTML 转为 Markdown（去除 `<script>/<style>/<nav>/<footer>`），默认拒绝 localhost/内网地址，响应读取上限 1 MiB，输出 8 KiB 上限，15 分钟 LRU 缓存（50 条）。
 - `webSearch(query, max_results?, allowed_domains?, blocked_domains?)` —— 默认使用 Exa MCP；若存在 `TAVILY_API_KEY`，默认合并 Exa + Tavily 结果并按 URL 去重。设置 `SRCODE_SEARCH_PROVIDER=exa` 或 `SRCODE_SEARCH_PROVIDER=tavily` 可强制单一 provider。
 
 ### 7. `/init`（生成 AGENTS.md）
 
 多阶段引导式工作流：询问需要设置什么，可选派出 `scout` 子代理做代码库侦察，通过 `askUserQuestion` 填补信息缺口，然后编写极简的 **AGENTS.md**（以及可选的 AGENTS.local.md），并建议技能/钩子。**srcode 永远不会写入 CLAUDE.md**——这是写死在提示词中的硬规则。
 
-### 8. 权限系统（`~/.srcode/permissions.json` + `<仓库>/.srcode/permissions.json`）
+### 8. 权限与高风险动作边界
 
-基于 `tool_call` 事件的工具调用前置权限网关。配置按用户级 → 项目级 → 会话级合并；规则语法兼容 Claude Code 的 `ToolName` / `ToolName(content)` 格式，例如 `Bash(npm:*)`、`Edit(./src/**)`。
+srcode 当前不注册独立的 `/permissions` 扩展；基础工具审批、项目可信任状态与交互权限由上游 `@earendil-works/pi-coding-agent` 负责。
 
-默认模式 `default` 下，`read` / `grep` / `find` / `ls` / `lsp` 的只读 action 被视为低风险工具，在没有命中显式 `deny` / `ask` 规则时会自动允许；`bash` / `edit` / `write` 以及其他自定义工具在无匹配 `allow` 规则时会弹出 TUI 审批。显式规则优先级为 `deny > ask > allow`，因此低风险自动允许不会覆盖用户写下的黑名单或强制询问规则。
-
-`lsp` 中的写入或高风险 action（`rename`、`rename_file`、`code_actions apply=true`、`reload`、`request`）当前会在 `tool_call` 阶段被阻断，直到这些能力拆入独立的写权限工具。
-
-```json
-{
-  "permissions": {
-    "allow": ["Bash(npm:*)", "Read(./src/**)"],
-    "deny": ["Bash(rm -rf:*)", "Edit(/etc/**)"],
-    "ask": ["Write(./dist/**)"],
-    "defaultMode": "default",
-    "additionalDirectories": ["~/projects/notes"]
-  }
-}
-```
-
-`defaultMode` 支持 `default`、`acceptEdits`、`plan`、`bypassPermissions`、`dontAsk`。`/permissions` 可查看当前规则，`/permissions clear-session` 清除本会话临时允许规则。也可在当前会话临时切换模式：
-
-```text
-/permissions mode                  # 查看当前权限模式
-/permissions mode acceptEdits      # 本会话切到 acceptEdits
-/permissions mode bypassPermissions
-/permissions mode dontAsk
-/permissions mode default-config   # 清除本会话覆盖，回到配置文件 defaultMode
-/permissions cycle                 # 在 default → acceptEdits → bypassPermissions → dontAsk 间循环
-```
-
-**快捷键**：`Shift+Tab` 循环切换权限模式（默认 `default` → `acceptEdits` → `bypassPermissions` → `dontAsk`），底部状态栏会显示当前模式。思考深度（thinking level）可通过 `/settings` 命令设置。
+srcode 自己额外做了一层明确阻断：`lsp` 中的写入或高风险 action（`rename`、`rename_file`、`code_actions apply=true`、`reload`、`request`）会在 `tool_call` 阶段被阻断，直到这些能力拆入独立的写权限工具。只读 action（hover、definition、references、diagnostics、symbols、capabilities、status，以及未设置 `apply=true` 的 code_actions）仍可使用。
 
 ### 9. 钩子（`~/.srcode/hooks.json` + `<仓库>/.srcode/hooks.json`）
 
@@ -292,7 +265,9 @@ srcode/
 │   │   ├── lsp/        # LSP 代码智能（只读工具层、client/config/manager、write-through 诊断）
 │   │   ├── mcp/        # MCP 客户端（types, config, client, 扩展工厂）
 │   │   ├── memory/     # bun:sqlite + FTS5/TF-IDF 长期记忆，含项目 scope 检索
+│   │   ├── oma.ts      # OMA 系统提示词增强
 │   │   ├── plan/       # EnterPlanMode / ExitPlanMode + tool_call 拦截
+│   │   ├── retro-theme/ # TUI 复古主题
 │   │   ├── subagent/   # 子代理工具 adapter + orchestrator + runner/process/chain/parallel/gate 模块
 │   │   ├── todo/       # todoWrite 工具 + /todo 命令 + 按会话存储
 │   │   ├── web/        # webFetch + webSearch + LRU 缓存
@@ -322,7 +297,7 @@ srcode/
 bun test
 ```
 
-195 个用例，完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`；MCP 测试使用 fake client，不启动真实服务器。
+206 个用例，完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`；MCP 测试使用 fake client，不启动真实服务器。
 
 ## 路线图
 
