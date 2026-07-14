@@ -1,10 +1,11 @@
 /**
  * srcode hooks — config loader.
  *
- * Hook config is JSON, merged from two layers (later layer appended after
- * the earlier; duplicates collapsed by `event|tool|command`):
+ * Hook config is JSON, merged from two layers when project hooks are
+ * explicitly enabled (later layer appended after the earlier; duplicates
+ * collapsed by `event|tool|command`):
  *   1) ~/.srcode/hooks.json (or $SRCODE_HOME/srcode/hooks.json)
- *   2) <cwd>/.srcode/hooks.json
+ *   2) <cwd>/.srcode/hooks.json (requires SRCODE_ENABLE_PROJECT_HOOKS=1)
  *
  * Missing files are not an error. Malformed JSON / wrong shape is logged
  * once per path and the layer is skipped — we never throw out of
@@ -13,6 +14,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { srcodeHome } from "../paths.ts";
+import { allowProjectHooks } from "../policy.ts";
 
 export type HookEvent = "PreToolUse" | "PostToolUse" | "PreSessionEnd" | "PostUserMessage";
 
@@ -108,13 +110,17 @@ function dedupeKey(h: Hook): string {
 
 /**
  * Load and merge hooks for the given working directory. Home layer runs
- * first; cwd layer is appended afterwards. Order is preserved within each
+ * first; cwd layer is appended afterwards when SRCODE_ENABLE_PROJECT_HOOKS=1.
+ * Order is preserved within each
  * layer, and duplicates (same event+tool+command) keep the first
  * occurrence — i.e. home wins over cwd if the cwd layer repeats it.
  */
 export function loadHooks(cwd: string): Hook[] {
   const [homePath, cwdPath] = hookConfigPaths(cwd);
-  const merged = [...loadOne(homePath!), ...loadOne(cwdPath!)];
+  const merged = [
+    ...loadOne(homePath!),
+    ...(allowProjectHooks() ? loadOne(cwdPath!) : []),
+  ];
 
   const seen = new Set<string>();
   const out: Hook[] = [];

@@ -8,6 +8,9 @@
  * the model invokes `ExitPlanMode`, which surfaces the plan to the user via
  * `ctx.ui.confirm` and lets the user approve before writes resume.
  *
+ * Non-interactive runs stay in plan mode unless
+ * SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL=1 is set.
+ *
  * State is module-level (`planActive`, `planFile`) on purpose — there is one
  * extension instance per srcode process, and that process owns one logical
  * plan-mode toggle at a time. Persistence to ~/.srcode/plans/<sid>.md
@@ -23,6 +26,7 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { srcodeHome } from "../paths.ts";
+import { allowUnattendedPlanApproval } from "../policy.ts";
 import { PLAN_MODE_BLOCK } from "./prompt.ts";
 
 // Tools that mutate the world. Blocked while plan mode is active.
@@ -125,7 +129,7 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         const plan = await readPlanFile(path);
         const summary = plan.trim().length === 0 ? "(plan file is empty)" : plan;
 
-        let approved = true;
+        let approved = false;
         if (ctx.hasUI) {
           try {
             approved = await ctx.ui.confirm(
@@ -133,10 +137,10 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               `Plan from ${path}:\n\n${summary}\n\nApprove and exit plan mode?`,
             );
           } catch {
-            // If the UI dialog fails for any reason, fall back to non-UI behaviour:
-            // approve so we don't deadlock the agent.
-            approved = true;
+            approved = false;
           }
+        } else if (allowUnattendedPlanApproval()) {
+          approved = true;
         }
 
         if (approved) {
@@ -145,7 +149,9 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
         const text = approved
           ? `Plan approved. Plan mode disabled.\n\n${summary}`
-          : `Plan rejected. Stay in plan mode and refine ${path}.`;
+          : ctx.hasUI
+            ? `Plan rejected. Stay in plan mode and refine ${path}.`
+            : `Plan requires interactive approval. Stay in plan mode and refine ${path}, or set SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL=1 for batch runs.`;
 
         return {
           content: [{ type: "text" as const, text }],

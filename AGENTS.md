@@ -7,11 +7,12 @@
 ```bash
 bun run start              # 源码模式启动（开发用）
 bun run build              # 3 阶段编译：嵌入资源生成 → bun compile → 生成 package.json
-bun test                   # Bun 原生测试运行器，206 个用例，完全离线
+bun test                   # Bun 原生测试运行器，完全离线
+bun run verify             # 类型检查 + 全量测试
 bun test tests/memory.test.ts  # 运行单个测试文件
 ```
 
-无 lint、format、typecheck 命令。类型检查用 `tsc --noEmit`（手动执行）。
+无 lint、format 命令；类型检查通过 `bun run verify` 中的 `tsc --noEmit` 执行。
 
 ## 运行时与工具链
 
@@ -99,6 +100,10 @@ function makeFakePi() {
 | `SRCODE_MEMORY_DB` | 覆盖记忆数据库路径（默认 `~/.srcode/memory.db`） |
 | `SRCODE_SEARCH_PROVIDER` | 设为 `tavily` 切换搜索引擎（默认 Exa MCP） |
 | `TAVILY_API_KEY` | Tavily 搜索 API 密钥（可选） |
+| `SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL` | 非交互模式下允许 `ExitPlanMode` 自动批准 |
+| `SRCODE_ALLOW_LSP_FORMAT_ON_WRITE` | 允许 LSP `formatOnWrite` 在 edit/write 后自动二次写文件 |
+| `SRCODE_ENABLE_PROJECT_HOOKS` | 启用 `<repo>/.srcode/hooks.json` 项目级 shell hooks |
+| `SRCODE_ENABLE_PROJECT_MCP` | 启用 `<repo>/.srcode/mcp-servers.json` 项目级 MCP 服务器 |
 
 ## 编辑注意事项
 

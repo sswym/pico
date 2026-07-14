@@ -7,7 +7,7 @@
  *   - while active, write tools (bash/edit/write/NotebookEdit) are blocked
  *     with a reason that mentions plan mode
  *   - read-only tools (read/grep/find/ls) are NOT blocked
- *   - ExitPlanMode in non-UI mode auto-approves and clears planActive
+ *   - ExitPlanMode in non-UI mode stays in plan mode unless explicitly opted in
  *
  * We exercise the extension with a hand-rolled `fakePi` that records the
  * registered tools and event handlers, then drives them directly.
@@ -150,7 +150,7 @@ test("read/grep/find/ls are NOT blocked while plan mode is active", async () => 
   }
 });
 
-test("ExitPlanMode in non-UI mode auto-approves, clears planActive, returns plan", async () => {
+test("ExitPlanMode in non-UI mode requires explicit unattended opt-in", async () => {
   const pi = makeFakePi();
   planExtension(pi as any);
   const ctx = makeCtx({ sessionId: "exit-test", hasUI: false });
@@ -160,9 +160,29 @@ test("ExitPlanMode in non-UI mode auto-approves, clears planActive, returns plan
   const exit = pi.tools.get("ExitPlanMode")!;
   const result = await exit.execute("c2", {}, undefined, undefined, ctx);
 
-  expect(result.details.approved).toBe(true);
+  expect(result.details.approved).toBe(false);
   expect(result.details.plan).toMatch(/# Plan/);
-  expect(__getPlanStateForTests().planActive).toBe(false);
+  expect(result.content[0].text).toContain("SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL");
+  expect(__getPlanStateForTests().planActive).toBe(true);
+});
+
+test("ExitPlanMode in non-UI mode can be explicitly approved by env", async () => {
+  const prev = process.env.SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL;
+  process.env.SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL = "1";
+  try {
+    const pi = makeFakePi();
+    planExtension(pi as any);
+    const ctx = makeCtx({ sessionId: "exit-env-test", hasUI: false });
+    await pi.tools.get("EnterPlanMode")!.execute("c1", {}, undefined, undefined, ctx);
+
+    const result = await pi.tools.get("ExitPlanMode")!.execute("c2", {}, undefined, undefined, ctx);
+
+    expect(result.details.approved).toBe(true);
+    expect(__getPlanStateForTests().planActive).toBe(false);
+  } finally {
+    if (prev === undefined) delete process.env.SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL;
+    else process.env.SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL = prev;
+  }
 });
 
 test("ExitPlanMode honours ctx.ui.confirm when hasUI=true", async () => {

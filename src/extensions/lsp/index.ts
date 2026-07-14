@@ -33,6 +33,7 @@ import { resolveFormattingOptions } from "./format-options.ts";
 import { getInstallHint, installServer, formatInstallHint } from "./install.ts";
 import { applyTextEditsToString } from "./edits.ts";
 import { DiagnosticsLedger } from "./diagnostics-ledger.ts";
+import { allowLspFormatOnWrite } from "../policy.ts";
 import {
   normalizeLocations,
   resolveSymbolColumn,
@@ -326,7 +327,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       if (!uri) return;
       const absFilePath = resolveSessionFilePath(ctx.cwd, filePath);
 
-      if (state.config?.formatOnWrite === true) {
+      if (state.config?.formatOnWrite === true && allowLspFormatOnWrite()) {
         try {
           const formatOpts = resolveFormattingOptions(absFilePath);
           const edits = await client.textDocumentFormatting(uri, formatOpts);
@@ -344,6 +345,11 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             { type: "text", text: "\n[LSP] formatOnWrite failed; diagnostics still ran." },
           ];
         }
+      } else if (state.config?.formatOnWrite === true) {
+        event.content = [
+          ...event.content,
+          { type: "text", text: "\n[LSP] formatOnWrite configured but skipped; set SRCODE_ALLOW_LSP_FORMAT_ON_WRITE=1 to allow automatic file rewrites." },
+        ];
       }
 
       client.didSave(uri);

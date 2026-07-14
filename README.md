@@ -128,7 +128,7 @@ subagent(chain=[
 
 ### 5. 规划模式（`EnterPlanMode` / `ExitPlanMode` 工具 + `/plan` 命令）
 
-规划模式激活期间，srcode 会以"先研究，写出计划，再 ExitPlanMode 请求批准"为由拦截 `bash`/`edit`/`write`/`NotebookEdit` 工具调用。计划文件存放在 `~/.srcode/plans/<sessionId>.md`。`ExitPlanMode` 会展示计划内容并请求用户确认；在非 TUI 模式下自动批准。
+规划模式激活期间，srcode 会以"先研究，写出计划，再 ExitPlanMode 请求批准"为由拦截 `bash`/`edit`/`write`/`NotebookEdit` 工具调用。计划文件存放在 `~/.srcode/plans/<sessionId>.md`。`ExitPlanMode` 会展示计划内容并请求用户确认；在非 TUI 模式下默认保持计划模式，除非显式设置 `SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL=1`。
 
 ### 6. 网页（`webFetch` + `webSearch` 工具）
 
@@ -145,9 +145,11 @@ srcode 当前不注册独立的 `/permissions` 扩展；基础工具审批、项
 
 srcode 自己额外做了一层明确阻断：`lsp` 中的写入或高风险 action（`rename`、`rename_file`、`code_actions apply=true`、`reload`、`request`）会在 `tool_call` 阶段被阻断，直到这些能力拆入独立的写权限工具。只读 action（hover、definition、references、diagnostics、symbols、capabilities、status，以及未设置 `apply=true` 的 code_actions）仍可使用。
 
+`/doctor` 可查看当前 cwd、能力边界与安全开关状态。项目级 shell hooks、项目级 MCP 服务器、非交互计划自动批准、LSP 自动格式化写回都需要显式环境变量启用。
+
 ### 9. 钩子（`~/.srcode/hooks.json` + `<仓库>/.srcode/hooks.json`）
 
-基于文件的 Shell 钩子，支持 `PreToolUse` / `PostToolUse` / `PreSessionEnd` / `PostUserMessage` 事件。项目级条目按 `(event, tool, command)` 覆盖用户级。占位符：`$FILE`（工具参数）、`$TOOL`（工具名）、`$TURN`（轮次索引）。默认超时 30 秒（最大 120 秒）；`blocking: true` 的 PreToolUse 失败会中止工具调用。
+基于文件的 Shell 钩子，支持 `PreToolUse` / `PostToolUse` / `PreSessionEnd` / `PostUserMessage` 事件。默认只加载用户级 `~/.srcode/hooks.json`；项目级 `<仓库>/.srcode/hooks.json` 会执行仓库提供的 shell 命令，需设置 `SRCODE_ENABLE_PROJECT_HOOKS=1` 才会加载。占位符：`$FILE`（工具参数）、`$TOOL`（工具名）、`$TURN`（轮次索引）。默认超时 30 秒（最大 120 秒）；`blocking: true` 的 PreToolUse 失败会中止工具调用。
 
 ```json
 {
@@ -193,7 +195,7 @@ srcode 支持连接外部 MCP（Model Context Protocol）服务器，自动发�
 | 层级 | 路径 | 说明 |
 |------|------|------|
 | 全局 | `~/.srcode/mcp-servers.json` | 所有项目共享 |
-| 项目 | `<cwd>/.srcode/mcp-servers.json` | 覆盖同名 server |
+| 项目 | `<cwd>/.srcode/mcp-servers.json` | 设置 `SRCODE_ENABLE_PROJECT_MCP=1` 后覆盖同名 server |
 
 **工具命名规则**：`mcp__<服务器名>__<工具名>`，与权限系统的 `mcp__` 前缀匹配兼容。
 
@@ -248,7 +250,7 @@ lsp(action="symbols", file="src/index.ts")
 
 **配置系统**：三层合并——内置 defaults.json → `~/.srcode/lsp.json`（用户级）→ `.srcode/lsp.json`（项目级）。支持 `fileTypes`、`rootMarkers`、`initOptions`、`settings` 配置。本地二进制解析优先检查 `node_modules/.bin/`、`.venv/bin/`、`vendor/bundle/bin/`。
 
-**Write/Edit 联动**：编辑代码文件后，LSP 自动同步文件内容、通知服务器重新分析、收集诊断信息并追加到工具结果。`.editorconfig` 解析支持自动格式化。
+**Write/Edit 联动**：编辑代码文件后，LSP 自动同步文件内容、通知服务器重新分析、收集诊断信息并追加到工具结果。`.editorconfig` 解析支持自动格式化；自动格式化会二次写文件，因此即使 `formatOnWrite=true`，仍需设置 `SRCODE_ALLOW_LSP_FORMAT_ON_WRITE=1` 才会写回。
 
 **TUI 状态栏**：服务器启动后，状态栏显示当前活跃的语言服务器名称和版本。
 
@@ -297,7 +299,7 @@ srcode/
 bun test
 ```
 
-206 个用例，完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`；MCP 测试使用 fake client，不启动真实服务器。
+测试完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`；MCP 测试使用 fake client，不启动真实服务器。
 
 ## 路线图
 

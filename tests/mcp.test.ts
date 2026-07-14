@@ -7,9 +7,31 @@
  * - registered tool calls forward to the MCP client adapter
  * - shutdown closes connected handles
  */
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { loadMcpConfig } from "../src/extensions/mcp/config.ts";
 import { createMcpExtension } from "../src/extensions/mcp/index.ts";
 import type { McpServerConfig, McpServerHandle, McpToolCallResult } from "../src/extensions/mcp/types.ts";
+
+const envStack: Array<{ home: string | undefined; projectMcp: string | undefined }> = [];
+
+function pushEnv(): void {
+  envStack.push({
+    home: process.env.SRCODE_HOME,
+    projectMcp: process.env.SRCODE_ENABLE_PROJECT_MCP,
+  });
+}
+
+afterEach(() => {
+  const prev = envStack.pop();
+  if (!prev) return;
+  if (prev.home === undefined) delete process.env.SRCODE_HOME;
+  else process.env.SRCODE_HOME = prev.home;
+  if (prev.projectMcp === undefined) delete process.env.SRCODE_ENABLE_PROJECT_MCP;
+  else process.env.SRCODE_ENABLE_PROJECT_MCP = prev.projectMcp;
+});
 
 function makeHandle(id: string): McpServerHandle {
   return {
@@ -47,6 +69,34 @@ function makeFakePi() {
     },
   };
 }
+
+test("loadMcpConfig skips project config unless explicitly enabled", () => {
+  pushEnv();
+  const home = mkdtempSync(join(tmpdir(), "srcode-mcp-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "srcode-mcp-cwd-"));
+  process.env.SRCODE_HOME = home;
+  delete process.env.SRCODE_ENABLE_PROJECT_MCP;
+  try {
+    writeFileSync(join(home, "mcp-servers.json"), JSON.stringify({
+      mcpServers: { docs: { command: "home-docs" } },
+    }));
+    mkdirSync(join(cwd, ".srcode"), { recursive: true });
+    writeFileSync(join(cwd, ".srcode", "mcp-servers.json"), JSON.stringify({
+      mcpServers: { docs: { command: "project-docs" }, local: { command: "local" } },
+    }));
+
+    expect(loadMcpConfig(cwd)).toEqual({ docs: { command: "home-docs" } });
+
+    process.env.SRCODE_ENABLE_PROJECT_MCP = "1";
+    expect(loadMcpConfig(cwd)).toEqual({
+      docs: { command: "project-docs" },
+      local: { command: "local" },
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("MCP extension loads config from session cwd and registers discovered tools", async () => {
   const pi = makeFakePi();

@@ -25,19 +25,24 @@ import { createHooksExtension } from "../src/extensions/hooks/index.ts";
 
 let workdir: string;
 let originalHome: string | undefined;
+let originalProjectHooks: string | undefined;
 let homeRoot: string;
 
 beforeEach(() => {
   workdir = mkdtempSync(join(tmpdir(), "srcode-hooks-"));
   homeRoot = mkdtempSync(join(tmpdir(), "srcode-hooks-home-"));
   originalHome = process.env.SRCODE_HOME;
+  originalProjectHooks = process.env.SRCODE_ENABLE_PROJECT_HOOKS;
   process.env.SRCODE_HOME = homeRoot;
+  delete process.env.SRCODE_ENABLE_PROJECT_HOOKS;
   __resetWarnedPaths();
 });
 
 afterEach(() => {
   if (originalHome === undefined) delete process.env.SRCODE_HOME;
   else process.env.SRCODE_HOME = originalHome;
+  if (originalProjectHooks === undefined) delete process.env.SRCODE_ENABLE_PROJECT_HOOKS;
+  else process.env.SRCODE_ENABLE_PROJECT_HOOKS = originalProjectHooks;
   try { rmSync(workdir, { recursive: true, force: true }); } catch {}
   try { rmSync(homeRoot, { recursive: true, force: true }); } catch {}
 });
@@ -64,7 +69,24 @@ test("loadHooks returns [] when no config files exist", () => {
   expect(loadHooks(workdir)).toEqual([]);
 });
 
-test("loadHooks merges home and cwd layers, dedupes by event+tool+command", () => {
+test("loadHooks skips cwd layer unless project hooks are enabled", () => {
+  writeHomeConfig({
+    hooks: [
+      { event: "PreToolUse", tool: "edit", command: "echo home-edit" },
+    ],
+  });
+  writeCwdConfig({
+    hooks: [
+      { event: "PreToolUse", tool: "write", command: "echo cwd-write" },
+    ],
+  });
+  const hooks = loadHooks(workdir);
+  expect(hooks.length).toBe(1);
+  expect(hooks[0]).toMatchObject({ event: "PreToolUse", tool: "edit", command: "echo home-edit" });
+});
+
+test("loadHooks merges home and cwd layers when project hooks are enabled", () => {
+  process.env.SRCODE_ENABLE_PROJECT_HOOKS = "1";
   writeHomeConfig({
     hooks: [
       { event: "PreToolUse", tool: "edit", command: "echo home-edit" },
@@ -90,6 +112,7 @@ test("loadHooks merges home and cwd layers, dedupes by event+tool+command", () =
 });
 
 test("loadHooks drops entries with bad event/command and ignores unknown fields", () => {
+  process.env.SRCODE_ENABLE_PROJECT_HOOKS = "1";
   writeCwdConfig({
     hooks: [
       { event: "PreToolUse", command: "echo ok", timeoutMs: 200_000 }, // capped
@@ -104,6 +127,7 @@ test("loadHooks drops entries with bad event/command and ignores unknown fields"
 });
 
 test("loadHooks tolerates malformed JSON without throwing", () => {
+  process.env.SRCODE_ENABLE_PROJECT_HOOKS = "1";
   const dir = join(workdir, ".srcode");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "hooks.json"), "{not json");
