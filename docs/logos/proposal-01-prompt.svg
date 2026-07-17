@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 500" fill="none">
+  <rect width="400" height="500" rx="24" fill="#1a1a2e"/>
+
+  <!-- Terminal prompt symbol merged with angle brackets forming an "S" -->
+  <g transform="translate(200, 200)">
+    <!-- $ terminal prompt - top curve -->
+    <path d="M-10 -60 C-10 -60 -50 -45 -50 -20 C-50 5 -10 10 -10 10"
+          stroke="#a78bfa" stroke-width="8" stroke-linecap="round" fill="none"/>
+    <!-- $ terminal prompt - bottom curve -->
+    <path d="M-10 10 C-10 10 30 15 30 40 C30 65 -10 80 -10 80"
+          stroke="#a78bfa" stroke-width="8" stroke-linecap="round" fill="none"/>
+    <!-- $ vertical stroke -->
+    <line x1="-10" y1="-60" x2="-10" y2="80"
+          stroke="#a78bfa" stroke-width="8" stroke-linecap="round"/>
+
+    <!-- < angle bracket - left -->
+    <path d="M40 -40 L70 -20 L40 0"
+          stroke="#DE7356" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <!-- > angle bracket - right -->
+    <path d="M40 20 L70 40 L40 60"
+          stroke="#DE7356" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+    <!-- Terminal cursor block (blink indicator) -->
+    <rect x="85" y="30" width="12" height="16" rx="2" fill="#a78bfa" opacity="0.6"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="200" y="340" text-anchor="middle" font-family="'SF Mono','JetBrains Mono','Fira Code','Menlo',monospace" font-size="42" font-weight="500" fill="#e8e4e0" letter-spacing="4">
+    srcode
+  </text>
+  <text x="200" y="370" text-anchor="middle" font-family="'SF Mono','Menlo',monospace" font-size="13" fill="#6b6b7a" letter-spacing="6">
+    VIBE CODING AGENT
+  </text>
+
+  <!-- Accent line -->
+  <line x1="120" y1="395" x2="280" y2="395" stroke="#a78bfa" stroke-width="1" opacity="0.4"/>
+  <line x1="160" y1="395" x2="240" y2="395" stroke="#DE7356" stroke-width="1" opacity="0.6"/>
+</svg>

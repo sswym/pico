@@ -1,0 +1,229 @@
+import { readFileSync } from "node:fs";
+import { extname, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { completeSimple, type Api, type ImageContent, type Model, type TextContent } from "@earendil-works/pi-ai/compat";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { readSettingsObject } from "../settings.ts";
+
+const DEFAULT_PROMPT =
+  "Describe everything visible in this image in thorough detail. Include any text, code, UI, data, objects, layout, colors, and notable visual information.";
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+
+export interface VisionConfig {
+  provider: string;
+  model: string;
+}
+
+export interface VisionAnalyzeInput {
+  image_path?: string;
+  image_base64?: string;
+  image_url?: string;
+  mime_type?: string;
+  question?: string;
+}
+
+export interface VisionAnalyzeDeps {
+  complete: typeof completeSimple;
+  fetchImpl: typeof fetch;
+}
+
+export const defaultVisionDeps: VisionAnalyzeDeps = {
+  complete: completeSimple,
+  fetchImpl: fetch,
+};
+
+const cache = new Map<string, string>();
+
+export function __resetVisionCacheForTests(): void {
+  cache.clear();
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+export function readVisionConfig(): VisionConfig | null {
+  const envProvider = stringValue(process.env.SRCODE_VISION_PROVIDER);
+  const envModel = stringValue(process.env.SRCODE_VISION_MODEL);
+  if (envProvider && envModel) return { provider: envProvider, model: envModel };
+
+  const auxiliary = readSettingsObject("auxiliary");
+  const vision = auxiliary.vision;
+  if (!vision || typeof vision !== "object" || Array.isArray(vision)) return null;
+
+  const provider = stringValue((vision as Record<string, unknown>).provider);
+  const model = stringValue((vision as Record<string, unknown>).model);
+  if (!provider || !model || provider === "auto") return null;
+  return { provider, model };
+}
+
+export function modelSupportsVision(model: Model<Api> | undefined): boolean {
+  return Array.isArray(model?.input) && model.input.includes("image");
+}
+
+function mimeTypeFromPath(path: string): string {
+  switch (extname(path).toLowerCase()) {
+    case ".png":
+      return "image/png";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".bmp":
+      return "image/bmp";
+    case ".jpg":
+    case ".jpeg":
+    default:
+      return "image/jpeg";
+  }
+}
+
+function normalizeBase64(data: string): { data: string; mimeType?: string } {
+  const match = data.match(/^data:([^;,]+);base64,(.*)$/s);
+  if (match?.[1] && match[2]) {
+    return { mimeType: match[1], data: match[2].replace(/\s+/g, "") };
+  }
+  return { data: data.replace(/\s+/g, "") };
+}
+
+async function imageFromUrl(url: string, deps: VisionAnalyzeDeps, signal?: AbortSignal): Promise<ImageContent> {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("image_url must use http or https");
+  }
+
+  const response = await deps.fetchImpl(url, { signal });
+  if (!response.ok) throw new Error(`image_url fetch failed: HTTP ${response.status}`);
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > MAX_IMAGE_BYTES) throw new Error(`image is too large (${bytes.length} bytes)`);
+
+  const contentType = response.headers.get("content-type")?.split(";")[0]?.trim();
+  const mimeType = contentType?.startsWith("image/") ? contentType : "image/jpeg";
+  return { type: "image", data: bytes.toString("base64"), mimeType };
+}
+
+export async function loadImageFromInput(
+  input: VisionAnalyzeInput,
+  cwd: string,
+  deps: VisionAnalyzeDeps = defaultVisionDeps,
+  signal?: AbortSignal,
+): Promise<ImageContent> {
+  if (input.image_base64) {
+    const normalized = normalizeBase64(input.image_base64);
+    const byteLength = Buffer.byteLength(normalized.data, "base64");
+    if (byteLength > MAX_IMAGE_BYTES) throw new Error(`image is too large (${byteLength} bytes)`);
+    return {
+      type: "image",
+      data: normalized.data,
+      mimeType: input.mime_type ?? normalized.mimeType ?? "image/jpeg",
+    };
+  }
+
+  if (input.image_path) {
+    const path = resolve(cwd, input.image_path.replace(/^@/, ""));
+    const bytes = readFileSync(path);
+    if (bytes.length > MAX_IMAGE_BYTES) throw new Error(`image is too large (${bytes.length} bytes)`);
+    return {
+      type: "image",
+      data: bytes.toString("base64"),
+      mimeType: input.mime_type ?? mimeTypeFromPath(path),
+    };
+  }
+
+  if (input.image_url) {
+    return imageFromUrl(input.image_url, deps, signal);
+  }
+
+  throw new Error("Provide image_path, image_base64, or image_url");
+}
+
+function cacheKey(image: ImageContent, prompt: string, model: Model<Api>): string {
+  return createHash("sha256")
+    .update(model.provider)
+    .update("\0")
+    .update(model.id)
+    .update("\0")
+    .update(image.mimeType)
+    .update("\0")
+    .update(image.data)
+    .update("\0")
+    .update(prompt)
+    .digest("hex");
+}
+
+function assistantText(message: Awaited<ReturnType<typeof completeSimple>>): string {
+  return message.content
+    .filter((block): block is TextContent => block.type === "text")
+    .map((block) => block.text)
+    .join("")
+    .trim();
+}
+
+export async function analyzeImageWithVisionModel(
+  ctx: ExtensionContext,
+  image: ImageContent,
+  question?: string,
+  deps: VisionAnalyzeDeps = defaultVisionDeps,
+): Promise<{ analysis: string; model: string; provider: string; cached: boolean }> {
+  const config = readVisionConfig();
+  if (!config) {
+    throw new Error(
+      "No auxiliary vision model configured. Set auxiliary.vision.provider/model in ~/.srcode/agent/settings.json or SRCODE_VISION_PROVIDER/SRCODE_VISION_MODEL.",
+    );
+  }
+
+  const model = ctx.modelRegistry.find(config.provider, config.model);
+  if (!model) throw new Error(`Vision model not found: ${config.provider}/${config.model}`);
+  if (!modelSupportsVision(model)) throw new Error(`Configured vision model does not declare image input: ${config.provider}/${config.model}`);
+
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  if (!auth.ok) throw new Error(auth.error);
+
+  const prompt = question?.trim() || DEFAULT_PROMPT;
+  const key = cacheKey(image, prompt, model);
+  const cached = cache.get(key);
+  if (cached) return { analysis: cached, model: model.id, provider: model.provider, cached: true };
+
+  const response = await deps.complete(
+    model,
+    {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            image,
+          ],
+          timestamp: Date.now(),
+        },
+      ],
+    },
+    {
+      apiKey: auth.apiKey,
+      env: auth.env,
+      headers: auth.headers,
+      signal: ctx.signal,
+      maxTokens: 2048,
+    },
+  );
+
+  if (response.stopReason === "error" || response.stopReason === "aborted") {
+    throw new Error(response.errorMessage ?? `Vision model stopped with ${response.stopReason}`);
+  }
+
+  const analysis = assistantText(response);
+  if (!analysis) throw new Error("Vision model returned no text");
+  cache.set(key, analysis);
+  return { analysis, model: model.id, provider: model.provider, cached: false };
+}
+
+export function formatVisionNote(results: Array<{ analysis: string; model: string; provider: string }>): string {
+  const blocks = results.map((result, index) => {
+    return [
+      `[Image ${index + 1} analyzed by ${result.provider}/${result.model}]`,
+      result.analysis,
+    ].join("\n");
+  });
+  return blocks.join("\n\n");
+}

@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 500" fill="none">
+  <rect width="400" height="500" rx="24" fill="#1a1a2e"/>
+
+  <!-- Bold S with terminal cursor — ultra minimal -->
+  <g transform="translate(200, 200)">
+    <!-- Large bold S - constructed from terminal character shapes -->
+    <text x="0" y="15" text-anchor="middle" font-family="'SF Mono','JetBrains Mono','Fira Code','Menlo',monospace" font-size="120" font-weight="700" fill="#a78bfa">
+      S
+    </text>
+
+    <!-- Terminal cursor block -->
+    <rect x="45" y="-65" width="14" height="80" rx="2" fill="#DE7356" opacity="0.85"/>
+
+    <!-- Subtle code bracket accents -->
+    <text x="-55" y="-70" font-family="'SF Mono','Menlo',monospace" font-size="16" fill="#6b6b7a" opacity="0.4">&lt;/&gt;</text>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="200" y="340" text-anchor="middle" font-family="'SF Mono','JetBrains Mono','Fira Code','Menlo',monospace" font-size="44" font-weight="600" fill="#e8e4e0" letter-spacing="3">
+    <tspan fill="#a78bfa">s</tspan><tspan fill="#e8e4e0">rcode</tspan>
+  </text>
+
+  <!-- Thin accent line -->
+  <line x1="130" y1="358" x2="270" y2="358" stroke="#a78bfa" stroke-width="1" opacity="0.3"/>
+
+  <!-- "vim" mode indicator -->
+  <rect x="170" y="368" width="60" height="18" rx="3" fill="#a78bfa" opacity="0.15"/>
+  <text x="200" y="381" text-anchor="middle" font-family="'SF Mono','Menlo',monospace" font-size="10" fill="#a78bfa" letter-spacing="2">MODE VIBE</text>
+</svg>

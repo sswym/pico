@@ -482,8 +482,10 @@ export class LspClient {
       } catch {
         continue;
       }
-      if ("id" in msg && "method" in msg) continue;
-      if ("id" in msg) {
+      if ("id" in msg && "method" in msg) {
+        // Server-to-client request (e.g. client/registerCapability)
+        this.handleRequest(msg as { id: unknown; method: string; params?: unknown });
+      } else if ("id" in msg) {
         this.handleResponse(
           msg as { id: number; result?: unknown; error?: { code: number; message: string; data?: unknown } },
         );
@@ -506,6 +508,38 @@ export class LspClient {
       p.reject(new LspError(resp.error.message, resp.error.code, resp.error.data));
     } else {
       p.resolve(resp.result);
+    }
+  }
+
+  /**
+   * Handle a server-to-client request (a JSON-RPC message with both `id` and `method`).
+   * Responds with null result for known methods, or MethodNotFound for unknown ones.
+   */
+  private handleRequest(req: { id: unknown; method: string; params?: unknown }): void {
+    // Known server requests we can safely no-op
+    const KNOWN_METHODS = new Set([
+      "client/registerCapability",
+      "client/unregisterCapability",
+      "workspace/applyEdit",
+      "window/workDoneProgress/create",
+    ]);
+
+    let response: Record<string, unknown>;
+    if (KNOWN_METHODS.has(req.method)) {
+      response = { jsonrpc: "2.0", id: req.id, result: null };
+    } else {
+      response = {
+        jsonrpc: "2.0",
+        id: req.id,
+        error: { code: -32601, message: `Method not found: ${req.method}` },
+      };
+    }
+
+    const frame = `Content-Length: ${Buffer.byteLength(JSON.stringify(response))}\r\n\r\n${JSON.stringify(response)}`;
+    try {
+      this.process?.stdin?.write(frame);
+    } catch {
+      // Ignore write errors
     }
   }
 

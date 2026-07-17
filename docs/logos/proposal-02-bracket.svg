@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 500" fill="none">
+  <rect width="400" height="500" rx="24" fill="#1a1a2e"/>
+
+  <!-- Code bracket monogram: overlapping { and [ forming S -->
+  <g transform="translate(200, 200)">
+    <!-- { curly brace - forms the S curve -->
+    <path d="M20 -75 C-30 -75 -55 -50 -55 -25 C-55 0 -20 10 -10 10"
+          stroke="#a78bfa" stroke-width="7" stroke-linecap="round" fill="none"/>
+    <path d="M-10 10 C0 10 25 20 25 40 C25 60 -5 75 -30 75"
+          stroke="#a78bfa" stroke-width="7" stroke-linecap="round" fill="none"/>
+
+    <!-- [ square bracket - parallel structural element -->
+    <path d="M40 -65 L40 65"
+          stroke="#DE7356" stroke-width="6" stroke-linecap="round"/>
+    <line x1="40" y1="-65" x2="70" y2="-65"
+          stroke="#DE7356" stroke-width="6" stroke-linecap="round"/>
+    <line x1="40" y1="65" x2="70" y2="65"
+          stroke="#DE7356" stroke-width="6" stroke-linecap="round"/>
+
+    <!-- Cursor dot -->
+    <circle cx="90" cy="0" r="4" fill="#DE7356"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="200" y="340" text-anchor="middle" font-family="'SF Mono','JetBrains Mono','Fira Code','Menlo',monospace" font-size="44" font-weight="600" fill="#e8e4e0" letter-spacing="3">
+    srcode
+  </text>
+
+  <!-- Tab-style accent mini-pill -->
+  <rect x="155" y="360" width="90" height="4" rx="2" fill="#a78bfa" opacity="0.7"/>
+</svg>

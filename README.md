@@ -19,6 +19,7 @@ bun run bin/srcode.ts --help     # 查看所有上游标志
 - 内置 `read`、`bash`、`edit`、`write`、`grep`、`find`、`ls` 工具。
 - `/compact` 摘要压缩、会话分叉、项目信任提示。
 - 通过 `pi-ai` 支持多供应商（Anthropic、OpenAI、Google、Mistral 等）。
+- 支持单独配置辅助视觉模型：当主模型不支持图片时，会自动调用 `auxiliary.vision` 做图像识别。
 
 ## srcode 新增功能
 
@@ -135,11 +136,19 @@ subagent(chain=[
 - `webFetch(url, prompt)` —— 通过 `Bun.fetch` 抓取公开 HTTPS URL，将 HTML 转为 Markdown（去除 `<script>/<style>/<nav>/<footer>`），默认拒绝 localhost/内网地址，响应读取上限 1 MiB，输出 8 KiB 上限，15 分钟 LRU 缓存（50 条）。
 - `webSearch(query, max_results?, allowed_domains?, blocked_domains?)` —— 默认使用 Exa MCP；若存在 `TAVILY_API_KEY`，默认合并 Exa + Tavily 结果并按 URL 去重。设置 `SRCODE_SEARCH_PROVIDER=exa` 或 `SRCODE_SEARCH_PROVIDER=tavily` 可强制单一 provider。
 
-### 7. `/init`（生成 AGENTS.md）
+### 7. RTK 命令压缩（可选）
+
+若系统 PATH 中安装了 [`rtk`](https://github.com/rtk-ai/rtk)，srcode 会在内置 `bash` 工具执行前调用 `rtk rewrite <command>`，把受支持的命令透明改写为 RTK 版本，例如 `git status` → `rtk git status`，从而减少进入上下文的 shell 输出。RTK 不可用或没有匹配规则时命令原样执行；RTK deny 规则命中时会阻断该次 `bash` 调用。
+
+- `/rtk` —— 探测并显示当前 RTK rewrite 状态。
+- `SRCODE_RTK=0` —— 禁用自动改写。
+- `SRCODE_RTK_VERBOSE=1` —— 在改写或不可用时输出诊断消息。
+
+### 8. `/init`（生成 AGENTS.md）
 
 多阶段引导式工作流：询问需要设置什么，可选派出 `scout` 子代理做代码库侦察，通过 `askUserQuestion` 填补信息缺口，然后编写极简的 **AGENTS.md**（以及可选的 AGENTS.local.md），并建议技能/钩子。**srcode 永远不会写入 CLAUDE.md**——这是写死在提示词中的硬规则。
 
-### 8. 权限与高风险动作边界
+### 9. 权限与高风险动作边界
 
 srcode 当前不注册独立的 `/permissions` 扩展；基础工具审批、项目可信任状态与交互权限由上游 `@earendil-works/pi-coding-agent` 负责。
 
@@ -154,11 +163,19 @@ srcode 自己额外做了一层明确阻断：`lsp` 中的写入或高风险 act
     "enableProjectMcp": false,
     "allowUnattendedPlanApproval": false,
     "allowLspFormatOnWrite": false
+  },
+  "auxiliary": {
+    "vision": {
+      "provider": "openai",
+      "model": "gpt-4o-mini"
+    }
   }
 }
 ```
 
-### 9. 钩子（`~/.srcode/hooks.json` + `<仓库>/.srcode/hooks.json`）
+`auxiliary.vision.provider/model` 必须能被模型注册表解析到。若使用上游内置且已认证的视觉模型，通常只需写上面的 `settings.json`；若使用自定义 provider、代理或本地视觉模型，需要先在 `~/.srcode/agent/models.json` 中注册该模型，并确保模型声明包含 `"input": ["text", "image"]`，否则会被视为不具备视觉能力。
+
+### 10. 钩子（`~/.srcode/hooks.json` + `<仓库>/.srcode/hooks.json`）
 
 基于文件的 Shell 钩子，支持 `PreToolUse` / `PostToolUse` / `PreSessionEnd` / `PostUserMessage` 事件。默认只加载用户级 `~/.srcode/hooks.json`；项目级 `<仓库>/.srcode/hooks.json` 会执行仓库提供的 shell 命令，需设置 `safety.enableProjectHooks=true` 或 `SRCODE_ENABLE_PROJECT_HOOKS=1` 才会加载。占位符：`$FILE`（工具参数）、`$TOOL`（工具名）、`$TURN`（轮次索引）。默认超时 30 秒（最大 120 秒）；`blocking: true` 的 PreToolUse 失败会中止工具调用。
 
@@ -171,11 +188,11 @@ srcode 自己额外做了一层明确阻断：`lsp` 中的写入或高风险 act
 }
 ```
 
-### 10. Vibe 编码系统提示词
+### 11. Vibe 编码系统提示词
 
 `src/prompts/vibe-system.md` 会被追加到每条系统提示词末尾。四条规则——*先思考再编码、用最少的代码解决问题、手术式修改、目标驱动执行*——从 `~/.claude/CLAUDE.md` 中提炼。目标是让 srcode 先问后猜、不重构相邻代码、并将每行 diff 追溯到明确需求。
 
-### 11. 内置技能（`src/skills/`）
+### 12. 内置技能（`src/skills/`）
 
 三个 `SKILL.md` 技能通过 `--skill <bundled-skills-dir>` 自动加载：
 
@@ -185,7 +202,7 @@ srcode 自己额外做了一层明确阻断：`lsp` 中的写入或高风险 act
 
 `~/.srcode/agent/skills/` 中的用户技能按名称覆盖内置技能。
 
-### 12. MCP 服务器集成（`mcp__*` 工具）
+### 13. MCP 服务器集成（`mcp__*` 工具）
 
 srcode 支持连接外部 MCP（Model Context Protocol）服务器，自动发现并注册其工具为 LLM 可调用的内置工具。兼容 Claude Code 的 `mcpServers` 配置格式。
 

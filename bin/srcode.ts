@@ -9,6 +9,7 @@
  *   - memory      : SQLite-backed long-term memory + /memory command
  *   - subagent    : delegate tasks to scout/planner/worker/reviewer roles
  *   - todo        : session task checklist (todoWrite tool + /todo command)
+ *   - rtk         : optionally rewrite bash commands through `rtk rewrite`
  *   - hooks       : file-driven Pre/PostToolUse hooks (registered last so it
  *                   observes the final tool surface other extensions assemble)
  *
@@ -36,8 +37,10 @@ import { retroThemeExtension } from "../src/extensions/retro-theme/index.ts";
 import { logoExtension } from "../src/extensions/logo/index.ts";
 import { memoryExtension } from "../src/extensions/memory/index.ts";
 import { planExtension } from "../src/extensions/plan/index.ts";
+import { rtkExtension } from "../src/extensions/rtk/index.ts";
 import subagentExtension from "../src/extensions/subagent/index.ts";
 import { todoExtension } from "../src/extensions/todo/index.ts";
+import { visionExtension } from "../src/extensions/vision/index.ts";
 import { languageExtension } from "../src/extensions/language.ts";
 import { vibeExtension } from "../src/extensions/vibe.ts";
 import { omaExtension } from "../src/extensions/oma.ts";
@@ -198,9 +201,11 @@ await main(args, {
     memoryExtension,
     subagentExtension,
     todoExtension,
+    visionExtension,
     askExtension,
     initExtension,
     planExtension,
+    rtkExtension,
     webExtension,
     lspExtension,
     hooksExtension,

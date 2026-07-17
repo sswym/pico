@@ -55,17 +55,5 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       intervalMs: 600,
     });
 
-    // ── Status indicator ─────────────────────────────────────────────
-    ctx.ui.setStatus(
-      "retro",
-      ctx.ui.theme.fg("dim", "theme") +
-        ctx.ui.theme.fg("muted", " · ") +
-        ctx.ui.theme.fg("accent", "claude"),
-    );
-  });
-
-  // Clean up status on shutdown.
-  pi.on("session_shutdown", async (_event, ctx) => {
-    ctx.ui.setStatus("retro", undefined);
   });
 };
