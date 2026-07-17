@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   srcodeAgentHome,
   srcodeHome,
+  srcodeInputHistoryPath,
   srcodeLspConfigPath,
   srcodeMcpConfigPath,
   srcodeMemoryDbPath,
@@ -28,6 +29,7 @@ test("srcode path helpers honor SRCODE_HOME", () => {
   expect(srcodeAgentHome()).toBe(join("/tmp/srcode-custom-home", "agent"));
   expect(srcodeSessionDir()).toBe(join("/tmp/srcode-custom-home", "agent", "sessions"));
   expect(srcodeSettingsPath()).toBe(join("/tmp/srcode-custom-home", "agent", "settings.json"));
+  expect(srcodeInputHistoryPath()).toBe(join("/tmp/srcode-custom-home", "agent", "input-history.jsonl"));
   expect(srcodeMemoryDbPath()).toBe(join("/tmp/srcode-custom-home", "memory.db"));
   expect(srcodeMcpConfigPath()).toBe(join("/tmp/srcode-custom-home", "mcp-servers.json"));
   expect(srcodeLspConfigPath()).toBe(join("/tmp/srcode-custom-home", "lsp.json"));

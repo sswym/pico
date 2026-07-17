@@ -31,6 +31,7 @@ import "./env-bootstrap.ts";
 import { main } from "@earendil-works/pi-coding-agent";
 import { askExtension } from "../src/extensions/ask/index.ts";
 import { initExtension } from "../src/extensions/init/index.ts";
+import { inputHistoryExtension } from "../src/extensions/input-history/index.ts";
 import { retroThemeExtension } from "../src/extensions/retro-theme/index.ts";
 import { logoExtension } from "../src/extensions/logo/index.ts";
 import { memoryExtension } from "../src/extensions/memory/index.ts";
@@ -192,6 +193,7 @@ await main(args, {
     omaExtension,
     retroThemeExtension,
     languageExtension,
+    inputHistoryExtension,
     logoExtension,
     memoryExtension,
     subagentExtension,

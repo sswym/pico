@@ -36,6 +36,10 @@ export function srcodeSettingsPath(): string {
   return join(srcodeAgentHome(), "settings.json");
 }
 
+export function srcodeInputHistoryPath(): string {
+  return join(srcodeAgentHome(), "input-history.jsonl");
+}
+
 export function srcodeMemoryDbPath(): string {
   return process.env.SRCODE_MEMORY_DB ?? join(srcodeHome(), "memory.db");
 }
