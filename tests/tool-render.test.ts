@@ -10,6 +10,7 @@ import {
   previewText,
   renderToolCallText,
   renderToolResultText,
+  summarizeToolCall,
 } from "../src/extensions/tool-render.ts";
 
 const plainTheme = {
@@ -62,7 +63,23 @@ test("renderToolResultText collapses by default and expands full output", () => 
 test("renderToolCallText keeps tool arguments visible", () => {
   const call = renderToolCallText("memory", { action: "search", query: "srcode" }, plainTheme, {});
   const text = renderedText(call);
+  expect(text).toContain("• memory");
   expect(text).toContain("memory");
+  expect(text).toContain('search "srcode"');
   expect(text).toContain('"action": "search"');
   expect(text).toContain('"query": "srcode"');
+});
+
+test("summarizeToolCall renders high-signal summaries", () => {
+  expect(summarizeToolCall("lsp", { action: "diagnostics", file: "src/index.ts", line: 12 })).toBe(
+    "diagnostics src/index.ts:12",
+  );
+  expect(
+    summarizeToolCall("todoWrite", {
+      todos: [
+        { content: "one", activeForm: "one", status: "completed" },
+        { content: "two", activeForm: "two", status: "in_progress" },
+      ],
+    }),
+  ).toBe("2 items · 1 active");
 });

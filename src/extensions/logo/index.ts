@@ -56,7 +56,7 @@ export const LOGO = LOGO_LINES.join("\n");
 export function renderLogoHeader(theme: {
   fg: (color: string, text: string) => string;
   bold: (text: string) => string;
-}): string {
+}, width = 80): string {
   const logo = LOGO_LINES.map((line) => theme.bold(theme.fg("accent", line))).join("\n");
   const srcodeVersion = (pkg as { version?: string }).version ?? "0.0.0";
   const tagline =
@@ -65,19 +65,23 @@ export function renderLogoHeader(theme: {
     theme.fg("muted", " · ") +
     theme.fg("dim", "/ commands") +
     theme.fg("muted", " · ") +
-    theme.fg("dim", "! bash");
+    theme.fg("dim", "! bash") +
+    theme.fg("muted", " · ") +
+    theme.fg("dim", "F7 todos");
+  if (width < 64) return tagline;
   return `${logo}\n\n${tagline}`;
 }
 
 export const logoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   const install = (ctx: { ui: { setHeader: (factory: any) => void } }) => {
-    ctx.ui.setHeader((_tui: unknown, theme: any) => {
+    ctx.ui.setHeader((tui: unknown, theme: any) => {
       // The header lives inside pi's headerContainer, which already adds
       // surrounding Spacers. Wrap in our own Container so we can tweak
       // spacing if needed without touching pi's layout.
       const container = new Container();
+      const width = (tui as { terminal?: { columns?: number } } | undefined)?.terminal?.columns ?? 80;
       container.addChild(new Spacer(1));
-      container.addChild(new Text(renderLogoHeader(theme), 1, 0));
+      container.addChild(new Text(renderLogoHeader(theme, width), 1, 0));
       container.addChild(new Spacer(1));
       return container;
     });

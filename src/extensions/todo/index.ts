@@ -9,12 +9,19 @@ import { Type } from "@earendil-works/pi-ai";
 import {
   defineTool,
   type ExtensionAPI,
+  type ExtensionContext,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
 import { formatPendingReminder, formatTodoList, TODO_DESCRIPTION, TODO_PROMPT } from "./prompt.ts";
 import { TodoWriteParams } from "./schema.ts";
 import { TodoStore } from "./store.ts";
+import {
+  clearTodoWidget,
+  ensureTodoWidget,
+  registerTodoShortcut,
+  syncTodoWidget,
+} from "./widget.ts";
 
 const SESSION_FALLBACK = "__default__";
 
@@ -28,6 +35,9 @@ function sessionKey(ctx: { sessionManager?: { getSessionId?: () => string | unde
 
 export const todoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   const store = new TodoStore();
+  const readTodos = (ctx: ExtensionContext) => store.get(sessionKey(ctx));
+
+  registerTodoShortcut(pi, readTodos);
 
   pi.registerTool(
     defineTool({
@@ -47,6 +57,8 @@ export const todoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       async execute(_id, params, _signal, _onUpdate, ctx) {
         const key = sessionKey(ctx);
         const result = store.commit(key, params.todos);
+        ensureTodoWidget(ctx, (session) => store.get(session));
+        syncTodoWidget(ctx, (session) => store.get(session));
 
         // Render the new list back into the chat so it stays anchored above
         // the user's next message. CCB renders in-place; pi has no in-place
@@ -99,9 +111,12 @@ export const todoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
       if (cmd === "clear") {
         store.reset(key);
+        clearTodoWidget(ctx);
         lines.push("Todo list cleared.");
       } else if (cmd === "" || cmd === "list" || cmd === "show") {
         const list = store.get(key);
+        ensureTodoWidget(ctx, (session) => store.get(session));
+        syncTodoWidget(ctx, (session) => store.get(session));
         lines.push(`Session todos (${list.length}):`);
         lines.push(formatTodoList(list));
       } else {
@@ -116,6 +131,11 @@ export const todoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         display: true,
       });
     },
+  });
+
+  pi.on("session_start", (_event, ctx) => {
+    ensureTodoWidget(ctx, (session) => store.get(session));
+    syncTodoWidget(ctx, (session) => store.get(session));
   });
 
   // Switching/forking sessions resets the per-session view.

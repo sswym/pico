@@ -32,6 +32,14 @@ test("renderLogoHeader inlines the logo + a single-line tagline", () => {
   expect(out).toContain("srcode v");
   expect(out).toContain("/ commands");
   expect(out).toContain("! bash");
+  expect(out).toContain("F7 todos");
+});
+
+test("renderLogoHeader uses a compact header on narrow terminals", () => {
+  const out = renderLogoHeader(stubTheme, 48);
+  expect(out).not.toContain(LOGO);
+  expect(out).toContain("srcode v");
+  expect(out).toContain("F7 todos");
 });
 
 test("logoExtension only subscribes to session_start", () => {
@@ -75,8 +83,9 @@ test("session_start handler installs a header factory that renders the logo", ()
   // Render the factory: should produce a Container with at least one Text
   // child carrying the logo. We don't snapshot the full tree — just check
   // the rendered string output covers a known logo line.
-  const component = capturedFactory(undefined, stubTheme);
+  const component = capturedFactory({ terminal: { columns: 80 } }, stubTheme);
   const lines = component.render(80);
   const joined = lines.join("\n");
   expect(joined).toContain("|_/|"); // unique to LOGO line 4
+  expect(joined).toContain("F7 todos");
 });
