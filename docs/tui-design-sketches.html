@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>srcode TUI Design Sketches</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #11100f;
+      --ink: #eee7dc;
+      --muted: #a49a8c;
+      --dim: #6d665e;
+      --line: #393a35;
+      --panel: #1a1815;
+      --panel-2: #22201c;
+      --accent: #d97757;
+      --accent-2: #f09a78;
+      --green: #7aa86a;
+      --yellow: #d6a84f;
+      --red: #d16d5f;
+      --cyan: #6aa99a;
+      --blue: #7e98c9;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at top left, rgba(217, 119, 87, 0.10), transparent 34rem),
+        linear-gradient(180deg, #141210 0%, #0f0f0e 100%);
+      color: var(--ink);
+      line-height: 1.5;
+    }
+
+    main {
+      width: min(1280px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 32px 0 56px;
+    }
+
+    header {
+      display: grid;
+      gap: 10px;
+      margin-bottom: 28px;
+    }
+
+    h1, h2, h3, p { margin: 0; }
+
+    h1 {
+      font-size: clamp(28px, 5vw, 48px);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 880px;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 6px;
+    }
+
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 4px 8px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.025);
+      font-size: 12px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 24px;
+    }
+
+    .sketch {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: rgba(0, 0, 0, 0.24);
+      min-width: 0;
+    }
+
+    .sketch-head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.025);
+    }
+
+    .sketch h2 {
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+
+    .sketch .note {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .score {
+      white-space: nowrap;
+      color: var(--accent-2);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .terminal {
+      margin: 18px;
+      height: 520px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto 1fr auto auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.45;
+      box-shadow: 0 16px 50px rgba(0, 0, 0, 0.30);
+    }
+
+    .topbar, .statusbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 12px;
+      color: var(--muted);
+      background: #151411;
+      border-bottom: 1px solid var(--line);
+      min-width: 0;
+    }
+
+    .statusbar {
+      border-top: 1px solid var(--line);
+      border-bottom: 0;
+      background: #141310;
+      font-size: 12px;
+    }
+
+    .brand {
+      color: var(--accent-2);
+      font-weight: 700;
+    }
+
+    .path, .right {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .feed {
+      overflow: hidden;
+      padding: 14px 14px 8px;
+      display: grid;
+      align-content: start;
+      gap: 12px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .icon { color: var(--dim); }
+    .user .icon { color: var(--accent-2); }
+    .agent .icon { color: var(--green); }
+    .tool .icon { color: var(--cyan); }
+
+    .bubble {
+      color: var(--ink);
+      min-width: 0;
+    }
+
+    .bubble strong { color: var(--accent-2); }
+
+    .muted { color: var(--muted); }
+    .dim { color: var(--dim); }
+    .green { color: var(--green); }
+    .yellow { color: var(--yellow); }
+    .red { color: var(--red); }
+    .cyan { color: var(--cyan); }
+    .blue { color: var(--blue); }
+    .accent { color: var(--accent-2); }
+
+    .toolbox {
+      border-left: 2px solid rgba(106, 169, 154, 0.70);
+      padding: 7px 10px;
+      background: rgba(255, 255, 255, 0.025);
+      color: var(--muted);
+    }
+
+    .tool-title {
+      color: var(--accent-2);
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .code {
+      color: #c8c1b6;
+      background: rgba(0, 0, 0, 0.18);
+      padding: 6px 8px;
+      border-radius: 6px;
+      white-space: pre-wrap;
+    }
+
+    .composer {
+      margin: 0 12px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #11100e;
+      padding: 9px 11px;
+      color: var(--ink);
+      min-height: 52px;
+      display: grid;
+      gap: 6px;
+    }
+
+    .composer-line {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .prompt { color: var(--accent-2); }
+    .input {
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .hint {
+      color: var(--dim);
+      font-size: 12px;
+    }
+
+    .bar {
+      height: 7px;
+      border-radius: 999px;
+      background: #302c27;
+      overflow: hidden;
+      width: 78px;
+      flex: none;
+    }
+
+    .fill { height: 100%; background: var(--green); }
+    .fill.warn { background: var(--yellow); }
+    .fill.hot { background: var(--accent); }
+
+    .segments {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .seg {
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .side-layout {
+      grid-template-columns: 1fr 220px;
+      gap: 0;
+    }
+
+    .side {
+      border-left: 1px solid var(--line);
+      padding: 12px;
+      background: #181713;
+      overflow: hidden;
+    }
+
+    .todo {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .todo-item {
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      gap: 7px;
+      color: var(--muted);
+      min-width: 0;
+    }
+
+    .todo-item span:last-child {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .compact .terminal {
+      background: #12110f;
+    }
+
+    .compact .row {
+      grid-template-columns: 14px minmax(0, 1fr);
+    }
+
+    .compact .toolbox {
+      border-left: 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      padding: 6px 0;
+    }
+
+    .dense .terminal {
+      --line: #2f3435;
+      --accent-2: #e89473;
+      --panel: #121616;
+    }
+
+    .dense .topbar,
+    .dense .statusbar {
+      background: #0f1313;
+    }
+
+    .dense .toolbox {
+      border-left-color: var(--blue);
+    }
+
+    .plan .terminal {
+      --panel: #171614;
+      --panel-2: #23201b;
+    }
+
+    .plan .composer {
+      border-color: rgba(217, 119, 87, 0.60);
+    }
+
+    .minimal .terminal {
+      border-color: #2d2d2a;
+      background: #151514;
+    }
+
+    .minimal .topbar {
+      display: none;
+    }
+
+    .minimal .feed {
+      padding-top: 18px;
+    }
+
+    .feasibility {
+      margin: 28px 0 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      background: rgba(255, 255, 255, 0.025);
+    }
+
+    .feasibility h3 {
+      font-size: 16px;
+      margin-bottom: 10px;
+    }
+
+    .feasibility ul {
+      margin: 0;
+      padding-left: 20px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 980px) {
+      main { width: min(100% - 24px, 760px); }
+      .grid { grid-template-columns: 1fr; }
+      .terminal { height: 500px; }
+    }
+
+    @media (max-width: 620px) {
+      main { padding-top: 20px; }
+      .sketch-head { display: grid; }
+      .terminal { margin: 12px; font-size: 12px; height: 480px; }
+      .side-layout { grid-template-columns: 1fr; }
+      .side { display: none; }
+      .statusbar { align-items: start; flex-direction: column; }
+      .topbar { align-items: start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>srcode TUI 美化草图</h1>
+      <p class="lead">目标是贴近 Claude Code 的终端体验：暖暗背景、紧凑消息流、清晰工具块、底部状态栏、输入框附近的任务/上下文提示。以下是可落地程度不同的四个方向。</p>
+      <div class="meta">
+        <span class="pill">theme JSON 可落地</span>
+        <span class="pill">tool renderer 可落地</span>
+        <span class="pill">footer/status 可落地</span>
+        <span class="pill">主布局受上游 TUI API 限制</span>
+      </div>
+    </header>
+
+    <section class="grid">
+      <article class="sketch compact">
+        <div class="sketch-head">
+          <div>
+            <h2>A. Claude-like Compact</h2>
+            <p class="note">最贴近 Claude Code：少边框、暖色强调、消息流紧凑，工具调用只露摘要。</p>
+          </div>
+          <div class="score">recommended</div>
+        </div>
+        <div class="terminal">
+          <div class="topbar">
+            <div><span class="brand">srcode</span> <span class="dim">/</span> <span class="path">claude_claw/srcode</span></div>
+            <div class="right">sonnet · plan off</div>
+          </div>
+          <div class="feed">
+            <div class="row user">
+              <div class="icon">›</div>
+              <div class="bubble">美化本项目的 TUI，尽量与 Claude Code 一样。</div>
+            </div>
+            <div class="row agent">
+              <div class="icon">●</div>
+              <div class="bubble"><strong>先读取主题、工具渲染和 widget API。</strong><br><span class="muted">当前 wrapper 已经能控制主题、工具块、todo 面板和 footer。</span></div>
+            </div>
+            <div class="row tool">
+              <div class="icon">•</div>
+              <div class="toolbox">
+                <div class="tool-title">Read src/extensions/retro-theme/index.ts</div>
+                <div>theme sync → ctx.ui.setTheme("retro-terminal")</div>
+              </div>
+            </div>
+            <div class="row tool">
+              <div class="icon">•</div>
+              <div class="toolbox">
+                <div class="tool-title">Bash rg "setFooter|setWidget|setStatus"</div>
+                <div>found footer, statusline, widget placement, message renderer examples</div>
+              </div>
+            </div>
+            <div class="row agent">
+              <div class="icon">●</div>
+              <div class="bubble">可行方案：新增 <span class="accent">claude-code-like</span> theme，统一 tool title，改 footer 为模型/分支/token/成本。</div>
+            </div>
+          </div>
+          <div class="composer">
+            <div class="composer-line"><span class="prompt">srcode</span><span class="input">给我实现 A 方案，并保留 todo widget</span></div>
+            <div class="hint">enter send · shift+enter newline · F7 todos · ctrl+r history</div>
+          </div>
+          <div class="statusbar">
+            <div class="segments">
+              <span class="seg">main</span>
+              <span class="seg">ctx 18%</span>
+              <span class="bar"><span class="fill" style="width:18%"></span></span>
+              <span class="seg">$0.043</span>
+            </div>
+            <div class="right">claude-sonnet-4.5 · src/extensions</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="sketch dense">
+        <div class="sketch-head">
+          <div>
+            <h2>B. Operator Dense</h2>
+            <p class="note">更强调工程状态：footer 信息密度高，适合长期 agent session。</p>
+          </div>
+          <div class="score">high signal</div>
+        </div>
+        <div class="terminal">
+          <div class="topbar">
+            <div><span class="brand">srcode</span> <span class="cyan">ready</span></div>
+            <div class="right">git main +3 · lsp ts ready · mcp 2</div>
+          </div>
+          <div class="feed">
+            <div class="row user">
+              <div class="icon">›</div>
+              <div class="bubble">先调研是否可行。</div>
+            </div>
+            <div class="row tool">
+              <div class="icon">→</div>
+              <div class="toolbox">
+                <div class="tool-title">lsp status</div>
+                <div class="code">Active language servers:
+  typescript v5.9.2 - ready
+  files with diagnostics: 0</div>
+              </div>
+            </div>
+            <div class="row tool">
+              <div class="icon">→</div>
+              <div class="toolbox">
+                <div class="tool-title">todoWrite 4 items · 3 active</div>
+                <div><span class="green">✓</span> locate UI APIs<br><span class="yellow">⏳</span> design sketches<br><span class="dim">○</span> wait for selection</div>
+              </div>
+            </div>
+            <div class="row agent">
+              <div class="icon">●</div>
+              <div class="bubble">建议用于 power-user 默认主题：底栏一眼看到模型、分支、成本、上下文和安全开关。</div>
+            </div>
+          </div>
+          <div class="composer">
+            <div class="composer-line"><span class="prompt">></span><span class="input">实现 dense footer，并加 /theme 切换命令</span></div>
+            <div class="hint">mode default · approvals never · workspace srcode</div>
+          </div>
+          <div class="statusbar">
+            <div class="segments">
+              <span class="seg green">● online</span>
+              <span class="seg">main +3</span>
+              <span class="seg">ctx 42%</span>
+              <span class="bar"><span class="fill warn" style="width:42%"></span></span>
+              <span class="seg">in 12.4k out 2.1k</span>
+            </div>
+            <div class="right">$0.118 · sonnet · 37m</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="sketch plan">
+        <div class="sketch-head">
+          <div>
+            <h2>C. Plan Focus</h2>
+            <p class="note">把 Claude Code 的计划/todo 体验前置，适合复杂任务和多 agent 编排。</p>
+          </div>
+          <div class="score">workflow</div>
+        </div>
+        <div class="terminal side-layout">
+          <div style="display:grid; grid-template-rows:auto 1fr auto auto; min-width:0;">
+            <div class="topbar">
+              <div><span class="brand">srcode</span> <span class="dim">plan mode</span></div>
+              <div class="right">F7 panel · Esc collapse</div>
+            </div>
+            <div class="feed">
+              <div class="row user">
+                <div class="icon">›</div>
+                <div class="bubble">给我多份设计草图。</div>
+              </div>
+              <div class="row agent">
+                <div class="icon">●</div>
+                <div class="bubble"><strong>设计拆成 4 步。</strong><br><span class="muted">先确认 API，生成 HTML，等待选择，再改运行时代码。</span></div>
+              </div>
+              <div class="row tool">
+                <div class="icon">•</div>
+                <div class="toolbox">
+                  <div class="tool-title">EnterPlanMode</div>
+                  <div>UI theme, footer, widgets, renderer boundaries</div>
+                </div>
+              </div>
+              <div class="row agent">
+                <div class="icon">●</div>
+                <div class="bubble">这个方向会新增更精致的 aboveEditor todo widget，但不会强改上游主列表。</div>
+              </div>
+            </div>
+            <div class="composer">
+              <div class="composer-line"><span class="prompt">plan</span><span class="input">选择 C：强化 todo 面板和 plan mode</span></div>
+              <div class="hint">approval required for plan exit · F7 todos</div>
+            </div>
+            <div class="statusbar">
+              <div class="segments"><span class="seg yellow">⏸ plan</span><span class="seg">3/5 tasks</span><span class="seg">ctx 27%</span></div>
+              <div class="right">main · sonnet</div>
+            </div>
+          </div>
+          <aside class="side">
+            <div class="accent"><strong>Todos</strong></div>
+            <div class="muted">2 done · 1 active · 2 pending</div>
+            <div class="todo">
+              <div class="todo-item"><span class="green">✓</span><span>读取 TUI API</span></div>
+              <div class="todo-item"><span class="green">✓</span><span>确认 footer 能力</span></div>
+              <div class="todo-item"><span class="yellow">⏳</span><span>生成 HTML 草图</span></div>
+              <div class="todo-item"><span class="dim">○</span><span>用户选择方向</span></div>
+              <div class="todo-item"><span class="dim">○</span><span>实现并测试</span></div>
+            </div>
+          </aside>
+        </div>
+      </article>
+
+      <article class="sketch minimal">
+        <div class="sketch-head">
+          <div>
+            <h2>D. Minimal Patch</h2>
+            <p class="note">最小风险：只改主题、图标、工具摘要和底栏，不碰复杂布局。</p>
+          </div>
+          <div class="score">low risk</div>
+        </div>
+        <div class="terminal">
+          <div class="topbar"></div>
+          <div class="feed">
+            <div class="row user">
+              <div class="icon">›</div>
+              <div class="bubble">我想让你帮我美化本项目的 TUI。</div>
+            </div>
+            <div class="row agent">
+              <div class="icon">●</div>
+              <div class="bubble">保留现有结构，换成更像 Claude Code 的暖色、低噪声工具块和底部状态。</div>
+            </div>
+            <div class="row tool">
+              <div class="icon">•</div>
+              <div class="toolbox">
+                <div class="tool-title">edit src/theme/retro-terminal.json</div>
+                <div>accent #d97757 · bg #171614 · muted #a49a8c</div>
+              </div>
+            </div>
+            <div class="row tool">
+              <div class="icon">•</div>
+              <div class="toolbox">
+                <div class="tool-title">setFooter</div>
+                <div>model · branch · context · cost</div>
+              </div>
+            </div>
+          </div>
+          <div class="composer">
+            <div class="composer-line"><span class="prompt">›</span><span class="input">继续</span></div>
+            <div class="hint">srcode · ready</div>
+          </div>
+          <div class="statusbar">
+            <div class="segments"><span class="seg">main</span><span class="seg">ctx 11%</span><span class="bar"><span class="fill" style="width:11%"></span></span></div>
+            <div class="right">sonnet · $0.012</div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="feasibility">
+      <h3>落地判断</h3>
+      <ul>
+        <li>可直接落地：新增/替换主题 JSON、working indicator、工具调用/结果渲染、todo widget 文案与视觉、footer/statusline。</li>
+        <li>可能可落地：自定义 message/entry renderer，用于更特殊的状态卡片或计划卡片。</li>
+        <li>受限部分：主消息流容器、输入编辑器底层行为、全局布局顺序由上游 pi TUI 控制，若要完全一致需要改上游或新增 API。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
