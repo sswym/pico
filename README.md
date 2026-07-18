@@ -237,7 +237,7 @@ srcode 支持连接外部 MCP（Model Context Protocol）服务器，自动发�
 
 用户命令：`/mcp` 可查看所有已连接 MCP 服务器的状态、版本和已注册工具列表。
 
-### 13. LSP 代码智能（`lsp` 工具）
+### 14. LSP 代码智能（`lsp` 工具）
 
 通过 Language Server Protocol 为 LLM 提供精确的代码智能。支持 14 种操作，自动检测并启动对应的语言服务器。
 
@@ -272,7 +272,7 @@ lsp(action="diagnostics", file="src/index.ts")
 lsp(action="symbols", file="src/index.ts")
 ```
 
-**自动检测**：根据工作区文件自动选择语言服务器（`tsconfig.json` → `typescript-language-server`，`Cargo.toml` → `rust-analyzer`，`pyproject.toml` → `pyright` 等）。惰性启动，`session_shutdown` 时关闭。
+**自动检测**：根据工作区文件自动选择语言服务器（`tsconfig.json` / `package.json` → TypeScript LSP，`Cargo.toml` → `rust-analyzer`，`pyproject.toml` → `pyright` 等）。TypeScript 项目会优先尝试 `typescript-native`；启动前会探测本地 `tsc --help --all` 是否声明支持 `--lsp`，旧版 `tsc` 不支持时会静默跳过并回退到后续可用服务器，避免出现 `Server exited with code 1` 的误报。语言服务器惰性启动，`session_shutdown` 时关闭。
 
 **45+ 语言支持**：TypeScript、JavaScript、Python、Rust、Go、Java、Kotlin、Scala、Haskell、OCaml、Elixir、Ruby、PHP、C#、Lua、Nix、Zig、Bash、YAML、TOML、SQL、Terraform、Docker、Prisma、GraphQL、Swift、Dart、CSS、HTML、JSON、Vue、Svelte、Astro、Tailwind、Deno、Biome、ESLint 等。
 
@@ -324,10 +324,10 @@ srcode/
 ## 测试
 
 ```bash
-bun test
+bun run verify
 ```
 
-测试完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`；MCP 测试使用 fake client，不启动真实服务器。
+`bun run verify` 会先执行 `bunx tsc --noEmit`，再运行 `bun test`。测试完全离线运行。Hooks 测试使用空操作固件命令；Web 测试桩接 `Bun.fetch`；Ask/Plan 测试伪造 `ctx.ui.*`；MCP 测试使用 fake client，不启动真实服务器。
 
 ## 路线图
 
