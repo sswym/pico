@@ -14,27 +14,15 @@ const plainTheme = {
 function fakeCtx(overrides: Record<string, unknown> = {}) {
   return {
     model: { id: "claude-sonnet-4.5" },
-    sessionManager: {
-      getBranch: () => [
-        {
-          type: "message",
-          message: {
-            role: "assistant",
-            usage: {
-              input: 1234,
-              output: 567,
-              cost: { total: 0.042 },
-            },
-          },
-        },
-      ],
-    },
+    getContextUsage: () => ({ percent: 0, contextWindow: 200000 }),
     ...overrides,
   } as any;
 }
 
-test("renderClaudeLikeFooterLine includes srcode, statuses, usage, model, and branch", () => {
-  const line = renderClaudeLikeFooterLine(120, fakeCtx(), plainTheme as any, {
+test("renderClaudeLikeFooterLine includes srcode, statuses, context bar, model, and branch", () => {
+  const line = renderClaudeLikeFooterLine(120, fakeCtx({
+    getContextUsage: () => ({ percent: 50, contextWindow: 200000 }),
+  }), plainTheme as any, {
     getGitBranch: () => "main",
     getExtensionStatuses: () => ["todos 1/3 F7", "LSP: ts ready"],
   });
@@ -42,10 +30,22 @@ test("renderClaudeLikeFooterLine includes srcode, statuses, usage, model, and br
   expect(line).toContain("srcode");
   expect(line).toContain("todos 1/3 F7");
   expect(line).toContain("LSP: ts ready");
-  expect(line).toContain("↑1.2k ↓567");
-  expect(line).toContain("$0.042");
+  expect(line).toContain("████████░░░░░░░░ 50% ctx");
+  expect(line).not.toContain("↑");
+  expect(line).not.toContain("$");
   expect(line).toContain("claude-sonnet-4.5");
   expect(line).toContain("git:main");
+});
+
+test("renderClaudeLikeFooterLine shows an empty context bar when usage is unavailable", () => {
+  const line = renderClaudeLikeFooterLine(100, fakeCtx({
+    getContextUsage: () => ({ percent: null, contextWindow: 200000 }),
+  }), plainTheme as any, {
+    getGitBranch: () => "main",
+    getExtensionStatuses: () => [],
+  });
+
+  expect(line).toContain("░░░░░░░░░░░░░░░░ 0% ctx");
 });
 
 test("renderClaudeLikeFooterLine keeps narrow output within width", () => {
@@ -120,7 +120,7 @@ test("retroThemeExtension installs theme, working indicator, and footer", async 
   await handler({ type: "session_start", reason: "startup" }, {
     ui: fakeUi,
     model: { id: "claude-sonnet-4.5" },
-    sessionManager: { getBranch: () => [] },
+    getContextUsage: () => ({ percent: 0, contextWindow: 200000 }),
   });
 
   expect(calls).toEqual(["theme:retro-terminal", "indicator", "footer"]);

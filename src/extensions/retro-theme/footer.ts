@@ -1,4 +1,3 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import {
   truncateToWidth,
@@ -22,28 +21,20 @@ type FooterFactory = (
   footerData: FooterData,
 ) => Component;
 
-type FooterContext = Pick<ExtensionContext, "model" | "sessionManager">;
+type FooterContext = Pick<ExtensionContext, "model" | "getContextUsage">;
 
-function usageStats(ctx: FooterContext): { input: number; output: number; cost: number } {
-  let input = 0;
-  let output = 0;
-  let cost = 0;
-  const branch = ctx.sessionManager?.getBranch?.() ?? [];
-  for (const entry of branch) {
-    if (entry.type !== "message") continue;
-    const message = entry.message as Partial<AssistantMessage>;
-    if (message.role !== "assistant" || !message.usage) continue;
-    input += message.usage.input ?? 0;
-    output += message.usage.output ?? 0;
-    cost += message.usage.cost?.total ?? 0;
-  }
-  return { input, output, cost };
+const CONTEXT_BAR_WIDTH = 16;
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function compactNumber(value: number): string {
-  if (value < 1000) return `${value}`;
-  if (value < 1_000_000) return `${(value / 1000).toFixed(1)}k`;
-  return `${(value / 1_000_000).toFixed(1)}m`;
+function contextBar(ctx: FooterContext): string {
+  const usage = ctx.getContextUsage?.();
+  const percent = clampPercent(usage?.percent ?? 0);
+  const filled = Math.round((percent / 100) * CONTEXT_BAR_WIDTH);
+  return `${"█".repeat(filled)}${"░".repeat(CONTEXT_BAR_WIDTH - filled)} ${percent}% ctx`;
 }
 
 function cleanStatus(status: string): string {
@@ -80,7 +71,6 @@ export function renderClaudeLikeFooterLine(
   theme: Theme,
   footerData: FooterData,
 ): string {
-  const stats = usageStats(ctx);
   const branch = footerData.getGitBranch?.();
   const statuses = extractStatusText(footerData.getExtensionStatuses?.())
     .map(cleanStatus)
@@ -91,8 +81,7 @@ export function renderClaudeLikeFooterLine(
   const leftSegments = [
     "srcode",
     ...statuses,
-    `↑${compactNumber(stats.input)} ↓${compactNumber(stats.output)}`,
-    `$${stats.cost.toFixed(3)}`,
+    contextBar(ctx),
   ];
   const rightSegments = [
     model,
