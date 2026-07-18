@@ -355,7 +355,7 @@ describe("web tool TUI rendering", () => {
     );
     expect(collapsed).toContain("Results: 4");
     expect(collapsed).toContain("https://a.test");
-    expect(collapsed).toContain("... 1 more results");
+    expect(collapsed).toContain("… 1 more results");
     expect(collapsed).toContain("Ctrl+O to expand");
     expect(collapsed).not.toContain("long snippet body");
 

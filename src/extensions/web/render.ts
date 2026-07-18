@@ -1,10 +1,14 @@
 import { Text } from "@earendil-works/pi-tui";
 import {
-  keyHint,
   type AgentToolResult,
   type Theme,
   type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
+import {
+  ELLIPSIS,
+  renderExpandHint,
+  renderToolTitle,
+} from "../ui/rendering.ts";
 import type { FetchedPage } from "./fetch.ts";
 import type { SearchInput, SearchResult } from "./search.ts";
 
@@ -38,13 +42,13 @@ function firstNonEmptyLines(text: string, maxLines: number): string[] {
 }
 
 export function formatWebFetchCall(args: WebFetchArgs | undefined, theme: Theme): string {
-  const url = args?.url ? theme.fg("accent", args.url) : theme.fg("muted", "...");
-  return `${theme.fg("toolTitle", theme.bold("webFetch"))} ${url}`;
+  const url = args?.url ? args.url : ELLIPSIS;
+  return renderToolTitle(theme, "webFetch", url);
 }
 
 export function formatWebSearchCall(args: Pick<SearchInput, "query"> | undefined, theme: Theme): string {
-  const query = args?.query ? theme.fg("accent", args.query) : theme.fg("muted", "...");
-  return `${theme.fg("toolTitle", theme.bold("webSearch"))} ${query}`;
+  const query = args?.query ? args.query : ELLIPSIS;
+  return renderToolTitle(theme, "webSearch", query);
 }
 
 export function formatWebFetchDisplay(
@@ -52,7 +56,7 @@ export function formatWebFetchDisplay(
   options: ToolRenderResultOptions,
   theme: Theme,
   isError: boolean,
-  expandHint = keyHint("app.tools.expand", "to expand"),
+  expandHint = renderExpandHint(theme),
 ): string {
   const output = textOutput(result);
   if (isError || options.expanded) {
@@ -64,12 +68,12 @@ export function formatWebFetchDisplay(
     const status = details.status ? `status ${details.status}` : "fetched";
     const truncated = details.truncated ? ", truncated" : "";
     const contentType = details.contentType ? `, ${details.contentType.split(";")[0]}` : "";
-    return `\n${theme.fg("toolOutput", `${status}: ${details.url}${contentType}${truncated}`)}\n${theme.fg("muted", "(")}${expandHint}${theme.fg("muted", ")")}`;
+    return `\n${theme.fg("toolOutput", `${status}: ${details.url}${contentType}${truncated}`)}\n${expandHint}`;
   }
 
   const preview = firstNonEmptyLines(output, 2).join("\n");
   return preview
-    ? `\n${theme.fg("toolOutput", preview)}\n${theme.fg("muted", "(")}${expandHint}${theme.fg("muted", ")")}`
+    ? `\n${theme.fg("toolOutput", preview)}\n${expandHint}`
     : "";
 }
 
@@ -78,7 +82,7 @@ export function formatWebSearchDisplay(
   options: ToolRenderResultOptions,
   theme: Theme,
   isError: boolean,
-  expandHint = keyHint("app.tools.expand", "to expand"),
+  expandHint = renderExpandHint(theme),
 ): string {
   const output = textOutput(result);
   if (isError || options.expanded) {
@@ -99,10 +103,10 @@ export function formatWebSearchDisplay(
 
   const remaining = results.length - SEARCH_COLLAPSED_RESULTS;
   if (remaining > 0) {
-    lines.push(`... ${remaining} more results`);
+    lines.push(`${ELLIPSIS} ${remaining} more results`);
   }
 
-  return `\n${theme.fg("toolOutput", lines.join("\n"))}\n${theme.fg("muted", "(")}${expandHint}${theme.fg("muted", ")")}`;
+  return `\n${theme.fg("toolOutput", lines.join("\n"))}\n${expandHint}`;
 }
 
 export function renderWebFetchCall(

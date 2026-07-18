@@ -45,7 +45,7 @@ test("todo widget summarizes active work", () => {
     todo("later", "pending"),
   ];
   expect(summarizeTodos(todos)).toBe("1/3 done · 2 active");
-  expect(todoStatusText(todos)).toBe("1/3 done · 2 active -> F7");
+  expect(todoStatusText(todos)).toBe("todos 1/3 · F7");
   expect(todoStatusText([todo("done", "completed")])).toBeUndefined();
 });
 
@@ -94,7 +94,7 @@ test("todo extension registers shortcut and syncs widget status after writes", a
   );
 
   expect(widgets[0]?.[0]).toBe("srcode-todos");
-  expect(statuses.at(-1)).toEqual(["todo", "0/2 done · 2 active -> F7"]);
+  expect(statuses.at(-1)).toEqual(["todo", "todos 0/2 · F7"]);
 });
 
 test("todo extension installs a visible F7 entry on session start", async () => {

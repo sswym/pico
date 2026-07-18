@@ -77,7 +77,7 @@ test("formatTodoList icons reflect status and activeForm in_progress", () => {
     { id: "3", content: "Ship", activeForm: "Shipping", status: "completed" },
   ]);
   expect(out).toContain("⏳ #1 Running tests");
-  expect(out).toContain("☐ #2 Write docs");
+  expect(out).toContain("○ #2 Write docs");
   expect(out).toContain("✓ #3 Ship");
 });
 

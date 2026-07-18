@@ -1,6 +1,13 @@
 import * as os from "node:os";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import {
+	ELLIPSIS,
+	renderExpandHint,
+	renderStatusIcon,
+	truncateWithEllipsis,
+	UI_ICONS,
+} from "../ui/rendering.ts";
 import type { AgentScope } from "./agents.ts";
 import {
 	getDisplayItems,
@@ -46,12 +53,12 @@ function formatToolCall(
 
 	switch (toolName) {
 		case "bash": {
-			const command = (args.command as string) || "...";
-			const preview = command.length > 60 ? `${command.slice(0, 60)}...` : command;
+			const command = (args.command as string) || ELLIPSIS;
+			const preview = truncateWithEllipsis(command, 60);
 			return themeFg("muted", "$ ") + themeFg("toolOutput", preview);
 		}
 		case "read": {
-			const rawPath = (args.file_path || args.path || "...") as string;
+			const rawPath = (args.file_path || args.path || ELLIPSIS) as string;
 			const filePath = shortenPath(rawPath);
 			const offset = args.offset as number | undefined;
 			const limit = args.limit as number | undefined;
@@ -64,7 +71,7 @@ function formatToolCall(
 			return themeFg("muted", "read ") + text;
 		}
 		case "write": {
-			const rawPath = (args.file_path || args.path || "...") as string;
+			const rawPath = (args.file_path || args.path || ELLIPSIS) as string;
 			const filePath = shortenPath(rawPath);
 			const content = (args.content || "") as string;
 			const lines = content.split("\n").length;
@@ -73,7 +80,7 @@ function formatToolCall(
 			return text;
 		}
 		case "edit": {
-			const rawPath = (args.file_path || args.path || "...") as string;
+			const rawPath = (args.file_path || args.path || ELLIPSIS) as string;
 			return themeFg("muted", "edit ") + themeFg("accent", shortenPath(rawPath));
 		}
 		case "ls": {
@@ -92,7 +99,7 @@ function formatToolCall(
 		}
 		default: {
 			const argsStr = JSON.stringify(args);
-			const preview = argsStr.length > 50 ? `${argsStr.slice(0, 50)}...` : argsStr;
+			const preview = truncateWithEllipsis(argsStr, 50);
 			return themeFg("accent", toolName) + themeFg("dim", ` ${preview}`);
 		}
 	}
@@ -108,10 +115,10 @@ export function renderSubagentCall(args: any, theme: any) {
 		for (let i = 0; i < Math.min(args.chain.length, 3); i++) {
 			const step = args.chain[i];
 			const cleanTask = step.task.replace(/\{previous\}/g, "").trim();
-			const preview = cleanTask.length > 40 ? `${cleanTask.slice(0, 40)}...` : cleanTask;
+			const preview = truncateWithEllipsis(cleanTask, 40);
 			text += "\n  " + theme.fg("muted", `${i + 1}.`) + " " + theme.fg("accent", step.agent) + theme.fg("dim", ` ${preview}`);
 		}
-		if (args.chain.length > 3) text += `\n  ${theme.fg("muted", `... +${args.chain.length - 3} more`)}`;
+		if (args.chain.length > 3) text += `\n  ${theme.fg("muted", `${ELLIPSIS} +${args.chain.length - 3} more`)}`;
 		return new Text(text, 0, 0);
 	}
 	if (args.tasks && args.tasks.length > 0) {
@@ -120,14 +127,14 @@ export function renderSubagentCall(args: any, theme: any) {
 			theme.fg("accent", `parallel (${args.tasks.length} tasks)`) +
 			theme.fg("muted", ` [${scope}]`);
 		for (const t of args.tasks.slice(0, 3)) {
-			const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
+			const preview = truncateWithEllipsis(t.task, 40);
 			text += `\n  ${theme.fg("accent", t.agent)}${theme.fg("dim", ` ${preview}`)}`;
 		}
-		if (args.tasks.length > 3) text += `\n  ${theme.fg("muted", `... +${args.tasks.length - 3} more`)}`;
+		if (args.tasks.length > 3) text += `\n  ${theme.fg("muted", `${ELLIPSIS} +${args.tasks.length - 3} more`)}`;
 		return new Text(text, 0, 0);
 	}
-	const agentName = args.agent || "...";
-	const preview = args.task ? (args.task.length > 60 ? `${args.task.slice(0, 60)}...` : args.task) : "...";
+	const agentName = args.agent || ELLIPSIS;
+	const preview = args.task ? truncateWithEllipsis(args.task, 60) : ELLIPSIS;
 	let text =
 		theme.fg("toolTitle", theme.bold("subagent ")) +
 		theme.fg("accent", agentName) +
@@ -161,13 +168,13 @@ export function renderSubagentResult(result: any, expanded: boolean, theme: any)
 		const toShow = limit ? items.slice(-limit) : items;
 		const skipped = limit && items.length > limit ? items.length - limit : 0;
 		let text = "";
-		if (skipped > 0) text += theme.fg("muted", `... ${skipped} earlier items\n`);
+		if (skipped > 0) text += theme.fg("muted", `${ELLIPSIS} ${skipped} earlier items\n`);
 		for (const item of toShow) {
 			if (item.type === "text") {
 				const preview = expanded ? item.text : item.text.split("\n").slice(0, 3).join("\n");
 				text += `${theme.fg("toolOutput", preview)}\n`;
 			} else {
-				text += `${theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme))}\n`;
+				text += `${theme.fg("muted", `${UI_ICONS.toolCall} `) + formatToolCall(item.name, item.args, theme.fg.bind(theme))}\n`;
 			}
 		}
 		return text.trimEnd();
@@ -176,7 +183,7 @@ export function renderSubagentResult(result: any, expanded: boolean, theme: any)
 	if (details.mode === "single" && details.results.length === 1) {
 		const r = details.results[0]!;
 		const isError = isFailedResult(r);
-		const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
+		const icon = renderStatusIcon(theme, isError ? "error" : "success");
 		const displayItems = getDisplayItems(r.messages);
 		const finalOutput = getFinalOutput(r.messages);
 
@@ -196,7 +203,7 @@ export function renderSubagentResult(result: any, expanded: boolean, theme: any)
 			} else {
 				for (const item of displayItems) {
 					if (item.type === "toolCall") {
-						container.addChild(new Text(theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme)), 0, 0));
+						container.addChild(new Text(theme.fg("muted", `${UI_ICONS.toolCall} `) + formatToolCall(item.name, item.args, theme.fg.bind(theme)), 0, 0));
 					}
 				}
 				if (finalOutput) {
@@ -218,7 +225,7 @@ export function renderSubagentResult(result: any, expanded: boolean, theme: any)
 		else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
 		else {
 			text += `\n${renderDisplayItems(displayItems, COLLAPSED_ITEM_COUNT)}`;
-			if (displayItems.length > COLLAPSED_ITEM_COUNT) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+			if (displayItems.length > COLLAPSED_ITEM_COUNT) text += `\n${renderExpandHint(theme)}`;
 		}
 		const usageStr = formatUsageStats(r.usage, r.model);
 		if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
@@ -227,10 +234,10 @@ export function renderSubagentResult(result: any, expanded: boolean, theme: any)
 
 	if (details.mode === "chain") {
 		const successCount = details.results.filter((r) => r.exitCode === 0).length;
-		const icon = successCount === details.results.length ? theme.fg("success", "✓") : theme.fg("error", "✗");
+		const icon = renderStatusIcon(theme, successCount === details.results.length ? "success" : "error");
 		let text = icon + " " + theme.fg("toolTitle", theme.bold("chain ")) + theme.fg("accent", `${successCount}/${details.results.length} steps`);
 		for (const r of details.results) {
-			const rIcon = r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
+			const rIcon = renderStatusIcon(theme, r.exitCode === 0 ? "success" : "error");
 			const displayItems = getDisplayItems(r.messages);
 			const stepLabel = r.label ? r.label : `Step ${r.step}`;
 			const phaseTag = r.phase ? theme.fg("warning", `[${r.phase}] `) : "";
@@ -244,7 +251,7 @@ export function renderSubagentResult(result: any, expanded: boolean, theme: any)
 		}
 		const usageStr = formatUsageStats(aggregateUsage(details.results));
 		if (usageStr) text += `\n\n${theme.fg("dim", `Total: ${usageStr}`)}`;
-		if (!expanded) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+		if (!expanded) text += `\n${renderExpandHint(theme)}`;
 		return new Text(text, 0, 0);
 	}
 
@@ -253,25 +260,24 @@ export function renderSubagentResult(result: any, expanded: boolean, theme: any)
 		const successCount = details.results.filter((r) => r.exitCode !== -1 && !isFailedResult(r)).length;
 		const failCount = details.results.filter((r) => r.exitCode !== -1 && isFailedResult(r)).length;
 		const isRunning = running > 0;
-		const icon = isRunning ? theme.fg("warning", "⏳") : failCount > 0 ? theme.fg("warning", "◐") : theme.fg("success", "✓");
+		const icon = renderStatusIcon(theme, isRunning ? "running" : failCount > 0 ? "partial" : "success");
 		const status = isRunning ? `${successCount + failCount}/${details.results.length} done, ${running} running` : `${successCount}/${details.results.length} tasks`;
 		let text = `${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
 		for (const r of details.results) {
-			const rIcon = r.exitCode === -1 ? theme.fg("warning", "⏳") : isFailedResult(r) ? theme.fg("error", "✗") : theme.fg("success", "✓");
+			const rIcon = renderStatusIcon(theme, r.exitCode === -1 ? "running" : isFailedResult(r) ? "error" : "success");
 			const displayItems = getDisplayItems(r.messages);
 			text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`;
-			if (displayItems.length === 0) text += `\n${theme.fg("muted", r.exitCode === -1 ? "(running...)" : "(no output)")}`;
+			if (displayItems.length === 0) text += `\n${theme.fg("muted", r.exitCode === -1 ? `(running${ELLIPSIS})` : "(no output)")}`;
 			else text += `\n${renderDisplayItems(displayItems, expanded ? undefined : 5)}`;
 		}
 		if (!isRunning) {
 			const usageStr = formatUsageStats(aggregateUsage(details.results));
 			if (usageStr) text += `\n\n${theme.fg("dim", `Total: ${usageStr}`)}`;
 		}
-		if (!expanded) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+		if (!expanded) text += `\n${renderExpandHint(theme)}`;
 		return new Text(text, 0, 0);
 	}
 
 	const text = result.content[0];
 	return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
 }
-

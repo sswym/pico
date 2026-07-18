@@ -26,6 +26,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Spacer, Text, Container } from "@earendil-works/pi-tui";
 import pkg from "../../../package.json" with { type: "json" };
+import { TODO_SHORTCUT_HINT } from "../todo/widget.ts";
 
 // 5-line ASCII logo. Kept in a const so tests can pin it. We use plain
 // string literals with doubled backslashes — `String.raw\`...\\\`` would
@@ -67,7 +68,7 @@ export function renderLogoHeader(theme: {
     theme.fg("muted", " · ") +
     theme.fg("dim", "! bash") +
     theme.fg("muted", " · ") +
-    theme.fg("dim", "F7 todos");
+    theme.fg("dim", `${TODO_SHORTCUT_HINT} todos`);
   if (width < 64) return tagline;
   return `${logo}\n\n${tagline}`;
 }

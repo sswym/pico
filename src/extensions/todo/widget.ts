@@ -11,6 +11,11 @@ import {
 } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import type { Todo } from "./schema.ts";
+import {
+  formatTodoLine,
+  summarizeTodos,
+  summarizeTodosCompact,
+} from "./display.ts";
 
 export const TODO_WIDGET_KEY = "srcode-todos";
 export const TODO_STATUS_KEY = "todo";
@@ -44,22 +49,7 @@ export function resetTodoWidgetStateForTests(): void {
   states.clear();
 }
 
-function todoSymbol(status: Todo["status"]): string {
-  if (status === "completed") return "✓";
-  if (status === "in_progress") return "▶";
-  return "○";
-}
-
-function todoLabel(todo: Todo): string {
-  return todo.status === "in_progress" ? todo.activeForm : todo.content;
-}
-
-export function summarizeTodos(todos: Todo[]): string {
-  if (todos.length === 0) return "No todos";
-  const completed = todos.filter((todo) => todo.status === "completed").length;
-  const active = todos.length - completed;
-  return `${completed}/${todos.length} done · ${active} active`;
-}
+export { summarizeTodos };
 
 function visibleTodoWindow(todos: Todo[]): { todos: Todo[]; start: number; hiddenBefore: number; hiddenAfter: number } {
   if (todos.length <= BODY_WINDOW_LINES) {
@@ -93,14 +83,7 @@ export function buildTodoWidgetLines(todos: Todo[], theme: Theme): string[] {
     for (let i = 0; i < window.todos.length; i++) {
       const todo = window.todos[i]!;
       const index = `${window.start + i + 1}`.padStart(2);
-      const symbol = todoSymbol(todo.status);
-      if (todo.status === "completed") {
-        lines.push(` ${index}. ${theme.fg("success", symbol)} ${theme.fg("dim", todoLabel(todo))}`);
-      } else if (todo.status === "in_progress") {
-        lines.push(` ${index}. ${theme.fg("accent", symbol)} ${theme.fg("accent", theme.bold(todoLabel(todo)))}`);
-      } else {
-        lines.push(` ${index}. ${theme.fg("dim", symbol)} ${todoLabel(todo)}`);
-      }
+      lines.push(` ${index}. ${formatTodoLine(todo, theme)}`);
     }
     if (window.hiddenAfter > 0) lines.push(theme.fg("dim", `… ${window.hiddenAfter} more`));
   }
@@ -112,7 +95,7 @@ export function buildTodoWidgetLines(todos: Todo[], theme: Theme): string[] {
 export function todoStatusText(todos: Todo[]): string | undefined {
   const active = todos.filter((todo) => todo.status !== "completed").length;
   if (active === 0) return undefined;
-  return `${summarizeTodos(todos)} -> ${TODO_SHORTCUT_HINT}`;
+  return `todos ${summarizeTodosCompact(todos)} · ${TODO_SHORTCUT_HINT}`;
 }
 
 function sessionKey(ctx: { sessionManager?: { getSessionId?: () => string | undefined } }): string {
