@@ -8,7 +8,7 @@
  * or extension event wiring (requires running language servers).
  */
 import { afterEach, beforeEach, expect, test, describe } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { applyTextEditsToString } from "../src/extensions/lsp/edits.ts";
@@ -27,6 +27,7 @@ import {
 import { isLspReadonlyToolCall, isLspWriteOrHighRiskToolCall, lspExtension, resolveSessionFilePath } from "../src/extensions/lsp/index.ts";
 import {
   __checkInitBackoffForTests,
+  __getUnsupportedServerCommandReasonForTests,
   __recordInitFailureForTests,
   createLspManager,
   loadConfig,
@@ -237,6 +238,27 @@ describe("LspManager runtime state", () => {
 
     expect(() => __checkInitBackoffForTests(a, "tsserver")).toThrow(/failed to start recently/);
     expect(() => __checkInitBackoffForTests(b, "tsserver")).not.toThrow();
+  });
+
+  test("typescript-native skips tsc commands without native LSP support", () => {
+    const dir = mkdtempSync(join(tmpdir(), "srcode-lsp-probe-"));
+    const oldTsc = join(dir, "old-tsc");
+    const nativeTsc = join(dir, "native-tsc");
+
+    try {
+      writeFileSync(oldTsc, "#!/bin/sh\necho 'Version 5.9.0'\n", "utf8");
+      writeFileSync(nativeTsc, "#!/bin/sh\necho 'Options: --lsp --stdio'\n", "utf8");
+      chmodSync(oldTsc, 0o755);
+      chmodSync(nativeTsc, 0o755);
+
+      expect(__getUnsupportedServerCommandReasonForTests("typescript-native", oldTsc, dir)).toContain(
+        "does not advertise TypeScript native LSP support",
+      );
+      expect(__getUnsupportedServerCommandReasonForTests("typescript-native", nativeTsc, dir)).toBeNull();
+      expect(__getUnsupportedServerCommandReasonForTests("typescript-language-server", oldTsc, dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("idle timeout checker is stored per manager state", async () => {

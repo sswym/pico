@@ -5,6 +5,7 @@
  * when first needed. Supports multiple concurrent servers per file type.
  */
 import { readFileSync, readdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join, extname } from "node:path";
 import type { LspServerConfig, LspConfig } from "./config.ts";
 import { loadConfig, getServersForFile, detectServers, resolveCommand } from "./config.ts";
@@ -69,6 +70,25 @@ function checkInitBackoff(state: LspManagerState, serverName: string): void {
 
 function recordInitFailure(state: LspManagerState, serverName: string, message: string): void {
   state.runtime.initFailures.set(serverName, { at: Date.now(), message });
+}
+
+function getUnsupportedServerCommandReason(serverName: string, command: string, cwd: string): string | null {
+  if (serverName !== "typescript-native") return null;
+
+  const probe = spawnSync(command, ["--help", "--all"], {
+    cwd,
+    encoding: "utf8",
+    timeout: 2_000,
+  });
+  if (probe.error) {
+    const errno = probe.error as NodeJS.ErrnoException;
+    if (errno.code === "ENOENT") return null;
+    return `Command "${command}" probe failed: ${probe.error.message}`;
+  }
+
+  const output = `${probe.stdout ?? ""}\n${probe.stderr ?? ""}`;
+  if (output.includes("--lsp")) return null;
+  return `Command "${command}" does not advertise TypeScript native LSP support (--lsp).`;
 }
 
 // ── Type guards for Hover contents ────────────────────────────────────────
@@ -299,8 +319,15 @@ export async function ensureServer(
       continue;
     }
 
+    const resolvedCommand = resolveCommand(serverConfig.command, workspaceRoot) ?? serverConfig.command;
+    const unsupportedReason = getUnsupportedServerCommandReason(name, resolvedCommand, workspaceRoot);
+    if (unsupportedReason) {
+      recordInitFailure(state, name, unsupportedReason);
+      continue;
+    }
+
     const client = new LspClient(
-      { language: name, extensions: serverConfig.fileTypes, command: serverConfig.command, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
+      { language: name, extensions: serverConfig.fileTypes, command: resolvedCommand, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
       name,
     );
 
@@ -317,11 +344,6 @@ export async function ensureServer(
 
     managed.initializing = (async () => {
       try {
-        const resolvedCommand = resolveCommand(serverConfig.command, workspaceRoot) ?? serverConfig.command;
-        managed.client = new LspClient(
-          { language: name, extensions: serverConfig.fileTypes, command: resolvedCommand, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
-          name,
-        );
         await managed.client.initialize(workspaceRoot);
         managed.lastActivity = Date.now();
         prewarmProject(managed, workspaceRoot);
@@ -379,9 +401,15 @@ export async function ensureNamedServer(
 
   // Start this server
   checkInitBackoff(state, name);
+  const resolvedCommand = resolveCommand(serverConfig.command, workspaceRoot) ?? serverConfig.command;
+  const unsupportedReason = getUnsupportedServerCommandReason(name, resolvedCommand, workspaceRoot);
+  if (unsupportedReason) {
+    recordInitFailure(state, name, unsupportedReason);
+    return null;
+  }
 
   const client = new LspClient(
-    { language: name, extensions: serverConfig.fileTypes, command: serverConfig.command, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
+    { language: name, extensions: serverConfig.fileTypes, command: resolvedCommand, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
     name,
   );
 
@@ -444,6 +472,10 @@ export function __recordInitFailureForTests(state: LspManagerState, serverName: 
 
 export function __checkInitBackoffForTests(state: LspManagerState, serverName: string): void {
   checkInitBackoff(state, serverName);
+}
+
+export function __getUnsupportedServerCommandReasonForTests(serverName: string, command: string, cwd: string): string | null {
+  return getUnsupportedServerCommandReason(serverName, command, cwd);
 }
 
 /** Get all ready clients. */
