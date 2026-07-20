@@ -1,6 +1,6 @@
 /**
  * logo extension — replaces pi-coding-agent's built-in startup header with
- * srcode's ASCII logo + a one-line keybinding strip.
+ * a compact Claude Code-like srcode header + a one-line keybinding strip.
  *
  * Why a custom header (not just an extra widget):
  *   pi's default header already renders "pi v0.79.3" + the long hint block.
@@ -47,9 +47,8 @@ export const LOGO = LOGO_LINES.join("\n");
  * extension wraps this in a Text component via setHeader().
  *
  * Format:
- *   <accent logo, 5 lines>
- *   <blank>
- *   srcode v<srcode-version> · / commands · ! bash
+ *   ✻ srcode v<srcode-version>
+ *   / commands · ! bash · F7 todos
  *
  * Colours degrade gracefully — the upstream `theme.fg` is a no-op when the
  * terminal can't render ANSI.
@@ -58,19 +57,19 @@ export function renderLogoHeader(theme: {
   fg: (color: string, text: string) => string;
   bold: (text: string) => string;
 }, width = 80): string {
-  const logo = LOGO_LINES.map((line) => theme.bold(theme.fg("accent", line))).join("\n");
   const srcodeVersion = (pkg as { version?: string }).version ?? "0.0.0";
-  const tagline =
+  const brand =
+    theme.fg("accent", "✻ ") +
     theme.bold(theme.fg("accent", "srcode")) +
     theme.fg("dim", ` v${srcodeVersion}`) +
-    theme.fg("muted", " · ") +
+    (width >= 64 ? theme.fg("muted", " · vibe coding agent") : "");
+  const hints =
     theme.fg("dim", "/ commands") +
     theme.fg("muted", " · ") +
     theme.fg("dim", "! bash") +
     theme.fg("muted", " · ") +
     theme.fg("dim", `${TODO_SHORTCUT_HINT} todos`);
-  if (width < 64) return tagline;
-  return `${logo}\n\n${tagline}`;
+  return `${brand}\n${hints}`;
 }
 
 export const logoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
@@ -81,7 +80,6 @@ export const logoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       // spacing if needed without touching pi's layout.
       const container = new Container();
       const width = (tui as { terminal?: { columns?: number } } | undefined)?.terminal?.columns ?? 80;
-      container.addChild(new Spacer(1));
       container.addChild(new Text(renderLogoHeader(theme, width), 1, 0));
       container.addChild(new Spacer(1));
       return container;

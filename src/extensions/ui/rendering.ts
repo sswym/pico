@@ -9,9 +9,9 @@ export const ELLIPSIS = "…";
 export const UI_ICONS = {
   success: "✓",
   error: "✗",
-  running: "⏳",
+  running: "●",
   partial: "◐",
-  toolCall: "→",
+  toolCall: "›",
   tool: "•",
   pending: "○",
 } as const;
@@ -22,12 +22,12 @@ export function truncateWithEllipsis(text: string, maxLength: number): string {
 }
 
 export function renderToolTitle(theme: Theme, toolName: string, summary?: string): string {
-  const title = `${theme.fg("muted", `${UI_ICONS.tool} `)}${theme.fg("toolTitle", theme.bold(toolName))}`;
-  return summary ? `${title} ${theme.fg("accent", summary)}` : title;
+  const title = `${theme.fg("dim", `${UI_ICONS.tool} `)}${theme.fg("toolTitle", theme.bold(toolName))}`;
+  return summary ? `${title} ${theme.fg("muted", summary)}` : title;
 }
 
 export function renderExpandHint(theme: Theme): string {
-  return `${theme.fg("muted", "(")}${theme.fg("dim", keyText("app.tools.expand"))}${theme.fg("muted", " to expand)")}`;
+  return theme.fg("dim", `${keyText("app.tools.expand")} to expand`);
 }
 
 export function renderStatusIcon(

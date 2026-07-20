@@ -4,7 +4,7 @@
  * The header is a TUI component, so we don't render it pixel-for-pixel.
  * We just verify:
  *   1. Logo registers a session_start handler (and nothing else).
- *   2. The 5 ASCII-art lines survive the full render path.
+ *   2. The compact Claude-like header survives the full render path.
  *   3. The handler calls ctx.ui.setHeader with a factory that returns a
  *      Container holding our Text. We exercise the factory with a stub
  *      theme to make sure no upstream API was called wrong.
@@ -26,9 +26,10 @@ test("LOGO has 5 lines and contains the srcode silhouette", () => {
   expect(lines[3]).toContain("|_/|");
 });
 
-test("renderLogoHeader inlines the logo + a single-line tagline", () => {
+test("renderLogoHeader renders a compact Claude-like header", () => {
   const out = renderLogoHeader(stubTheme);
-  expect(out).toContain(LOGO);
+  expect(out).not.toContain(LOGO);
+  expect(out).toContain("✻ srcode");
   expect(out).toContain("srcode v");
   expect(out).toContain("/ commands");
   expect(out).toContain("! bash");
@@ -38,6 +39,7 @@ test("renderLogoHeader inlines the logo + a single-line tagline", () => {
 test("renderLogoHeader uses a compact header on narrow terminals", () => {
   const out = renderLogoHeader(stubTheme, 48);
   expect(out).not.toContain(LOGO);
+  expect(out).not.toContain("vibe coding agent");
   expect(out).toContain("srcode v");
   expect(out).toContain("F7 todos");
 });
@@ -81,11 +83,10 @@ test("session_start handler installs a header factory that renders the logo", ()
   expect(typeof capturedFactory).toBe("function");
 
   // Render the factory: should produce a Container with at least one Text
-  // child carrying the logo. We don't snapshot the full tree — just check
-  // the rendered string output covers a known logo line.
+  // child carrying the compact header.
   const component = capturedFactory({ terminal: { columns: 80 } }, stubTheme);
   const lines = component.render(80);
   const joined = lines.join("\n");
-  expect(joined).toContain("|_/|"); // unique to LOGO line 4
+  expect(joined).toContain("✻ srcode");
   expect(joined).toContain("F7 todos");
 });

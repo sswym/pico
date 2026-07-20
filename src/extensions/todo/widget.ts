@@ -70,13 +70,13 @@ function visibleTodoWindow(todos: Todo[]): { todos: Todo[]; start: number; hidde
 
 export function buildTodoWidgetLines(todos: Todo[], theme: Theme): string[] {
   const lines = [
-    theme.fg("accent", theme.bold("Todos")),
+    theme.fg("accent", theme.bold("todos")),
     theme.fg("dim", summarizeTodos(todos)),
     "",
   ];
 
   if (todos.length === 0) {
-    lines.push(theme.fg("dim", "No active todos."));
+    lines.push(theme.fg("dim", "no active todos"));
   } else {
     const window = visibleTodoWindow(todos);
     if (window.hiddenBefore > 0) lines.push(theme.fg("dim", `… ${window.hiddenBefore} completed`));
@@ -88,14 +88,14 @@ export function buildTodoWidgetLines(todos: Todo[], theme: Theme): string[] {
     if (window.hiddenAfter > 0) lines.push(theme.fg("dim", `… ${window.hiddenAfter} more`));
   }
 
-  lines.push("", theme.fg("dim", `${TODO_SHORTCUT_HINT}, Enter, or Esc to collapse`));
+  lines.push("", theme.fg("dim", `${TODO_SHORTCUT_HINT} / Enter / Esc collapse`));
   return lines.slice(0, MAX_WIDGET_LINES);
 }
 
 export function todoStatusText(todos: Todo[]): string | undefined {
   const active = todos.filter((todo) => todo.status !== "completed").length;
   if (active === 0) return undefined;
-  return `todos ${summarizeTodosCompact(todos)} · ${TODO_SHORTCUT_HINT}`;
+  return `todos ${summarizeTodosCompact(todos)} ${TODO_SHORTCUT_HINT}`;
 }
 
 function sessionKey(ctx: { sessionManager?: { getSessionId?: () => string | undefined } }): string {

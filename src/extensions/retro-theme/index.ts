@@ -16,6 +16,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import retroTheme from "../../theme/retro-terminal.json" with { type: "json" };
 import { srcodeAgentHome } from "../paths.ts";
+import { installClaudeLikeFooter } from "./footer.ts";
 
 export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.on("session_start", async (_event, ctx) => {
@@ -49,11 +50,12 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     // A two-frame pulse using the Claude-purple accent.
     ctx.ui.setWorkingIndicator({
       frames: [
-        ctx.ui.theme.fg("dim", "●"),
+        ctx.ui.theme.fg("dim", "·"),
         ctx.ui.theme.fg("accent", "●"),
       ],
       intervalMs: 600,
     });
 
+    installClaudeLikeFooter(ctx);
   });
 };
