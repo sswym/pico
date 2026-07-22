@@ -8,10 +8,22 @@
 bun install
 bun run bin/srcode.ts            # 交互式 TUI
 bun run bin/srcode.ts -p "修复 foo.test.ts 中失败的测试"
+bun run bin/srcode.ts setup      # 交互式初始化配置
+bun run bin/srcode.ts setup --non-interactive
 bun run bin/srcode.ts --help     # 查看所有上游标志
 ```
 
 执行 `bun link`（或发布后），`srcode` 命令即可在 `$PATH` 中直接使用。
+
+首次使用建议运行 `srcode setup`。它会写入 `~/.srcode/agent/settings.json`，可选写入 `~/.srcode/agent/models.json`，并支持按 section 单独配置：
+
+```text
+srcode setup model
+srcode setup tools
+srcode setup safety
+srcode setup ui
+srcode setup --reset
+```
 
 ## 上游能力（开箱即用）
 
@@ -25,7 +37,10 @@ bun run bin/srcode.ts --help     # 查看所有上游标志
 
 ### 1. 长期记忆（`memory` 工具 + `/memory` 命令）
 
-底层使用单个 SQLite 文件，位于 `~/.srcode/memory.db`（可通过 `$SRCODE_MEMORY_DB` 覆盖；亦可通过 `$SRCODE_HOME` 重定位整个 srcode 数据根目录）。Schema 是对 hermes-agent 全息存储 (`~/hermes-agent/plugins/memory/holographic/`) 的精简移植——包含 `category`、`tags`、`trust_score` 与 FTS5 镜像——但暂不含 HRR 层（计划在 v2 加入）。
+记忆系统分为两层：
+
+- **结构化 facts**：默认内置 provider，底层使用单个 SQLite 文件，位于 `~/.srcode/memory.db`（可通过 `$SRCODE_MEMORY_DB` 覆盖；亦可通过 `$SRCODE_HOME` 重定位整个 srcode 数据根目录）。Schema 是对 hermes-agent 全息存储 (`~/hermes-agent/plugins/memory/holographic/`) 的精简移植——包含 `category`、`tags`、`trust_score` 与 FTS5 镜像——但暂不含 HRR 层（计划在 v2 加入）。
+- **curated notes**：短小稳定的人工/自动备注，文件位于 `~/.srcode/memories/MEMORY.md` 与 `~/.srcode/memories/USER.md`。会话启动时生成冻结快照注入系统提示词；会话中新增备注会写盘并进入后续会话，但不会改写本轮已经注入的快照。
 
 **9 类事实**（按提取优先级排列）：
 
@@ -54,6 +69,10 @@ bun run bin/srcode.ts --help     # 查看所有上游标志
 | `update` | `fact_id` | 编辑内容/分类/标签 |
 | `remove` | `fact_id` | 删除 |
 | `feedback` | `fact_id`, `helpful` | 信任度 ±0.05 / ±0.10 |
+| `note_add` | `content` | 写入 curated note（可选 `target=memory|user`） |
+| `note_list` | — | 列出 curated notes |
+| `note_replace` | `old_text`, `content` | 替换已有 curated note |
+| `note_remove` | `old_text` | 删除匹配的 curated note |
 
 **纠正链接**：当 `add` 时指定 `correction_of=<原始 fact_id>`，原始事实信任度 -0.30，纠正事实以 0.70 高信任值插入，确保纠正立即浮现在原始事实之上。
 
@@ -65,11 +84,19 @@ bun run bin/srcode.ts --help     # 查看所有上游标志
 /memory search [--scope global|project] bun
 /memory add user_pref 我偏好简洁的输出
 /memory add failure --scope project localStorage tokens 有 XSS 漏洞
+/memory notes list
+/memory notes add --target user 我偏好中文回答
+/memory notes replace --target memory "旧项目约定" "新项目约定"
 /memory remove 4
 /memory clear
+/memory status
+/memory setup builtin
+/memory off
 ```
 
-每轮对话会向系统提示词追加一段短头部，并在用户消息命中已存储事实时插入 `## Recalled memory` 块。**实时纠正检测**：`turn_end` 事件中立即匹配纠正模式并存储，无需等到会话结束。会话结束时，`src/extensions/memory/extract.ts` 中的正则引擎从用户消息中提取各类模式（偏好/决策/纠正/失败/洞察/约定/工具怪癖）并自动持久化。
+`/memory status` 显示当前 backend、数据库路径、provider 与可用工具；`/memory setup <provider>` 将选择写入 `~/.srcode/agent/settings.json`；`/memory off` 会关闭记忆 backend。当前内置 provider 为 `builtin`，并保留 `holographic` provider 工厂接口用于后续扩展或外部 provider 接入。
+
+每轮对话会向系统提示词追加一段短头部、curated notes 快照，并在用户消息命中已存储事实时插入 `## Recalled memory` 块。**实时纠正检测**：`turn_end` 事件中立即匹配纠正模式并存储，无需等到会话结束。会话结束时，`src/extensions/memory/extract.ts` 中的正则引擎从用户消息中提取各类模式（偏好/决策/纠正/失败/洞察/约定/工具怪癖）并自动持久化；curated notes 也会提取适合长期保留的短备注。
 
 **敏感信息扫描**：存储前自动检测 AWS Access Key、GitHub Token、SSH Private Key、通用 API Key 等模式，匹配则拒绝存储并报错，防止密钥泄露。
 
@@ -233,9 +260,11 @@ srcode 支持连接外部 MCP（Model Context Protocol）服务器，自动发�
 - 每个 MCP 工具注册为一个独立的 pi 工具，LLM 可直接调用
 - 工具调用通过 JSON-RPC 2.0 stdio 转发至 MCP 服务器
 - 单服务器故障不影响其他服务器，超时 30 秒
+- 状态栏显示 MCP 连接数量与失败数量
+- server stderr 与协议解析错误会收集为最近诊断，不直接写终端，避免破坏 TUI 输入区
 - 会话结束时自动清理子进程
 
-用户命令：`/mcp` 可查看所有已连接 MCP 服务器的状态、版本和已注册工具列表。
+用户命令：`/mcp` 可查看所有已连接 MCP 服务器的状态、版本、已注册工具列表与最近诊断。
 
 ### 14. LSP 代码智能（`lsp` 工具）
 
@@ -304,6 +333,7 @@ srcode/
 │   │   ├── events.ts   # 扩展间轻量事件总线
 │   │   └── vibe.ts     # 将 vibe-system.md 追加到系统提示词
 │   ├── prompts/vibe-system.md
+│   ├── setup/index.ts
 │   ├── skills/{verify,recap,agents-init}/SKILL.md
 │   └── types/markdown.d.ts
 └── tests/
@@ -315,6 +345,7 @@ srcode/
     ├── mcp.test.ts      # MCP 扩展工厂、session cwd、失败隔离
     ├── memory.test.ts   # SQLite store、检索、project scope、extract、provider hooks
     ├── plan.test.ts     # tool_call 拦截 + ExitPlanMode 流程
+    ├── setup.test.ts    # setup CLI 参数、非交互默认配置、自定义 provider、reset
     ├── skills.test.ts   # 内置技能加载并包含非空描述
     ├── subagent.test.ts # 工厂连线、代理发现、runner/process/chain/parallel/fallback/output/worktree/gate 逻辑
     ├── todo.test.ts     # 9 个用例——id 分配、折叠、不变量
