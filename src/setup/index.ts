@@ -1,11 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as defaultInput, stdout as defaultOutput } from "node:process";
-import { srcodeHome, srcodeModelsPath, srcodeSettingsPath } from "../extensions/paths.ts";
+import { srcodeHome, srcodeLspConfigPath, srcodeMcpConfigPath, srcodeModelsPath, srcodeSettingsPath } from "../extensions/paths.ts";
 import type { Settings } from "../extensions/settings.ts";
 
-export type SetupSection = "model" | "tools" | "safety" | "ui";
+export type SetupSection = "model" | "tools" | "safety" | "ui" | "memory" | "lsp" | "hooks" | "mcp" | "env";
 type SetupLanguage = "zh" | "en";
 
 export interface SetupCliOptions {
@@ -13,6 +13,8 @@ export interface SetupCliOptions {
   nonInteractive: boolean;
   reset: boolean;
   help: boolean;
+  quick: boolean;
+  reconfigure: boolean;
   error?: string;
 }
 
@@ -40,7 +42,14 @@ interface SetupIo {
   output: NodeJS.WritableStream;
 }
 
-const SETUP_SECTIONS: SetupSection[] = ["model", "tools", "safety", "ui"];
+interface SetupSectionMeta {
+  key: SetupSection;
+  title: string;
+  summary: (settings: JsonObject) => string | undefined;
+  isConfigured: (settings: JsonObject) => boolean;
+}
+
+const SETUP_SECTIONS: SetupSection[] = ["model", "tools", "safety", "ui", "memory", "lsp", "hooks", "mcp", "env"];
 
 const KNOWN_PROVIDERS: ProviderChoice[] = [
   { id: "anthropic", label: "Anthropic", envName: "ANTHROPIC_API_KEY", defaultModel: "claude-opus-4-8" },
@@ -58,7 +67,28 @@ const ENV_KEYS_MANAGED_BY_SETUP = new Set([
   "SRCODE_SEARCH_PROVIDER",
   "SRCODE_VISION_PROVIDER",
   "SRCODE_VISION_MODEL",
+  "SRCODE_MEMORY_DB",
+  "SRCODE_MEMORY_DENY",
+  "SRCODE_RTK",
+  "SRCODE_RTK_VERBOSE",
 ]);
+
+const MEMORY_BACKENDS = ["builtin", "holographic"] as const;
+const HOOK_EVENTS = ["PreToolUse", "PostToolUse", "PreSessionEnd", "PostUserMessage"] as const;
+const KNOWN_ENV_KEYS = [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GEMINI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "TAVILY_API_KEY",
+  "SRCODE_SEARCH_PROVIDER",
+  "SRCODE_VISION_PROVIDER",
+  "SRCODE_VISION_MODEL",
+  "SRCODE_MEMORY_DB",
+  "SRCODE_MEMORY_DENY",
+  "SRCODE_RTK",
+  "SRCODE_RTK_VERBOSE",
+];
 
 const SAFETY_DEFAULTS = {
   allowUnattendedPlanApproval: false,
@@ -66,6 +96,63 @@ const SAFETY_DEFAULTS = {
   enableProjectHooks: false,
   enableProjectMcp: false,
 };
+
+const SETUP_SECTION_META: SetupSectionMeta[] = [
+  {
+    key: "model",
+    title: "Model & Provider",
+    summary: summarizeModelSection,
+    isConfigured: hasModelSection,
+  },
+  {
+    key: "tools",
+    title: "Tools",
+    summary: summarizeToolsSection,
+    isConfigured: hasToolsSection,
+  },
+  {
+    key: "safety",
+    title: "Safety",
+    summary: summarizeSafetySection,
+    isConfigured: hasSafetySection,
+  },
+  {
+    key: "ui",
+    title: "UI",
+    summary: summarizeUiSection,
+    isConfigured: hasUiSection,
+  },
+  {
+    key: "memory",
+    title: "Memory",
+    summary: summarizeMemorySection,
+    isConfigured: hasMemorySection,
+  },
+  {
+    key: "lsp",
+    title: "LSP",
+    summary: summarizeLspSection,
+    isConfigured: hasLspSection,
+  },
+  {
+    key: "hooks",
+    title: "Hooks",
+    summary: summarizeHooksSection,
+    isConfigured: hasHooksSection,
+  },
+  {
+    key: "mcp",
+    title: "MCP",
+    summary: summarizeMcpSection,
+    isConfigured: hasMcpSection,
+  },
+  {
+    key: "env",
+    title: "Environment",
+    summary: summarizeEnvSection,
+    isConfigured: hasEnvSection,
+  },
+];
 
 const TEXT = {
   en: {
@@ -102,6 +189,30 @@ const TEXT = {
     unattendedPlan: "Allow non-interactive plan approvals?",
     uiHeader: "UI",
     responseLanguage: "Response language",
+    memoryHeader: "Memory",
+    memoryBackend: "Memory backend",
+    memoryDeny: "Memory deny patterns (comma-separated regex fragments)",
+    lspHeader: "LSP",
+    lspFormatOnWrite: "User LSP formatOnWrite?",
+    lspIdleTimeout: "User LSP idle timeout in milliseconds",
+    lspConfig: "LSP config",
+    hooksHeader: "Hooks",
+    hookConfig: "User hooks config",
+    createHook: "Add a user hook?",
+    hookEvent: "Hook event",
+    hookTool: "Tool name filter",
+    hookCommand: "Shell command",
+    hookBlocking: "Block PreToolUse when command fails?",
+    mcpHeader: "MCP",
+    mcpConfig: "User MCP config",
+    createMcp: "Add a user MCP server?",
+    mcpName: "MCP server name",
+    mcpCommand: "MCP server command",
+    mcpArgs: "MCP server args (space-separated)",
+    envHeader: "Environment",
+    envKey: "Environment variable key",
+    envValue: "Environment variable value",
+    addEnv: "Add or update a settings env variable?",
     leaveKeep: "leave empty to keep current",
     leaveSkip: "leave empty to skip",
     invalidYesNo: "Please enter y or n.",
@@ -110,7 +221,11 @@ const TEXT = {
     models: "models",
     defaultModelSummary: "default model",
     settingsEnv: "settings env",
+    memory: "memory",
     vision: "vision",
+    lspConfigSummary: "LSP config",
+    hooksConfigSummary: "hooks config",
+    mcpConfigSummary: "MCP config",
     customProviders: "custom providers",
     nextStep: "Run srcode to start, or use /doctor inside srcode to inspect the active settings.",
   },
@@ -148,6 +263,30 @@ const TEXT = {
     unattendedPlan: "允许非交互模式自动批准计划？",
     uiHeader: "界面",
     responseLanguage: "agent 回复语言",
+    memoryHeader: "记忆",
+    memoryBackend: "记忆 backend",
+    memoryDeny: "记忆拒写模式（逗号分隔的正则片段）",
+    lspHeader: "LSP",
+    lspFormatOnWrite: "用户级 LSP formatOnWrite？",
+    lspIdleTimeout: "用户级 LSP 空闲超时（毫秒）",
+    lspConfig: "LSP 配置文件",
+    hooksHeader: "Hooks",
+    hookConfig: "用户级 hooks 配置文件",
+    createHook: "添加用户级 hook？",
+    hookEvent: "Hook 事件",
+    hookTool: "工具名过滤",
+    hookCommand: "Shell 命令",
+    hookBlocking: "PreToolUse 命令失败时阻断？",
+    mcpHeader: "MCP",
+    mcpConfig: "用户级 MCP 配置文件",
+    createMcp: "添加用户级 MCP server？",
+    mcpName: "MCP server 名称",
+    mcpCommand: "MCP server 命令",
+    mcpArgs: "MCP server 参数（空格分隔）",
+    envHeader: "环境变量",
+    envKey: "环境变量名",
+    envValue: "环境变量值",
+    addEnv: "添加或更新 settings env 变量？",
     leaveKeep: "留空保留当前值",
     leaveSkip: "留空跳过",
     invalidYesNo: "请输入 y 或 n。",
@@ -156,7 +295,11 @@ const TEXT = {
     models: "模型配置",
     defaultModelSummary: "默认模型",
     settingsEnv: "settings env",
+    memory: "记忆",
     vision: "视觉模型",
+    lspConfigSummary: "LSP 配置",
+    hooksConfigSummary: "hooks 配置",
+    mcpConfigSummary: "MCP 配置",
     customProviders: "自定义提供商",
     nextStep: "运行 srcode 启动；也可以在 srcode 内使用 /doctor 检查当前设置。",
   },
@@ -169,6 +312,8 @@ export function parseSetupArgs(args: string[]): SetupCliOptions | undefined {
     nonInteractive: false,
     reset: false,
     help: false,
+    quick: false,
+    reconfigure: false,
   };
 
   for (const arg of args.slice(1)) {
@@ -178,6 +323,10 @@ export function parseSetupArgs(args: string[]): SetupCliOptions | undefined {
       options.nonInteractive = true;
     } else if (arg === "--reset") {
       options.reset = true;
+    } else if (arg === "--quick") {
+      options.quick = true;
+    } else if (arg === "--reconfigure") {
+      options.reconfigure = true;
     } else if (SETUP_SECTIONS.includes(arg as SetupSection)) {
       if (options.section) options.error = `setup section can only be provided once: ${arg}`;
       else options.section = arg as SetupSection;
@@ -191,7 +340,7 @@ export function parseSetupArgs(args: string[]): SetupCliOptions | undefined {
 
 export function setupUsage(): string {
   return [
-    "Usage: srcode setup [model|tools|safety|ui] [--non-interactive] [--reset]",
+    "Usage: srcode setup [model|tools|safety|ui|memory|lsp|hooks|mcp|env] [--non-interactive] [--reset] [--quick] [--reconfigure]",
     "",
     "Interactive setup wizard for srcode.",
     "",
@@ -200,10 +349,17 @@ export function setupUsage(): string {
     "  tools   Configure web search and auxiliary vision model",
     "  safety  Configure srcode safety switches",
     "  ui      Configure response language",
+    "  memory  Configure memory backend and memory-related env",
+    "  lsp     Configure user LSP options",
+    "  hooks   Configure user hooks file and project hook safety switch",
+    "  mcp     Configure user MCP servers file and project MCP safety switch",
+    "  env     Configure settings.json env variables hydrated at startup",
     "",
     "Options:",
     "  --non-interactive  Write safe defaults and import existing environment values",
     "  --reset            Remove setup-managed settings from settings.json",
+    "  --quick            Skip already-configured sections",
+    "  --reconfigure      Force every section to run again",
     "  -h, --help         Show this help",
   ].join("\n");
 }
@@ -240,18 +396,20 @@ export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
     language = await chooseSetupLanguage(io);
     io.output.write("\x1b[2J\x1b[H");
     const prompt = new SetupPrompter(io, language);
-    const text = TEXT[language];
-    printHeader(io, text.setupTitle);
-    writeLine(io, `${text.home}: ${srcodeHome()}`);
-    writeLine(io, `${text.settings}: ${srcodeSettingsPath()}`);
-    writeLine(io, "");
+    const selectedSections = options.section
+      ? [getSectionMeta(options.section)]
+      : SETUP_SECTION_META;
 
-    if (options.section) {
-      await runSection(options.section, prompt, io);
-    } else {
-      for (const section of SETUP_SECTIONS) {
-        await runSection(section, prompt, io);
+    printSetupIntro(io, language);
+
+    for (const meta of selectedSections) {
+      if (!meta) continue;
+      const settings = readJson(srcodeSettingsPath());
+      if (!options.reconfigure && options.quick && meta.isConfigured(settings)) {
+        printSectionSummary(io, language, meta, settings);
+        continue;
       }
+      await runSection(meta.key, prompt, io);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -285,6 +443,16 @@ class SetupPrompter {
       const answer = await rl.question(`${question}${suffix}: `);
       const value = sanitizeInput(answer).trim();
       return value.length > 0 ? value : undefined;
+    });
+  }
+
+  async optionalValue(question: string, defaultValue?: string): Promise<string | undefined> {
+    const suffix = defaultValue ? ` [${defaultValue}]` : ` [${TEXT[this.language].leaveSkip}]`;
+    return await withReadline(this.io, async (rl) => {
+      const answer = await rl.question(`${question}${suffix}: `);
+      const value = sanitizeInput(answer).trim();
+      if (value.length > 0) return value;
+      return defaultValue === undefined ? undefined : defaultValue;
     });
   }
 
@@ -426,6 +594,30 @@ async function runSection(section: SetupSection, prompt: SetupPrompter, io: Setu
   if (section === "tools") await runToolsSetup(prompt, io);
   if (section === "safety") await runSafetySetup(prompt, io);
   if (section === "ui") await runUiSetup(prompt, io);
+  if (section === "memory") await runMemorySetup(prompt, io);
+  if (section === "lsp") await runLspSetup(prompt, io);
+  if (section === "hooks") await runHooksSetup(prompt, io);
+  if (section === "mcp") await runMcpSetup(prompt, io);
+  if (section === "env") await runEnvSetup(prompt, io);
+}
+
+function getSectionMeta(section: SetupSection): SetupSectionMeta | undefined {
+  return SETUP_SECTION_META.find((item) => item.key === section);
+}
+
+function printSetupIntro(io: SetupIo, language: SetupLanguage): void {
+  const text = TEXT[language];
+  printHeader(io, text.setupTitle);
+  writeLine(io, `${text.home}: ${srcodeHome()}`);
+  writeLine(io, `${text.settings}: ${srcodeSettingsPath()}`);
+  writeLine(io, "");
+}
+
+function printSectionSummary(io: SetupIo, language: SetupLanguage, meta: SetupSectionMeta, settings: JsonObject): void {
+  const summary = meta.summary(settings);
+  if (summary) {
+    writeLine(io, `${meta.title}: ${summary}`);
+  }
 }
 
 async function runModelSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
@@ -553,6 +745,209 @@ async function runUiSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   writeJson(srcodeSettingsPath(), settings);
 }
 
+async function runMemorySetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
+  const text = TEXT[prompt.language];
+  printHeader(io, text.memoryHeader);
+  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const memory = objectSetting(settings.memory);
+  const currentBackend = stringSetting(memory.backend) ?? "builtin";
+  const backendIndex = Math.max(0, MEMORY_BACKENDS.indexOf(currentBackend as typeof MEMORY_BACKENDS[number]));
+  memory.backend = MEMORY_BACKENDS[await prompt.choice(text.memoryBackend, [...MEMORY_BACKENDS], backendIndex)]!;
+  settings.memory = memory;
+
+  const env = readSettingsEnv(settings);
+  const deny = await prompt.optionalValue(text.memoryDeny, env.SRCODE_MEMORY_DENY ?? process.env.SRCODE_MEMORY_DENY);
+  if (deny !== undefined) setOrDelete(env, "SRCODE_MEMORY_DENY", deny);
+  const dbPath = await prompt.optionalValue("SRCODE_MEMORY_DB", env.SRCODE_MEMORY_DB ?? process.env.SRCODE_MEMORY_DB);
+  if (dbPath !== undefined) setOrDelete(env, "SRCODE_MEMORY_DB", dbPath);
+  settings.env = env;
+  writeJson(srcodeSettingsPath(), settings);
+}
+
+async function runLspSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
+  const text = TEXT[prompt.language];
+  printHeader(io, text.lspHeader);
+  writeLine(io, `${text.lspConfig}: ${srcodeLspConfigPath()}`);
+  const config = readJson(srcodeLspConfigPath());
+  config.formatOnWrite = await prompt.yesNo(text.lspFormatOnWrite, booleanSetting(config.formatOnWrite, false));
+  const idle = await prompt.text(text.lspIdleTimeout, numberSetting(config.idleTimeoutMs)?.toString() ?? "600000");
+  const parsedIdle = Number.parseInt(idle, 10);
+  if (Number.isFinite(parsedIdle) && parsedIdle > 0) config.idleTimeoutMs = parsedIdle;
+  writeJson(srcodeLspConfigPath(), config);
+}
+
+async function runHooksSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
+  const text = TEXT[prompt.language];
+  printHeader(io, text.hooksHeader);
+  writeLine(io, `${text.hookConfig}: ${userHooksPath()}`);
+  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const safety = { ...SAFETY_DEFAULTS, ...objectSetting(settings.safety) };
+  safety.enableProjectHooks = await prompt.yesNo(text.projectHooks, booleanSetting(safety.enableProjectHooks, false));
+  settings.safety = safety;
+  writeJson(srcodeSettingsPath(), settings);
+
+  const config = readJson(userHooksPath());
+  const hooks = Array.isArray(config.hooks) ? config.hooks.filter((h): h is JsonObject => h && typeof h === "object" && !Array.isArray(h)) : [];
+  if (await prompt.yesNo(text.createHook, false)) {
+    const event = HOOK_EVENTS[await prompt.choice(text.hookEvent, [...HOOK_EVENTS])]!;
+    const hook: JsonObject = {
+      event,
+      command: await prompt.text(text.hookCommand),
+    };
+    const tool = await prompt.optionalValue(text.hookTool, "");
+    if (tool) hook.tool = tool;
+    if (event === "PreToolUse") hook.blocking = await prompt.yesNo(text.hookBlocking, true);
+    hooks.push(hook);
+  }
+  config.hooks = hooks;
+  writeJson(userHooksPath(), config);
+}
+
+async function runMcpSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
+  const text = TEXT[prompt.language];
+  printHeader(io, text.mcpHeader);
+  writeLine(io, `${text.mcpConfig}: ${srcodeMcpConfigPath()}`);
+  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const safety = { ...SAFETY_DEFAULTS, ...objectSetting(settings.safety) };
+  safety.enableProjectMcp = await prompt.yesNo(text.projectMcp, booleanSetting(safety.enableProjectMcp, false));
+  settings.safety = safety;
+  writeJson(srcodeSettingsPath(), settings);
+
+  const config = readJson(srcodeMcpConfigPath());
+  const servers = objectSetting(config.mcpServers);
+  if (await prompt.yesNo(text.createMcp, false)) {
+    const name = await prompt.text(text.mcpName, "local");
+    const command = await prompt.text(text.mcpCommand, "npx");
+    const args = splitArgs(await prompt.text(text.mcpArgs));
+    servers[name] = args.length > 0 ? { command, args } : { command };
+  }
+  config.mcpServers = servers;
+  writeJson(srcodeMcpConfigPath(), config);
+}
+
+async function runEnvSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
+  const text = TEXT[prompt.language];
+  printHeader(io, text.envHeader);
+  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const env = readSettingsEnv(settings);
+  writeLine(io, `${text.settingsEnv}: ${Object.keys(env).sort().join(", ") || "(none)"}`);
+  while (await prompt.yesNo(text.addEnv, false)) {
+    const keyIndex = await prompt.choice(text.envKey, [...KNOWN_ENV_KEYS, "Custom"], 0);
+    const key = keyIndex === KNOWN_ENV_KEYS.length ? await prompt.text(text.envKey) : KNOWN_ENV_KEYS[keyIndex]!;
+    const value = await prompt.optionalValue(text.envValue, env[key] ?? process.env[key] ?? "");
+    if (value !== undefined) setOrDelete(env, key, value);
+  }
+  settings.env = env;
+  writeJson(srcodeSettingsPath(), settings);
+}
+
+function hasModelSection(settings: JsonObject): boolean {
+  return typeof settings.defaultProvider === "string" && typeof settings.defaultModel === "string";
+}
+
+function summarizeModelSection(settings: JsonObject): string | undefined {
+  const provider = stringSetting(settings.defaultProvider);
+  const model = stringSetting(settings.defaultModel);
+  if (!provider || !model) return undefined;
+  return `${provider}/${model}`;
+}
+
+function hasToolsSection(settings: JsonObject): boolean {
+  const env = readSettingsEnv(settings);
+  return typeof env.SRCODE_SEARCH_PROVIDER === "string" || typeof env.TAVILY_API_KEY === "string" || hasVisionSettings(settings as Settings);
+}
+
+function summarizeToolsSection(settings: JsonObject): string | undefined {
+  const env = readSettingsEnv(settings);
+  const bits = [];
+  if (typeof env.SRCODE_SEARCH_PROVIDER === "string") bits.push(`search=${env.SRCODE_SEARCH_PROVIDER}`);
+  if (typeof env.TAVILY_API_KEY === "string") bits.push("tavily=set");
+  if (hasVisionSettings(settings as Settings)) {
+    const vision = objectSetting(objectSetting(settings.auxiliary).vision);
+    bits.push(`vision=${stringSetting(vision.provider)}/${stringSetting(vision.model)}`);
+  }
+  return bits.length > 0 ? bits.join(", ") : undefined;
+}
+
+function hasSafetySection(settings: JsonObject): boolean {
+  return typeof settings.safety === "object" && settings.safety !== null;
+}
+
+function summarizeSafetySection(settings: JsonObject): string | undefined {
+  const safety = objectSetting(settings.safety);
+  const bits: string[] = [];
+  for (const [key, label] of [
+    ["enableProjectHooks", "hooks"],
+    ["enableProjectMcp", "mcp"],
+    ["allowLspFormatOnWrite", "lsp-format"],
+    ["allowUnattendedPlanApproval", "plan"],
+  ] as const) {
+    if (typeof safety[key] === "boolean") bits.push(`${label}=${safety[key] ? "on" : "off"}`);
+  }
+  return bits.length > 0 ? bits.join(", ") : undefined;
+}
+
+function hasUiSection(settings: JsonObject): boolean {
+  return typeof settings.language === "string";
+}
+
+function summarizeUiSection(settings: JsonObject): string | undefined {
+  return stringSetting(settings.language);
+}
+
+function hasMemorySection(settings: JsonObject): boolean {
+  const memory = objectSetting(settings.memory);
+  const env = readSettingsEnv(settings);
+  return typeof memory.backend === "string" || typeof env.SRCODE_MEMORY_DB === "string" || typeof env.SRCODE_MEMORY_DENY === "string";
+}
+
+function summarizeMemorySection(settings: JsonObject): string | undefined {
+  const memory = objectSetting(settings.memory);
+  const env = readSettingsEnv(settings);
+  const bits = [];
+  if (typeof memory.backend === "string") bits.push(`backend=${memory.backend}`);
+  if (typeof env.SRCODE_MEMORY_DB === "string") bits.push(`db=${env.SRCODE_MEMORY_DB}`);
+  if (typeof env.SRCODE_MEMORY_DENY === "string") bits.push("deny=set");
+  return bits.length > 0 ? bits.join(", ") : undefined;
+}
+
+function hasLspSection(_settings: JsonObject): boolean {
+  return existsSync(srcodeLspConfigPath());
+}
+
+function summarizeLspSection(settings: JsonObject): string | undefined {
+  const config = readJson(srcodeLspConfigPath());
+  const bits: string[] = [];
+  if (typeof config.formatOnWrite === "boolean") bits.push(`formatOnWrite=${config.formatOnWrite ? "on" : "off"}`);
+  if (typeof config.idleTimeoutMs === "number") bits.push(`idle=${config.idleTimeoutMs}`);
+  return bits.length > 0 ? bits.join(", ") : undefined;
+}
+
+function hasHooksSection(_settings: JsonObject): boolean {
+  return existsSync(userHooksPath());
+}
+
+function summarizeHooksSection(_settings: JsonObject): string | undefined {
+  return existsSync(userHooksPath()) ? userHooksPath() : undefined;
+}
+
+function hasMcpSection(_settings: JsonObject): boolean {
+  return existsSync(srcodeMcpConfigPath());
+}
+
+function summarizeMcpSection(_settings: JsonObject): string | undefined {
+  return existsSync(srcodeMcpConfigPath()) ? srcodeMcpConfigPath() : undefined;
+}
+
+function hasEnvSection(settings: JsonObject): boolean {
+  return Object.keys(readSettingsEnv(settings)).length > 0;
+}
+
+function summarizeEnvSection(settings: JsonObject): string | undefined {
+  const keys = Object.keys(readSettingsEnv(settings)).sort();
+  return keys.length > 0 ? keys.join(", ") : undefined;
+}
+
 export function applyNonInteractiveDefaults(): void {
   const settings = readJson(srcodeSettingsPath()) as Settings;
   settings.language ??= "简体中文";
@@ -570,7 +965,7 @@ export function applyNonInteractiveDefaults(): void {
 
 export function resetSetupConfig(): void {
   const settings = readJson(srcodeSettingsPath()) as Settings;
-  for (const key of ["defaultProvider", "defaultModel", "defaultThinkingLevel", "language", "auxiliary", "safety"]) {
+  for (const key of ["defaultProvider", "defaultModel", "defaultThinkingLevel", "language", "auxiliary", "safety", "memory"]) {
     delete settings[key];
   }
   const env = readSettingsEnv(settings);
@@ -608,10 +1003,15 @@ export function buildSetupSummary(settings: JsonObject, models: JsonObject, lang
   const env = readSettingsEnv(settings);
   const envNames = Object.keys(env).sort();
   if (envNames.length > 0) lines.push(`${text.settingsEnv}: ${envNames.join(", ")}`);
+  const memory = objectSetting(settings.memory);
+  if (stringSetting(memory.backend)) lines.push(`${text.memory}: ${stringSetting(memory.backend)}`);
   if (hasVisionSettings(settings as Settings)) {
     const vision = objectSetting(objectSetting(settings.auxiliary).vision);
     lines.push(`${text.vision}: ${stringSetting(vision.provider)}/${stringSetting(vision.model)}`);
   }
+  if (existsSync(srcodeLspConfigPath())) lines.push(`${text.lspConfigSummary}: ${srcodeLspConfigPath()}`);
+  if (existsSync(userHooksPath())) lines.push(`${text.hooksConfigSummary}: ${userHooksPath()}`);
+  if (existsSync(srcodeMcpConfigPath())) lines.push(`${text.mcpConfigSummary}: ${srcodeMcpConfigPath()}`);
   if (Object.keys(objectSetting(models.providers)).length > 0) {
     lines.push(`${text.customProviders}: ${Object.keys(objectSetting(models.providers)).sort().join(", ")}`);
   }
@@ -665,6 +1065,23 @@ function stringSetting(value: unknown): string | undefined {
 
 function booleanSetting(value: unknown, defaultValue: boolean): boolean {
   return typeof value === "boolean" ? value : defaultValue;
+}
+
+function numberSetting(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function setOrDelete(target: Record<string, string>, key: string, value: string): void {
+  if (value.trim().length === 0 || value.trim() === "-") delete target[key];
+  else target[key] = value.trim();
+}
+
+function userHooksPath(): string {
+  return join(srcodeHome(), "hooks.json");
+}
+
+function splitArgs(value: string): string[] {
+  return value.split(/\s+/).map((part) => part.trim()).filter(Boolean);
 }
 
 function clampIndex(index: number, length: number): number {
