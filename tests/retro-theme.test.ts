@@ -5,11 +5,19 @@ import {
   renderClaudeLikeFooterLine,
 } from "../src/extensions/retro-theme/footer.ts";
 import { retroThemeExtension } from "../src/extensions/retro-theme/index.ts";
+import retroTheme from "../src/theme/retro-terminal.json" with { type: "json" };
 
 const plainTheme = {
   fg: (_color: string, text: string) => text,
   bold: (text: string) => text,
 };
+
+test("retro theme uses white-gray editor borders", () => {
+  expect(retroTheme.vars.inputGray).toBe("#d6d3cc");
+  expect(retroTheme.colors.borderMuted).toBe("inputGray");
+  expect(retroTheme.colors.thinkingOff).toBe("inputGray");
+  expect(retroTheme.colors.thinkingMinimal).toBe("inputGray");
+});
 
 function fakeCtx(overrides: Record<string, unknown> = {}) {
   return {

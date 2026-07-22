@@ -1,5 +1,6 @@
 import type { MemoryProvider } from "./provider.ts";
 import type { ProviderManager } from "./provider-manager.ts";
+import type { CuratedMemoryStore, CuratedTarget } from "./curated-store.ts";
 import { VALID_CATEGORIES, type Category, type Scope } from "./schema.ts";
 
 export interface MemoryToolParams {
@@ -13,7 +14,11 @@ export interface MemoryToolParams {
     | "list"
     | "update"
     | "remove"
-    | "feedback";
+    | "feedback"
+    | "note_add"
+    | "note_list"
+    | "note_replace"
+    | "note_remove";
   content?: string;
   query?: string;
   entity?: string;
@@ -26,6 +31,8 @@ export interface MemoryToolParams {
   limit?: number;
   scope?: string;
   correction_of?: number;
+  target?: string;
+  old_text?: string;
 }
 
 function jsonResult(payload: unknown) {
@@ -57,15 +64,20 @@ function cwdForScope(scope: Scope | undefined, currentCwd: string | null): strin
   return scope === "project" ? (currentCwd ?? undefined) : undefined;
 }
 
+function parseCuratedTarget(raw: unknown): CuratedTarget {
+  return raw === "user" ? "user" : "memory";
+}
+
 export function executeMemoryToolAction(
   params: MemoryToolParams,
   deps: {
     provider: MemoryProvider;
     manager: ProviderManager;
     currentCwd: string | null;
+    curated?: CuratedMemoryStore;
   },
 ) {
-  const { provider, manager, currentCwd } = deps;
+  const { provider, manager, currentCwd, curated } = deps;
 
   try {
     switch (params.action) {
@@ -203,6 +215,32 @@ export function executeMemoryToolAction(
         const fact = provider.feedback(params.fact_id, params.helpful);
         if (!fact) return jsonResult({ status: "not_found", fact_id: params.fact_id });
         return jsonResult({ status: "ok", fact });
+      }
+      case "note_add": {
+        if (!curated) return errorResult("curated memory is not available");
+        if (!params.content) return errorResult("'content' is required for note_add");
+        const target = parseCuratedTarget(params.target);
+        return jsonResult(curated.add(target, params.content));
+      }
+      case "note_list": {
+        if (!curated) return errorResult("curated memory is not available");
+        const target = params.target === "memory" || params.target === "user" ? parseCuratedTarget(params.target) : undefined;
+        return jsonResult({ target: target ?? "all", entries: curated.list(target), count: curated.count(target) });
+      }
+      case "note_replace": {
+        if (!curated) return errorResult("curated memory is not available");
+        if (!params.content) return errorResult("'content' is required for note_replace");
+        const oldText = params.old_text ?? params.query;
+        if (!oldText) return errorResult("'old_text' is required for note_replace");
+        const target = parseCuratedTarget(params.target);
+        return jsonResult(curated.replace(target, oldText, params.content));
+      }
+      case "note_remove": {
+        if (!curated) return errorResult("curated memory is not available");
+        const oldText = params.old_text ?? params.query ?? params.content;
+        if (!oldText) return errorResult("'old_text' is required for note_remove");
+        const target = parseCuratedTarget(params.target);
+        return jsonResult(curated.remove(target, oldText));
       }
     }
   } catch (err) {

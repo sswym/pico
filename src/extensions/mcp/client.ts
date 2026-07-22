@@ -20,6 +20,18 @@ const MCP_PROTOCOL_VERSION = "2024-11-05";
 const CLIENT_NAME = "srcode";
 const CLIENT_VERSION = "0.1.0";
 const REQUEST_TIMEOUT_MS = 30_000;
+const MAX_DIAGNOSTIC_LINES = 20;
+
+function appendDiagnostic(handle: McpServerHandle, line: string): void {
+  const text = line.trim();
+  if (!text) return;
+  const diagnostics = handle.diagnostics ?? [];
+  diagnostics.push(text);
+  if (diagnostics.length > MAX_DIAGNOSTIC_LINES) {
+    diagnostics.splice(0, diagnostics.length - MAX_DIAGNOSTIC_LINES);
+  }
+  handle.diagnostics = diagnostics;
+}
 
 /**
  * Spawn an MCP server subprocess.
@@ -47,6 +59,7 @@ export function spawnMcpServer(id: string, config: McpServerConfig): McpServerHa
     nextId: 1,
     pending: new Map(),
     buffer: "",
+    diagnostics: [],
   };
 
   // Wire up stdout reader — accumulate lines, dispatch complete JSON-RPC responses
@@ -75,7 +88,8 @@ export function spawnMcpServer(id: string, config: McpServerConfig): McpServerHa
     handle.pending.clear();
   })();
 
-  // Log stderr (informational — MCP servers log warnings/debug there)
+  // Capture stderr for /mcp diagnostics. Do not print during TUI startup:
+  // direct terminal writes can corrupt the input editor.
   const stderrReader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
   const stderrDecoder = new TextDecoder();
   (async () => {
@@ -85,7 +99,7 @@ export function spawnMcpServer(id: string, config: McpServerConfig): McpServerHa
         if (done) break;
         const text = stderrDecoder.decode(value, { stream: true });
         for (const line of text.split("\n").filter(Boolean)) {
-          console.error(`[mcp:${id} stderr] ${line}`);
+          appendDiagnostic(handle, line);
         }
       }
     } catch {
@@ -121,7 +135,7 @@ function processBuffer(handle: McpServerHandle): void {
         pending.resolve(parsed.result);
       }
     } catch {
-      console.error(`[mcp:${handle.id}] Failed to parse JSON-RPC response: ${trimmed}`);
+      appendDiagnostic(handle, `Failed to parse JSON-RPC response: ${trimmed}`);
     }
   }
 }

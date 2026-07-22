@@ -1,6 +1,8 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type {
   ExtensionAPI,
@@ -102,6 +104,22 @@ export class PersistentHistoryEditor extends CustomEditor {
           : undefined;
       },
     });
+  }
+
+  override render(width: number): string[] {
+    const lines = super.render(width);
+    if (lines.length < 2) return lines;
+    const prompt = this.borderColor("❯");
+    const contentLine = truncateToWidth(lines[1] ?? "", Math.max(0, width - 2));
+    const promptLine = `${prompt} ${contentLine}`;
+    const paddedPromptLine = `${promptLine}${" ".repeat(Math.max(0, width - visibleWidth(promptLine)))}`;
+
+    if (this.getText().trim().length === 0 && !this.isShowingAutocomplete()) {
+      return [lines[0] ?? "", paddedPromptLine, lines[lines.length - 1] ?? ""];
+    }
+
+    lines[1] = paddedPromptLine;
+    return lines;
   }
 }
 

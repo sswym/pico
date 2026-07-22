@@ -13,6 +13,13 @@ import type { Category, Scope } from "./schema.ts";
 
 // ---- Data types (shared across all providers) ---------------------------
 
+export interface MemoryInitializeContext {
+  cwd?: string;
+  sessionReason?: string;
+  parentSessionId?: string;
+  platform?: string;
+}
+
 export interface Fact {
   fact_id: number;
   content: string;
@@ -158,7 +165,7 @@ export interface MemoryProvider {
   isAvailable(): boolean;
 
   /** Initialize for a session. Called once at startup. */
-  initialize(sessionId: string): void;
+  initialize(sessionId: string, context?: MemoryInitializeContext): void;
 
   /** Clean shutdown — flush queues, close connections. */
   shutdown(): void;
@@ -210,6 +217,23 @@ export interface MemoryProvider {
    */
   queuePrefetch(query: string, cwd?: string): void;
 
+  /**
+   * Optional extra tool schemas exposed by an external provider.
+   * Each schema is the bare function schema shape:
+   * { name, description, parameters }.
+   */
+  getToolSchemas?(): Array<Record<string, unknown>>;
+
+  /** Handle a provider-owned tool call. */
+  handleToolCall?(toolName: string, args: Record<string, unknown>, context?: Record<string, unknown>): string;
+
+  /** Persist a completed turn to a provider backend. Should be non-blocking from callers. */
+  syncTurn?(
+    userContent: string,
+    assistantContent: string,
+    opts?: { sessionId?: string; messages?: unknown[]; [key: string]: unknown },
+  ): void;
+
   // -- Optional lifecycle hooks ------------------------------------------
 
   /**
@@ -224,6 +248,14 @@ export interface MemoryProvider {
    * NOT called after every turn — only at actual session boundaries.
    */
   onSessionEnd?(messages: unknown[]): void;
+
+  /**
+   * Called when the agent switches/resets/forks sessions without process exit.
+   */
+  onSessionSwitch?(
+    newSessionId: string,
+    opts?: { parentSessionId?: string; reset?: boolean; rewound?: boolean; [key: string]: unknown },
+  ): void;
 
   /**
    * Called before context compression discards old messages.

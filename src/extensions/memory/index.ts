@@ -22,6 +22,7 @@ import { formatFactLine, formatRecallBlock, systemPromptBlock } from "./prompt.t
 import { type Fact, type MemoryWriteMetadata, type MemoryProvider } from "./provider.ts";
 import { subscribeExtensionEvent } from "../events.ts";
 import { MemoryStore } from "./store.ts";
+import { CuratedMemoryStore } from "./curated-store.ts";
 import { resolveDbPath, ProviderManager, sanitizeContext, buildMemoryContextBlock } from "./provider-manager.ts";
 import { CORRECTED_BOOST, SCOPE_PROJECT, VALID_CATEGORIES, type Category } from "./schema.ts";
 import { executeMemoryToolAction, type MemoryToolParams } from "./tool.ts";
@@ -40,6 +41,10 @@ const MemoryParams = Type.Object({
     Type.Literal("update"),
     Type.Literal("remove"),
     Type.Literal("feedback"),
+    Type.Literal("note_add"),
+    Type.Literal("note_list"),
+    Type.Literal("note_replace"),
+    Type.Literal("note_remove"),
   ], { description: "Operation to perform on the memory store." }),
   content: Type.Optional(Type.String({ description: "Fact body (required for add; optional for update)." })),
   query: Type.Optional(Type.String({ description: "Search query (required for search)." })),
@@ -53,6 +58,8 @@ const MemoryParams = Type.Object({
   limit: Type.Optional(Type.Number({ description: "Max results (default 10)." })),
   scope: Type.Optional(Type.String({ description: "Scope: global | project. Default: global. Project-scoped facts are isolated to the current working directory." })),
   correction_of: Type.Optional(Type.Number({ description: "If this fact corrects a previous one, provide the original fact_id. The original's trust drops and this fact starts with high trust." })),
+  target: Type.Optional(Type.String({ description: "Curated target: memory | user. Default: memory." })),
+  old_text: Type.Optional(Type.String({ description: "Substring used to replace/remove a curated entry." })),
 });
 
 function asCategory(raw: unknown): Category | undefined {
@@ -74,16 +81,30 @@ function parseCommand(args: string): ParsedCommand {
   return { cmd: trimmed.slice(0, idx).toLowerCase(), rest: trimmed.slice(idx + 1).trim() };
 }
 
+function schemaName(schema: Record<string, unknown>): string | null {
+  const name = schema.name;
+  return typeof name === "string" && name.trim() ? name : null;
+}
+
+function parseJsonDetails(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { text };
+  }
+}
+
 // --------------------------------------------------------------------------
 
 export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   const manager = new ProviderManager();
   const provider: MemoryProvider = manager.provider;
-  /** Expose raw MemoryStore for extract.ts which needs low-level access. */
-  const rawStore = provider.getRawStore() as MemoryStore;
+  const curated = new CuratedMemoryStore();
+  /** Expose raw MemoryStore for extract.ts when the active provider has one. */
+  const rawStore = provider.getRawStore();
   // Register delegation hook for subagent completion tracking.
   subscribeExtensionEvent("subagent_completed", (event) => {
-    provider.onDelegation?.(event.task, event.result, event.childSessionId);
+    manager.onDelegation(event.task, event.result, event.childSessionId);
   });
   /** Track current working directory for project-scoped memory. */
   let currentCwd: string | null = null;
@@ -92,10 +113,21 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     if (ctx.cwd) currentCwd = ctx.cwd;
     try {
       const sessionId = ctx.sessionManager?.getSessionId?.() ?? "default";
-      provider.initialize(sessionId);
+      curated.loadFromDisk();
+      manager.initialize(sessionId, { cwd: ctx.cwd, sessionReason: (_event as { reason?: string })?.reason });
     } catch {
       // Memory should never prevent a session from starting.
     }
+  });
+
+  pi.on("session_before_switch", () => {
+    curated.loadFromDisk();
+    return {};
+  });
+
+  pi.on("session_before_fork", () => {
+    curated.loadFromDisk();
+    return {};
   });
 
   // --- 1. memory tool (LLM) ------------------------------------------------
@@ -105,7 +137,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       label: "Memory",
       description: [
         "Long-term memory for durable user prefs, project decisions, failures, corrections, insights, and reusable facts.",
-        `Actions: add | search | probe | list | update | remove | feedback | related | reason | contradict.`,
+        `Actions: add | search | probe | list | update | remove | feedback | related | reason | contradict | note_add | note_list | note_replace | note_remove.`,
         "Categories: " + CATEGORY_LIST + ".",
         "Call `search` BEFORE answering questions about the user or project.",
         "Call `add` whenever the user shares something they would expect you to remember.",
@@ -115,6 +147,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         "Call `contradict()` to surface potentially contradictory facts.",
         "Use `scope=\"project\"` for facts that only apply in the current project directory.",
         "Use `correction_of` when a new fact supersedes an older one.",
+        "Use note_add/note_replace/note_remove for short curated MEMORY.md/USER.md entries that should be in every next-session prompt snapshot.",
       ].join(" "),
       promptSnippet:
         "memory(action) — long-term fact store; search before answering, add proactively.",
@@ -134,10 +167,40 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         // Capture cwd for project-scoped memory.
         if (ctx.cwd) currentCwd = ctx.cwd;
 
-        return executeMemoryToolAction(params as MemoryToolParams, { provider, manager, currentCwd });
+        return executeMemoryToolAction(params as MemoryToolParams, { provider, manager, currentCwd, curated });
       },
     }),
   );
+
+  for (const schema of manager.getAllToolSchemas()) {
+    const name = schemaName(schema);
+    if (!name || name === "memory") continue;
+    pi.registerTool(
+      defineTool({
+        name,
+        label: `Memory: ${name}`,
+        description: typeof schema.description === "string" ? schema.description : `Memory provider tool ${name}`,
+        promptSnippet: `${name} — external memory provider tool`,
+        parameters: Type.Unsafe(schema.parameters ?? { type: "object", properties: {} }),
+        renderCall(args, theme, context) {
+          return renderToolCallText(name, args, theme, context);
+        },
+        renderResult(result, options, theme, context) {
+          return renderToolResultText(result, options, theme, context);
+        },
+        async execute(_id, params, _signal, _onUpdate, ctx) {
+          const text = manager.handleToolCall(name, params as Record<string, unknown>, {
+            cwd: ctx.cwd,
+            sessionId: ctx.sessionManager?.getSessionId?.(),
+          });
+          return {
+            content: [{ type: "text" as const, text }],
+            details: parseJsonDetails(text),
+          };
+        },
+      }),
+    );
+  }
 
   // --- 2. /memory slash command (user) -------------------------------------
   pi.registerCommand("memory", {
@@ -170,16 +233,47 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         return { scope: m[1]!.toLowerCase() as "global" | "project", rest: text.replace(/--scope\s+(global|project)\s*/i, "").trim() };
       };
 
+      const parseNotesTarget = (text: string): { target: "memory" | "user"; rest: string } => {
+        const trimmed = text.trim();
+        const m = trimmed.match(/^(memory|user)\s*(.*)$/i);
+        if (!m) return { target: "memory", rest: trimmed };
+        return { target: m[1]!.toLowerCase() as "memory" | "user", rest: m[2]!.trim() };
+      };
+
       try {
         switch (cmd) {
+          case "status": {
+            const info = manager.getInfo();
+            lines.push(`Memory provider: ${info.name}`);
+            lines.push(`Available: ${info.available ? "yes" : "no"}`);
+            lines.push(`Facts: ${info.factCount}`);
+            lines.push(`Curated notes: ${curated.count()}`);
+            lines.push(`Providers: ${ProviderManager.availableProviders().join(", ")}`);
+            break;
+          }
+          case "setup": {
+            const backend = rest.trim() || "builtin";
+            const result = ProviderManager.saveBackend(backend);
+            if (result.ok) {
+              announce(`Memory backend set to '${backend}'. Restart or reload the session to activate it.`);
+            } else {
+              announce(`Error: ${result.reason}`);
+            }
+            break;
+          }
+          case "off": {
+            const result = ProviderManager.saveBackend("builtin");
+            announce(result.ok ? "External memory provider disabled; builtin remains active." : `Error: ${result.reason}`);
+            break;
+          }
           case "list": {
             const { scope, rest: filterRest } = parseScope(rest);
             const cat = asCategory(filterRest) || undefined;
-            renderFacts(provider.list({ limit: 50, scope, cwd: scope === "project" ? (currentCwd ?? undefined) : undefined, category: cat }), `Memory — ${provider.count()} facts:`);
+            renderFacts(manager.list({ limit: 50, scope, cwd: scope === "project" ? (currentCwd ?? undefined) : undefined, category: cat }), `Memory — ${manager.count()} facts:`);
             break;
           }
           case "count": {
-            announce(`Memory: ${provider.count()} facts at ${resolveDbPath()}`);
+            announce(`Memory: ${manager.count()} facts at ${resolveDbPath()}; ${curated.count()} curated notes`);
             break;
           }
           case "search": {
@@ -188,7 +282,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               announce("Usage: /memory search [--scope global|project] <query>");
               break;
             }
-            renderFacts(provider.search(queryRest, { limit: 20, minTrust: 0, scope, cwd: scope === "project" ? (currentCwd ?? undefined) : undefined }), `Search: ${queryRest}`);
+            renderFacts(manager.search(queryRest, { limit: 20, minTrust: 0, scope, cwd: scope === "project" ? (currentCwd ?? undefined) : undefined }), `Search: ${queryRest}`);
             break;
           }
           case "add": {
@@ -202,7 +296,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             const category = (m?.[1] ?? "general") as Category;
             const content = m?.[2] ?? addRest;
             try {
-              const id = provider.add(content, {
+              const id = manager.add(content, {
                 category,
                 scope,
                 cwd: scope === "project" ? (currentCwd ?? undefined) : undefined,
@@ -221,7 +315,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               break;
             }
             const cat = asCategory(rest) || undefined;
-            const results = provider.related(rest, { category: cat, limit: 20, minTrust: 0 });
+            const results = manager.related(rest, { category: cat, limit: 20, minTrust: 0 });
             renderFacts(results, `Related to "${rest}":`);
             break;
           }
@@ -231,13 +325,13 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               break;
             }
             const entities = rest.split(",").map((s) => s.trim()).filter(Boolean);
-            const results = provider.reason(entities, { limit: 20, minTrust: 0 });
+            const results = manager.reason(entities, { limit: 20, minTrust: 0 });
             renderFacts(results, `Reason over [${entities.join(", ")}]:`);
             break;
           }
           case "contradict": {
             const cat = asCategory(rest) || undefined;
-            const results = provider.contradict({ category: cat, limit: 10 });
+            const results = manager.contradict({ category: cat, limit: 10 });
             if (results.length === 0) {
               announce("No contradictions found.");
             } else {
@@ -258,21 +352,78 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               announce("Usage: /memory remove <fact_id>");
               break;
             }
-            const ok = provider.remove(id);
+            const ok = manager.remove(id);
             announce(ok ? `Removed memory #${id}` : `No such memory #${id}`);
             break;
           }
           case "clear": {
             const confirm = await ctx.ui.confirm(
               "Clear all memory?",
-              `Permanently delete ${provider.count()} facts at ${resolveDbPath()}?`,
+              `Permanently delete ${manager.count()} facts at ${resolveDbPath()} and ${curated.count()} curated notes?`,
             );
             if (confirm) {
-              provider.clear();
+              manager.clear();
+              curated.clear();
               announce("Memory cleared.");
             } else {
               announce("Cancelled.");
             }
+            break;
+          }
+          case "notes": {
+            const { cmd: notesCmd, rest: notesRest } = parseCommand(rest);
+            if (!notesCmd || notesCmd === "list" || notesCmd === "show") {
+              const target = notesRest === "memory" || notesRest === "user" ? notesRest : undefined;
+              const entries = curated.list(target);
+              lines.push(`Curated memory (${curated.count(target)} entries):`);
+              if (!target || target === "memory") {
+                lines.push("MEMORY.md:");
+                lines.push(...(entries.memory.length ? entries.memory.map((e, i) => `  ${i + 1}. ${e}`) : ["  (empty)"]));
+              }
+              if (!target || target === "user") {
+                lines.push("USER.md:");
+                lines.push(...(entries.user.length ? entries.user.map((e, i) => `  ${i + 1}. ${e}`) : ["  (empty)"]));
+              }
+              break;
+            }
+            if (notesCmd === "add") {
+              const { target, rest: content } = parseNotesTarget(notesRest);
+              const result = curated.add(target, content);
+              announce(result.success ? `Added ${target} note.` : `Error: ${result.error}`);
+              break;
+            }
+            if (notesCmd === "remove" || notesCmd === "rm") {
+              const { target, rest: oldText } = parseNotesTarget(notesRest);
+              const result = curated.remove(target, oldText);
+              announce(result.success ? `Removed ${target} note.` : `Error: ${result.error}`);
+              break;
+            }
+            if (notesCmd === "replace") {
+              const { target, rest: replaceRest } = parseNotesTarget(notesRest);
+              const [oldText, content] = replaceRest.split(/\s+=>\s+/, 2);
+              if (!oldText || !content) {
+                announce("Usage: /memory notes replace [memory|user] <old_text> => <new_content>");
+                break;
+              }
+              const result = curated.replace(target, oldText, content);
+              announce(result.success ? `Replaced ${target} note.` : `Error: ${result.error}`);
+              break;
+            }
+            if (notesCmd === "clear") {
+              const target = notesRest === "memory" || notesRest === "user" ? notesRest : undefined;
+              const confirm = await ctx.ui.confirm(
+                "Clear curated memory?",
+                `Permanently delete ${target ?? "all"} curated notes?`,
+              );
+              if (confirm) {
+                curated.clear(target);
+                announce(`Cleared ${target ?? "all"} curated notes.`);
+              } else {
+                announce("Cancelled.");
+              }
+              break;
+            }
+            lines.push("Usage: /memory notes [list|add|remove|replace|clear] [memory|user] ...");
             break;
           }
           case "help":
@@ -286,6 +437,12 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             lines.push("  /memory remove <id>       — delete a fact");
             lines.push("  /memory clear             — wipe all memory (asks first)");
             lines.push("  /memory count             — show count + db path");
+            lines.push("  /memory status            — show provider and note status");
+            lines.push("  /memory setup <provider>  — set backend for next session");
+            lines.push("  /memory off               — use builtin backend only");
+            lines.push("  /memory notes             — list curated MEMORY.md / USER.md notes");
+            lines.push("  /memory notes add user <text>       — add a user profile note");
+            lines.push("  /memory notes replace memory <old> => <new> — replace a curated note");
             lines.push("  /memory related <entity>  — find facts related to an entity");
             lines.push("  /memory reason <e1>,<e2>  — find facts linking multiple entities");
             lines.push("  /memory contradict        — surface contradictory facts");
@@ -317,22 +474,26 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // snapshot pattern.
   //
   // The snapshot is regenerated only on the first turn of a new session.
-  let frozenSnapshot: { header: string; recall: string } | null = null;
+  let frozenSnapshot: { header: string; curated: string; recall: string } | null = null;
 
   pi.on("before_agent_start", (event) => {
     try {
       if (!frozenSnapshot) {
-        const header = systemPromptBlock(provider.count());
-        const recall = provider.search(event.prompt, {
+        const header = systemPromptBlock(manager.count());
+        const recall = manager.prefetch(event.prompt, {
           limit: 5,
           minTrust: 0.3,
           scope: SCOPE_PROJECT,
           cwd: currentCwd ?? undefined,
         });
-        frozenSnapshot = { header, recall: formatRecallBlock(recall) };
+        frozenSnapshot = {
+          header,
+          curated: curated.formatForSystemPrompt(),
+          recall: formatRecallBlock(recall),
+        };
       }
       const recallBlock = buildMemoryContextBlock(frozenSnapshot.recall);
-      const extras = [frozenSnapshot.header, recallBlock]
+      const extras = [frozenSnapshot.header, frozenSnapshot.curated, recallBlock]
         .filter((s) => s.length > 0).join("\n\n");
       if (!extras) return {};
       return { systemPrompt: `${event.systemPrompt}\n\n${extras}` };
@@ -352,17 +513,18 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
       // Only run correction patterns — keep per-turn overhead minimal.
       if (CORRECTION_PATTERNS.some((p) => p.test(text))) {
-        provider.add(text.slice(0, 400), {
+        manager.add(text.slice(0, 400), {
           category: "correction",
           scope: currentCwd ? "project" : undefined,
           cwd: currentCwd ?? undefined,
           source: "correction",
           trust: CORRECTED_BOOST,
         });
+        curated.add("memory", text.slice(0, 400));
       }
 
       // Queue background prefetch for the next turn.
-      provider.queuePrefetch(text, currentCwd ?? undefined);
+      manager.queuePrefetch(text, currentCwd ?? undefined);
     } catch {
       // best-effort — must not break the turn
     }
@@ -374,7 +536,10 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.on("agent_end", (event) => {
     try {
       const messages = (event.messages ?? []) as ExtractableMessage[];
-      autoExtractFromMessages(rawStore, messages, { cwd: currentCwd ?? undefined });
+      if (rawStore instanceof MemoryStore) {
+        autoExtractFromMessages(rawStore, messages, { cwd: currentCwd ?? undefined });
+      }
+      curated.autoExtract(messages);
       // Keep a running total of all session messages for onSessionEnd
       sessionMessages.push(...messages);
     } catch {
@@ -382,11 +547,31 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     }
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_before_compact", (event) => {
     try {
-      provider.onSessionEnd?.(sessionMessages);
+      const branchEntries = (event as { branchEntries?: unknown[] }).branchEntries ?? [];
+      const contribution = manager.onPreCompress(branchEntries);
+      if (!contribution) return {};
+      const preparation = (event as { preparation?: { firstKeptEntryId?: string; tokensBefore?: number } }).preparation;
+      if (!preparation?.firstKeptEntryId || preparation.tokensBefore === undefined) return {};
+      return {
+        compaction: {
+          summary: contribution,
+          firstKeptEntryId: preparation.firstKeptEntryId,
+          tokensBefore: preparation.tokensBefore,
+        },
+      };
+    } catch {
+      return {};
+    }
+  });
+
+  pi.on("session_shutdown", async () => {
+    try {
+      manager.onSessionEnd(sessionMessages);
+      await manager.flushPending();
       frozenSnapshot = null;  // next session gets a fresh snapshot
-      provider.shutdown();
+      manager.shutdown();
     } catch {
       // ignore
     }

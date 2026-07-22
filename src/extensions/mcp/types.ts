@@ -108,4 +108,6 @@ export interface McpServerHandle {
   }>;
   /** Accumulated stdout buffer for line processing. */
   buffer: string;
+  /** Recent stderr / protocol diagnostics, shown by /mcp instead of printed into the TUI. */
+  diagnostics?: string[];
 }

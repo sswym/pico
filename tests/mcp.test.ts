@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadMcpConfig } from "../src/extensions/mcp/config.ts";
-import { createMcpExtension } from "../src/extensions/mcp/index.ts";
+import { createMcpExtension, formatMcpReport } from "../src/extensions/mcp/index.ts";
 import type { McpServerConfig, McpServerHandle, McpToolCallResult } from "../src/extensions/mcp/types.ts";
 
 const envStack: Array<{ home: string | undefined; projectMcp: string | undefined }> = [];
@@ -103,6 +103,7 @@ test("MCP extension loads config from session cwd and registers discovered tools
   const loadedCwds: string[] = [];
   const calls: Array<{ handle: string; toolName: string; params: Record<string, unknown> }> = [];
   const closed: string[] = [];
+  const statuses: Array<[string, string | undefined]> = [];
   const extension = createMcpExtension({
     load: (cwd) => {
       loadedCwds.push(cwd);
@@ -136,9 +137,15 @@ test("MCP extension loads config from session cwd and registers discovered tools
   expect(pi.commands.has("mcp")).toBe(true);
   expect(pi.tools.size).toBe(0);
 
-  await pi.handlers["session_start"]![0]!({}, { cwd: "/repo/project" });
+  await pi.handlers["session_start"]![0]!({}, {
+    cwd: "/repo/project",
+    ui: {
+      setStatus: (key: string, value: string | undefined) => statuses.push([key, value]),
+    },
+  });
 
   expect(loadedCwds).toEqual(["/repo/project"]);
+  expect(statuses.at(-1)).toEqual(["mcp", "MCP: 1 connected"]);
   expect(pi.tools.has("mcp__docs__lookup")).toBe(true);
   expect(pi.tools.get("mcp__docs__lookup").renderResult).toBeFunction();
 
@@ -149,6 +156,7 @@ test("MCP extension loads config from session cwd and registers discovered tools
 
   await pi.handlers["session_shutdown"]![0]!({}, {});
   expect(closed).toEqual(["docs"]);
+  expect(statuses.at(-1)).toEqual(["mcp", undefined]);
 });
 
 test("MCP extension records failed server connections without blocking other servers", async () => {
@@ -193,6 +201,28 @@ test("MCP extension records failed server connections without blocking other ser
 
   await pi.handlers["session_shutdown"]![0]!({}, {});
   expect(closed).toContain("good");
+});
+
+test("/mcp report includes connected tools and recent diagnostics without terminal logging", () => {
+  const handle = makeHandle("docs");
+  handle.diagnostics = ["warn one", "warn two"];
+
+  const report = formatMcpReport([
+    {
+      id: "docs",
+      serverName: "Docs MCP",
+      serverVersion: "1.2.3",
+      toolCount: 1,
+      toolNames: ["mcp__docs__lookup"],
+      handle,
+    },
+  ]);
+
+  expect(report.level).toBe("info");
+  expect(report.text).toContain("Docs MCP 1.2.3");
+  expect(report.text).toContain("mcp__docs__lookup");
+  expect(report.text).toContain("diagnostics:");
+  expect(report.text).toContain("warn two");
 });
 
 test("MCP tools from a previous cwd stop using closed handles after reconnect", async () => {

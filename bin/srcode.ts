@@ -50,6 +50,7 @@ import { hooksExtension } from "../src/extensions/hooks/index.ts";
 import { mcpExtension } from "../src/extensions/mcp/index.ts";
 import { doctorExtension } from "../src/extensions/doctor/index.ts";
 import { getEmbeddedContent, getEmbeddedKeys } from "../src/extensions/embedded-assets.ts";
+import { parseSetupArgs, runSetupCommand } from "../src/setup/index.ts";
 
 /**
  * Detect if we're running as a Bun compiled binary.
@@ -183,6 +184,12 @@ const args = withBundledSkills(
   withBundledPromptTemplates(process.argv.slice(2), embeddedDirs?.promptsDir),
   embeddedDirs?.skillsDir,
 );
+
+const setupOptions = parseSetupArgs(process.argv.slice(2));
+if (setupOptions) {
+  const code = await runSetupCommand(setupOptions);
+  process.exit(code);
+}
 
 // Override process.title so dev-mode runs show "srcode" instead of "pi".
 // In compiled-binary mode, this is handled by piConfig.name in build/package.json.

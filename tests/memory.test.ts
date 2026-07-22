@@ -7,12 +7,14 @@
  * correction mechanics, extended pattern extraction.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "../src/extensions/memory/store.ts";
+import { CuratedMemoryStore } from "../src/extensions/memory/curated-store.ts";
 import { autoExtractFromMessages } from "../src/extensions/memory/extract.ts";
 import { scanSecrets } from "../src/extensions/memory/secrets.ts";
+import { executeMemoryToolAction } from "../src/extensions/memory/tool.ts";
 import { WriteQueue, type MemoryProvider, type MemoryWriteMetadata } from "../src/extensions/memory/provider.ts";
 import { ProviderManager } from "../src/extensions/memory/provider-manager.ts";
 import { memoryExtension } from "../src/extensions/memory/index.ts";
@@ -610,6 +612,37 @@ test("ProviderManager.registerExternalProvider rejects reserved tool name", () =
   });
 });
 
+test("ProviderManager exposes available providers and can save backend selection", () => {
+  expect(ProviderManager.availableProviders()).toContain("builtin");
+
+  const oldEnv = process.env.SRCODE_HOME;
+  const home = join(tmpdir(), `srcode-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  process.env.SRCODE_HOME = home;
+  try {
+    const result = ProviderManager.saveBackend("builtin");
+    expect(result.ok).toBe(true);
+    expect(existsSync(join(home, "agent", "settings.json"))).toBe(true);
+  } finally {
+    if (oldEnv === undefined) delete process.env.SRCODE_HOME;
+    else process.env.SRCODE_HOME = oldEnv;
+    try { rmSync(home, { recursive: true, force: true }); } catch { }
+  }
+});
+
+test("ProviderManager aggregates external tool schemas without duplicates", () => {
+  withTestManager((manager) => {
+    const fake = makeFakeMemoryProvider({
+      getToolSchemas: () => [
+        { name: "memory_probe", description: "probe", parameters: { type: "object", properties: {} } },
+        { type: "function", function: { name: "memory_probe", description: "duplicate", parameters: { type: "object", properties: {} } } },
+      ],
+    });
+    manager.registerExternalProvider(fake);
+    const schemas = manager.getAllToolSchemas();
+    expect(schemas.filter((s) => (s as Record<string, unknown>).name === "memory_probe")).toHaveLength(1);
+  });
+});
+
 test("ProviderManager.notifyMemoryToolWrite invokes onMemoryWrite with metadata", () => {
   withTestManager((manager) => {
     const calls: MemoryWriteMetadata[] = [];
@@ -639,4 +672,81 @@ test("ProviderManager.notifyMemoryToolWrite does not throw when onMemoryWrite th
     // Implicit pass if we reach here
     expect(true).toBe(true);
   });
+});
+
+test("CuratedMemoryStore persists notes and system prompt snapshot independently", () => {
+  const dir = join(tmpdir(), `srcode-curated-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const curated = new CuratedMemoryStore({ dir });
+  curated.loadFromDisk();
+
+  const add = curated.add("memory", "remember the repo uses bun");
+  expect(add.success).toBe(true);
+  expect(curated.list("memory").memory).toContain("remember the repo uses bun");
+  expect(curated.formatForSystemPrompt()).not.toContain("remember the repo uses bun");
+
+  const nextSession = new CuratedMemoryStore({ dir });
+  nextSession.loadFromDisk();
+  expect(nextSession.formatForSystemPrompt()).toContain("remember the repo uses bun");
+
+  const replace = curated.replace("memory", "repo uses bun", "remember the repo uses bun: no npm");
+  expect(replace.success).toBe(true);
+  expect(curated.list("memory").memory).toContain("remember the repo uses bun: no npm");
+
+  const remove = curated.remove("memory", "no npm");
+  expect(remove.success).toBe(true);
+  expect(curated.list("memory").memory).toHaveLength(0);
+});
+
+test("memory tool note actions route through curated memory store", () => {
+  const dir = join(tmpdir(), `srcode-curated-tool-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const curated = new CuratedMemoryStore({ dir });
+  curated.loadFromDisk();
+  const fakeProvider = makeFakeMemoryProvider();
+  const manager = new ProviderManager();
+
+  const add = executeMemoryToolAction(
+    { action: "note_add", target: "user", content: "prefers concise replies" },
+    { provider: fakeProvider, manager, currentCwd: null, curated },
+  );
+  expect(JSON.parse(add.content[0]!.text).success).toBe(true);
+  expect(curated.list("user").user).toContain("prefers concise replies");
+
+  const replace = executeMemoryToolAction(
+    { action: "note_replace", target: "user", old_text: "concise", content: "prefers concise replies with bullet points" },
+    { provider: fakeProvider, manager, currentCwd: null, curated },
+  );
+  expect(JSON.parse(replace.content[0]!.text).success).toBe(true);
+  expect(curated.list("user").user).toContain("prefers concise replies with bullet points");
+
+  const remove = executeMemoryToolAction(
+    { action: "note_remove", target: "user", old_text: "bullet points" },
+    { provider: fakeProvider, manager, currentCwd: null, curated },
+  );
+  expect(JSON.parse(remove.content[0]!.text).success).toBe(true);
+  expect(curated.list("user").user).toHaveLength(0);
+});
+
+test("ProviderManager.syncTurn fans out to registered providers", async () => {
+  const oldEnv = process.env.SRCODE_MEMORY_DB;
+  const tempDb = join(tmpdir(), `srcode-mgr-sync-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  process.env.SRCODE_MEMORY_DB = tempDb;
+  try {
+    const manager = new ProviderManager();
+    const calls: Array<{ user: string; assistant: string; sessionId?: string }> = [];
+    const fake = makeFakeMemoryProvider({
+      syncTurn: (userContent, assistantContent, opts) => {
+        calls.push({ user: userContent, assistant: assistantContent, sessionId: opts?.sessionId });
+      },
+    });
+    manager.registerExternalProvider(fake);
+    manager.syncTurn("user turn", "assistant turn", { sessionId: "s1" });
+    await manager.flushPending();
+    expect(calls).toEqual([{ user: "user turn", assistant: "assistant turn", sessionId: "s1" }]);
+  } finally {
+    if (oldEnv === undefined) delete process.env.SRCODE_MEMORY_DB;
+    else process.env.SRCODE_MEMORY_DB = oldEnv;
+    try { rmSync(tempDb); } catch { }
+    try { rmSync(`${tempDb}-wal`); } catch { }
+    try { rmSync(`${tempDb}-shm`); } catch { }
+  }
 });
