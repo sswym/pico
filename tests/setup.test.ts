@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseSetupArgs, resetSetupConfig, runSetupCommand, writeCustomProvider } from "../src/setup/index.ts";
-import { srcodeModelsPath, srcodeSettingsPath } from "../src/extensions/paths.ts";
+import { buildSetupSummary, parseSetupArgs, resetSetupConfig, runSetupCommand, writeCustomProvider } from "../src/setup/index.ts";
+import { srcodeLspConfigPath, srcodeMcpConfigPath, srcodeModelsPath, srcodeSettingsPath } from "../src/extensions/paths.ts";
 
 const savedEnv = {
   home: process.env.SRCODE_HOME,
@@ -53,6 +53,13 @@ test("parseSetupArgs recognizes setup sections and flags", () => {
     section: "model",
     nonInteractive: true,
   });
+  expect(parseSetupArgs(["setup", "--quick"])).toMatchObject({ quick: true });
+  expect(parseSetupArgs(["setup", "--reconfigure"])).toMatchObject({ reconfigure: true });
+  expect(parseSetupArgs(["setup", "memory"])?.section).toBe("memory");
+  expect(parseSetupArgs(["setup", "lsp"])?.section).toBe("lsp");
+  expect(parseSetupArgs(["setup", "hooks"])?.section).toBe("hooks");
+  expect(parseSetupArgs(["setup", "mcp"])?.section).toBe("mcp");
+  expect(parseSetupArgs(["setup", "env"])?.section).toBe("env");
   expect(parseSetupArgs(["doctor"])).toBeUndefined();
   expect(parseSetupArgs(["setup", "unknown"])?.error).toContain("unknown setup argument");
 });
@@ -68,6 +75,8 @@ test("non-interactive setup writes safe defaults and imports configured env", as
       nonInteractive: true,
       reset: false,
       help: false,
+      quick: false,
+      reconfigure: false,
     }, output.io as any);
 
     expect(code).toBe(0);
@@ -137,6 +146,7 @@ test("resetSetupConfig removes only setup-managed settings", () => {
       },
       safety: { enableProjectHooks: true },
       auxiliary: { vision: { provider: "openai", model: "gpt-4o-mini" } },
+      memory: { backend: "holographic" },
     }));
 
     resetSetupConfig();
@@ -147,8 +157,28 @@ test("resetSetupConfig removes only setup-managed settings", () => {
     expect(settings.language).toBeUndefined();
     expect(settings.safety).toBeUndefined();
     expect(settings.auxiliary).toBeUndefined();
+    expect(settings.memory).toBeUndefined();
     expect(settings.packages).toEqual(["keep-me"]);
     expect(settings.env).toEqual({ CUSTOM_ENV: "keep-me" });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setup summary includes managed config files and memory backend", () => {
+  const home = useTempHome();
+  try {
+    mkdirSync(join(home, "agent"), { recursive: true });
+    writeFileSync(srcodeLspConfigPath(), JSON.stringify({ formatOnWrite: true }));
+    writeFileSync(join(home, "hooks.json"), JSON.stringify({ hooks: [] }));
+    writeFileSync(srcodeMcpConfigPath(), JSON.stringify({ mcpServers: {} }));
+
+    const summary = buildSetupSummary({ memory: { backend: "builtin" } }, {}, "en");
+
+    expect(summary).toContain("memory: builtin");
+    expect(summary).toContain(`LSP config: ${srcodeLspConfigPath()}`);
+    expect(summary).toContain(`hooks config: ${join(home, "hooks.json")}`);
+    expect(summary).toContain(`MCP config: ${srcodeMcpConfigPath()}`);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
