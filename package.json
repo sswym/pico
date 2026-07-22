@@ -1,6 +1,7 @@
 {
   "name": "srcode",
   "version": "0.1.0",
+  "license": "MIT",
   "description": "Vibe coding agent with long-term memory",
   "type": "module",
   "private": true,
