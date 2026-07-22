@@ -10,6 +10,7 @@ import {
   readInputHistory,
   serializeHistoryFile,
 } from "../src/extensions/input-history/index.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 const originalHome = process.env.SRCODE_HOME;
 
@@ -26,6 +27,7 @@ function makeTempHistoryPath(): { dir: string; path: string } {
 function makeFakeTui() {
   return {
     requestRender: () => {},
+    terminal: { rows: 24 },
   } as any;
 }
 
@@ -107,6 +109,18 @@ test("PersistentHistoryEditor wraps onSubmit to persist built-in commands before
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("PersistentHistoryEditor renders Claude-style prompt frame when empty", () => {
+  const editor = new PersistentHistoryEditor(makeFakeTui(), stubTheme, stubKeybindings);
+  const lines = editor.render(120);
+
+  expect(lines).toHaveLength(3);
+  expect(visibleWidth(lines[0] ?? "")).toBe(120);
+  expect(lines[1]).toContain("❯");
+  expect(lines[1]?.startsWith("❯ ")).toBe(true);
+  expect(visibleWidth(lines[1] ?? "")).toBe(120);
+  expect(visibleWidth(lines[2] ?? "")).toBe(120);
 });
 
 test("inputHistoryExtension installs a persistent editor factory on session start", () => {

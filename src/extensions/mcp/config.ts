@@ -30,11 +30,9 @@ export function loadMcpConfig(cwd: string): Record<string, McpServerConfig> {
       if (parsed && typeof parsed === "object" && parsed.mcpServers) {
         return parsed.mcpServers;
       }
-      console.error(`[mcp] Warning: ${path} has no "mcpServers" key, skipping.`);
       return {};
     } catch (e) {
-      const msg = e instanceof SyntaxError ? "invalid JSON" : String(e);
-      console.error(`[mcp] Warning: could not load ${path} (${msg})`);
+      void e;
       return {};
     }
   };

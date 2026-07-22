@@ -31,16 +31,22 @@ afterEach(() => {
 });
 
 test("buildDoctorReport shows safety switches and capabilities", () => {
+  const home = mkdtempSync(join(tmpdir(), "srcode-doctor-home-"));
+  process.env.SRCODE_HOME = home;
   process.env.SRCODE_ENABLE_PROJECT_HOOKS = "1";
   delete process.env.SRCODE_ENABLE_PROJECT_MCP;
 
-  const report = buildDoctorReport("/repo");
+  try {
+    const report = buildDoctorReport("/repo");
 
-  expect(report).toContain("srcode doctor");
-  expect(report).toContain("cwd: /repo");
-  expect(report).toContain("enableProjectHooks: enabled (env; env SRCODE_ENABLE_PROJECT_HOOKS)");
-  expect(report).toContain("enableProjectMcp: disabled (default; env SRCODE_ENABLE_PROJECT_MCP)");
-  expect(report).toContain("Project Code Exec (high)");
+    expect(report).toContain("srcode doctor");
+    expect(report).toContain("cwd: /repo");
+    expect(report).toContain("enableProjectHooks: enabled (env; env SRCODE_ENABLE_PROJECT_HOOKS)");
+    expect(report).toContain("enableProjectMcp: disabled (default; env SRCODE_ENABLE_PROJECT_MCP)");
+    expect(report).toContain("Project Code Exec (high)");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("safety settings are read from settings.json and env overrides them", () => {

@@ -36,6 +36,10 @@ export function srcodeSettingsPath(): string {
   return join(srcodeAgentHome(), "settings.json");
 }
 
+export function srcodeModelsPath(): string {
+  return join(srcodeAgentHome(), "models.json");
+}
+
 export function srcodeInputHistoryPath(): string {
   return join(srcodeAgentHome(), "input-history.jsonl");
 }
