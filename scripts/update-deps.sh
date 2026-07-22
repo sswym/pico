@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "=== 升级所有依赖到最新版本 ==="
+echo "=== 升级 @earendil-works/pi-* 依赖到最新版本 ==="
 echo ""
 
 # 记录升级前的 package.json
 cp package.json /tmp/package-before.json
 
 # 1. 升级依赖
-echo "▸ bun update --latest ..."
-bun update --latest 2>&1
+echo "▸ bun update @earendil-works/pi-agent-core @earendil-works/pi-ai @earendil-works/pi-coding-agent @earendil-works/pi-tui --latest ..."
+bun update @earendil-works/pi-agent-core @earendil-works/pi-ai @earendil-works/pi-coding-agent @earendil-works/pi-tui --latest 2>&1
 
 echo ""
 echo "▸ 变更的依赖："
