@@ -464,37 +464,22 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
 
 
-  // --- 3. inject recall + system-prompt header (frozen snapshot) -----------
+  // --- 3. inject memory header + per-turn recall --------------------------
   //
-  // At session start we capture a frozen snapshot of the memory context (header
-  // + top recall facts). This snapshot is injected into the system prompt for
-  // EVERY turn without re-querying, keeping the prefix cache stable across the
-  // session. Mid-session writes update live state (tool results) but do NOT
-  // change the system prompt — mirroring hermes-agent's MemoryStore frozen
-  // snapshot pattern.
-  //
-  // The snapshot is regenerated only on the first turn of a new session.
-  let frozenSnapshot: { header: string; curated: string; recall: string } | null = null;
-
   pi.on("before_agent_start", (event) => {
     try {
-      if (!frozenSnapshot) {
-        const header = systemPromptBlock(manager.count());
-        const recall = manager.prefetch(event.prompt, {
-          limit: 5,
-          minTrust: 0.3,
-          scope: SCOPE_PROJECT,
-          cwd: currentCwd ?? undefined,
-        });
-        frozenSnapshot = {
-          header,
-          curated: curated.formatForSystemPrompt(),
-          recall: formatRecallBlock(recall),
-        };
-      }
-      const recallBlock = buildMemoryContextBlock(frozenSnapshot.recall);
-      const extras = [frozenSnapshot.header, frozenSnapshot.curated, recallBlock]
-        .filter((s) => s.length > 0).join("\n\n");
+      const recall = manager.prefetch(event.prompt, {
+        limit: 5,
+        minTrust: 0.3,
+        scope: SCOPE_PROJECT,
+        cwd: currentCwd ?? undefined,
+      });
+      const recallBlock = buildMemoryContextBlock(formatRecallBlock(recall));
+      const extras = [
+        systemPromptBlock(manager.count()),
+        curated.formatForSystemPrompt(),
+        recallBlock,
+      ].filter((s) => s.length > 0).join("\n\n");
       if (!extras) return {};
       return { systemPrompt: `${event.systemPrompt}\n\n${extras}` };
     } catch {
@@ -570,7 +555,6 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     try {
       manager.onSessionEnd(sessionMessages);
       await manager.flushPending();
-      frozenSnapshot = null;  // next session gets a fresh snapshot
       manager.shutdown();
     } catch {
       // ignore

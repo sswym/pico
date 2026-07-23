@@ -329,10 +329,9 @@ export class MemoryStore {
     // still match at the FTS5 layer.
     const expandedQuery = expandQuery(filterStopwords(tokenize(query))).map((e) => e.term).join(" ");
     const fts = normaliseFtsQuery(expandedQuery);
-    if (!fts) return [];
-
     const minTrust = opts.minTrust ?? 0.3;
     const limit = Math.max(1, opts.limit ?? 10);
+    if (!fts) return this._fallbackSearch(query, opts, minTrust, limit);
 
     if (opts.scope === SCOPE_PROJECT && opts.cwd) {
       const pKey = projectScopeKey(opts.cwd);
@@ -348,7 +347,7 @@ export class MemoryStore {
           )
           .all(fts, minTrust, SCOPE_GLOBAL, pKey, opts.category, pKey, limit);
         this._bumpRetrieval(rows);
-        return rows;
+        return rows.length > 0 ? rows : this._fallbackSearch(query, opts, minTrust, limit);
       }
       const rows = this.db
         .query<Fact, [string, number, string, string, string, number]>(
@@ -357,11 +356,11 @@ export class MemoryStore {
            AND (f.scope = ? OR f.scope = ?)
            ORDER BY (CASE WHEN f.scope = ? THEN 1.5 ELSE 1.0 END) * (-bm25(facts_fts)) * f.trust_score DESC,
                     f.trust_score DESC, f.fact_id DESC
-           LIMIT ?`,
+          LIMIT ?`,
         )
         .all(fts, minTrust, SCOPE_GLOBAL, pKey, pKey, limit);
       this._bumpRetrieval(rows);
-      return rows;
+      return rows.length > 0 ? rows : this._fallbackSearch(query, opts, minTrust, limit);
     }
 
     const scopeVal = opts.scope ?? SCOPE_GLOBAL;
@@ -373,11 +372,11 @@ export class MemoryStore {
            AND f.scope = ? AND f.category = ?
            ORDER BY (-bm25(facts_fts)) * f.trust_score DESC,
                     f.trust_score DESC, f.fact_id DESC
-           LIMIT ?`,
+          LIMIT ?`,
         )
         .all(fts, minTrust, scopeVal, opts.category, limit);
       this._bumpRetrieval(rows);
-      return rows;
+      return rows.length > 0 ? rows : this._fallbackSearch(query, opts, minTrust, limit);
     }
     const rows = this.db
       .query<Fact, [string, number, string, number]>(
@@ -390,7 +389,7 @@ export class MemoryStore {
       )
       .all(fts, minTrust, scopeVal, limit);
     this._bumpRetrieval(rows);
-    return rows;
+    return rows.length > 0 ? rows : this._fallbackSearch(query, opts, minTrust, limit);
   }
 
   /** Bump retrieval_count on matched rows. */
@@ -602,5 +601,37 @@ export class MemoryStore {
     this.db
       .query("UPDATE facts SET tfidf_vector = ? WHERE fact_id = ?")
       .run(vectorToJson(vec), factId);
+  }
+
+  private _fallbackSearch(query: string, opts: SearchOptions, minTrust: number, limit: number): Fact[] {
+    const tokens = expandQuery(filterStopwords(tokenize(query))).map((e) => normalizeTerm(e.term));
+    if (tokens.length === 0) return [];
+
+    const candidates = this.list({
+      category: opts.category,
+      minTrust,
+      limit: 500,
+      scope: opts.scope,
+      cwd: opts.cwd,
+    });
+
+    const scored = candidates
+      .map((fact) => {
+        const content = `${fact.content} ${fact.tags}`.toLowerCase();
+        let score = 0;
+        for (const token of tokens) {
+          if (!token) continue;
+          if (content.includes(token)) score += token.length >= 4 ? 2 : 1;
+        }
+        if (score === 0) return null;
+        return { fact, score: score * fact.trust_score };
+      })
+      .filter((row): row is { fact: Fact; score: number } => row !== null)
+      .sort((a, b) => b.score - a.score || b.fact.fact_id - a.fact.fact_id)
+      .slice(0, limit)
+      .map((row) => row.fact);
+
+    this._bumpRetrieval(scored);
+    return scored;
   }
 }
