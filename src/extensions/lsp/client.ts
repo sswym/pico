@@ -54,7 +54,9 @@ export class LspError extends Error {
 // ── Content-Length framed reader ──────────────────────────────────────────
 
 const HEADER_SEP = Buffer.from("\r\n\r\n");
-const CONTENT_LENGTH_RE = /^Content-Length:\s*(\d+)/i;
+// The `m` flag lets Content-Length appear on any header line, not just the
+// first — some servers emit Content-Type before Content-Length.
+const CONTENT_LENGTH_RE = /^Content-Length:\s*(\d+)/im;
 
 class FramedReader {
   private buf = Buffer.alloc(0);
@@ -68,7 +70,14 @@ class FramedReader {
       if (sepIdx === -1) break;
       const header = this.buf.subarray(0, sepIdx).toString("utf8");
       const match = CONTENT_LENGTH_RE.exec(header);
-      if (!match?.[1]) break;
+      if (!match?.[1]) {
+        // A complete header block with no parseable Content-Length is
+        // malformed. Discard it (and its separator) instead of breaking —
+        // otherwise the same bytes are re-examined on every feed and the
+        // reader deadlocks, dropping all subsequent messages.
+        this.buf = this.buf.subarray(sepIdx + HEADER_SEP.length);
+        continue;
+      }
       const len = parseInt(match[1], 10);
       const bodyStart = sepIdx + HEADER_SEP.length;
       if (this.buf.length < bodyStart + len) break;
@@ -116,6 +125,8 @@ export class LspClient {
   private diagnosticsHandlers: DiagnosticsHandler[] = [];
   private emitter = new EventEmitter();
   private _ready = false;
+  /** Bounded tail of server stderr, surfaced when the server crashes. */
+  private stderrTail = "";
 
   constructor(config: ServerConfig, serverName?: string) {
     this.config = config;
@@ -219,11 +230,17 @@ export class LspClient {
     });
 
     child.stdout!.on("data", (chunk: Buffer) => this.onStdout(chunk));
-    child.stderr?.on("data", (_chunk: Buffer) => {});
+    child.stderr?.on("data", (chunk: Buffer) => {
+      // Keep a bounded tail so a crashing server's diagnostics aren't lost.
+      this.stderrTail = (this.stderrTail + chunk.toString("utf8")).slice(-4096);
+    });
     child.on("exit", (code) => {
       this._ready = false;
       this.status = "stopped";
-      this.rejectAll(new LspError(`Server exited with code ${code}`));
+      const detail = this.stderrTail.trim();
+      this.rejectAll(
+        new LspError(`Server exited with code ${code}${detail ? `: ${detail.slice(-500)}` : ""}`),
+      );
     });
 
     const err = await spawnReady;
@@ -273,12 +290,21 @@ export class LspClient {
   }
 
   async shutdown(): Promise<void> {
-    if (!this.process) return;
+    const proc = this.process;
+    if (!proc) return;
     try {
       await this.request("shutdown", null);
       this.notify("exit", null);
     } catch {}
-    this.process.kill();
+    proc.kill();
+    // Escalate to SIGKILL if the server ignores the graceful shutdown, so a
+    // wedged process doesn't linger. Unref'd + cleared on exit so it never
+    // keeps the event loop alive.
+    const forceKill = setTimeout(() => {
+      if (!proc.killed) proc.kill("SIGKILL");
+    }, 2000);
+    forceKill.unref?.();
+    proc.once("exit", () => clearTimeout(forceKill));
     this.process = null;
     this._ready = false;
     this.status = "stopped";

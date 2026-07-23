@@ -196,11 +196,18 @@ export function createRtkExtension(
         return { block: true, reason: rewrite.reason ?? "RTK deny rule matched" };
       }
 
-      if ((rewrite.verdict === "allow" || rewrite.verdict === "ask") && rewrite.command) {
+      if (rewrite.verdict === "allow" && rewrite.command) {
         event.input.command = rewrite.command;
         if (verbose) {
           notify(pi, `rewrote: ${original} -> ${rewrite.command}`);
         }
+        return {};
+      }
+
+      // "ask" means RTK is unsure. Do NOT silently swap the command the user
+      // already approved — surface the suggestion and run the original as-is.
+      if (rewrite.verdict === "ask" && rewrite.command) {
+        notify(pi, `suggests: ${original} -> ${rewrite.command} (running original; rewrite not applied)`);
         return {};
       }
 

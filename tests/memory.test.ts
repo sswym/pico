@@ -750,3 +750,18 @@ test("ProviderManager.syncTurn fans out to registered providers", async () => {
     try { rmSync(`${tempDb}-shm`); } catch { }
   }
 });
+
+test("correction whose content already exists does not penalise the original", () => {
+  const original = store.add("use npm", { category: "tool" });
+  const dup = store.add("use pnpm", { category: "tool" });
+  const trustBefore = store.get(original)!.trust_score;
+
+  // Correcting with content identical to an existing fact must dedupe to that
+  // fact WITHOUT docking the original's trust — the penalty must not fire when
+  // no new correction is actually inserted.
+  const returned = store.add("use pnpm", { category: "tool", correctionOf: original });
+
+  expect(returned).toBe(dup);
+  expect(store.get(original)!.trust_score).toBe(trustBefore);
+  expect(store.count()).toBe(2);
+});

@@ -128,3 +128,27 @@ test("/rtk reports probe status", async () => {
   expect(notices[0]!.text).toContain("status: available");
   expect(notices[0]!.text).toContain("git status -> rtk git status");
 });
+
+test("rtk extension does NOT rewrite the command on an ask verdict", async () => {
+  const fake = makeFakePi();
+  createRtkExtension({
+    // exit code 3 => "ask": rtk is unsure and suggests a rewrite.
+    rewrite: async () => ({ exitCode: 3, stdout: "rtk git log\n", stderr: "" }),
+  })(fake.api as any);
+
+  const event = {
+    type: "tool_call",
+    toolCallId: "t1",
+    toolName: "bash",
+    input: { command: "git log" },
+  };
+  const result = await fake.handlers.tool_call!(event);
+
+  expect(result).toEqual({});
+  // The user-approved command must run unchanged — no silent swap.
+  expect(event.input.command).toBe("git log");
+  // The suggestion is surfaced instead.
+  expect(
+    fake.messages.some((m) => typeof m.content === "string" && m.content.includes("suggests")),
+  ).toBe(true);
+});

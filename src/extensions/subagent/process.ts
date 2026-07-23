@@ -115,12 +115,16 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		let buffer = "";
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
 
 		const killProc = (reason: "abort" | "timeout") => {
 			if (reason === "abort") wasAborted = true;
 			else timedOut = true;
 			proc.kill("SIGTERM");
-			setTimer(() => {
+			// Escalate to SIGKILL if the child ignores SIGTERM. Tracked so it can
+			// be cleared once the process exits — otherwise this timer keeps the
+			// event loop alive for up to 5s after an otherwise clean exit.
+			killTimer = setTimer(() => {
 				if (!proc.killed) proc.kill("SIGKILL");
 			}, 5000);
 		};
@@ -142,12 +146,14 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 
 		proc.on("close", (code) => {
 			if (timeoutHandle) clearTimer(timeoutHandle);
+			if (killTimer) clearTimer(killTimer);
 			if (buffer.trim()) processLine(buffer);
 			resolve(code ?? 0);
 		});
 
 		proc.on("error", () => {
 			if (timeoutHandle) clearTimer(timeoutHandle);
+			if (killTimer) clearTimer(killTimer);
 			resolve(1);
 		});
 

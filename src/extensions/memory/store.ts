@@ -27,7 +27,7 @@ import {
 } from "./schema.ts";
 import { scanSecrets } from "./secrets.ts";
 import { extractEntities } from "./entities.ts";
-import { tokenize, filterStopwords, buildIdfMap, computeTfIdf, vectorToJson } from "./tfidf.ts";
+import { tokenize, filterStopwords, computeTfIdf, vectorToJson } from "./tfidf.ts";
 import { FactRetriever } from "./retrieval.ts";
 import { normalizeTerm, expandQuery } from "./synonyms.ts";
 import { projectScopeKey } from "./query-scope.ts";
@@ -156,30 +156,36 @@ export class MemoryStore {
     const correctionOf = opts.correctionOf ?? null;
     const source = opts.source ?? "auto";
 
-    // If this is a correction, validate and penalise the original fact.
-    let trust = clampTrust(opts.trust ?? this.defaultTrust);
-    if (correctionOf !== null) {
-      const original = this.get(correctionOf);
-      if (!original) throw new Error(`memory.add: correction_of #${correctionOf} not found`);
-      this.update(correctionOf, { trustDelta: CORRECTION_DELTA });
-      trust = CORRECTED_BOOST;
-    }
-
+    // Dedup FIRST: re-adding identical content returns the existing fact_id
+    // without side effects. This must happen before any correction penalty —
+    // otherwise a correction whose content already exists would dock the
+    // original fact's trust while inserting nothing new.
     const existing = this.db
       .query<{ fact_id: number }, [string]>("SELECT fact_id FROM facts WHERE content = ?")
       .get(trimmed);
     if (existing) return existing.fact_id;
 
-    const row = this.db
-      .query<{ fact_id: number }, [string, string, string, number, string, number | null, string]>(
-        `INSERT INTO facts (content, category, tags, trust_score, scope, correction_of, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         RETURNING fact_id`,
-      )
-      .get(trimmed, category, tags, trust, scopeKey, correctionOf, source);
-    if (!row) throw new Error("memory.add: insert returned no row");
-
-    const factId = row.fact_id;
+    // Correction penalty + insert must be atomic: if the insert fails we must
+    // not leave the original fact penalised without a replacement.
+    let trust = clampTrust(opts.trust ?? this.defaultTrust);
+    const insertFact = this.db.transaction(() => {
+      if (correctionOf !== null) {
+        const original = this.get(correctionOf);
+        if (!original) throw new Error(`memory.add: correction_of #${correctionOf} not found`);
+        this.update(correctionOf, { trustDelta: CORRECTION_DELTA });
+        trust = CORRECTED_BOOST;
+      }
+      const row = this.db
+        .query<{ fact_id: number }, [string, string, string, number, string, number | null, string]>(
+          `INSERT INTO facts (content, category, tags, trust_score, scope, correction_of, source)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           RETURNING fact_id`,
+        )
+        .get(trimmed, category, tags, trust, scopeKey, correctionOf, source);
+      if (!row) throw new Error("memory.add: insert returned no row");
+      return row.fact_id;
+    });
+    const factId = insertFact();
 
     // Post-insert: extract entities and link
     this._linkEntities(factId, trimmed);
@@ -575,22 +581,23 @@ export class MemoryStore {
 
   // ---- TF-IDF helpers ----------------------------------------------------
 
-  /** Compute and store TF-IDF vector for a fact. */
+  /**
+   * Compute and store the term vector for a fact.
+   *
+   * We store a normalized term-frequency vector derived from the fact's own
+   * content (O(content length)), NOT a corpus-wide TF-IDF. The previous
+   * implementation rebuilt the IDF map from a full-table scan on every write
+   * (O(N) per write, O(N^2) overall) yet only refreshed the current fact's
+   * vector — so every other fact kept the IDF from its own insertion moment
+   * and grew stale as the corpus changed. Since the retriever's query vector
+   * is also IDF-free and the FTS5 bm25 signal already supplies IDF-like
+   * weighting, storing self-contained TF vectors keeps both sides of the
+   * cosine on the same scale while removing the quadratic write cost and the
+   * staleness.
+   */
   private _computeTfIdf(factId: number, content: string): void {
-    // Get all fact contents for corpus
-    const allFacts = this.db
-      .query<{ content: string }, []>("SELECT content FROM facts")
-      .all() as { content: string }[];
-
-    // Build corpus: tokenize each doc, filter stopwords
-    const corpus = allFacts.map((f) =>
-      filterStopwords(tokenize(f.content)).map(normalizeTerm),
-    );
-    const idf = buildIdfMap(corpus);
-
-    // Compute vector for this fact (normalized tokens)
     const tokens = filterStopwords(tokenize(content)).map(normalizeTerm);
-    const vec = computeTfIdf(tokens, idf);
+    const vec = computeTfIdf(tokens, new Map());
 
     this.db
       .query("UPDATE facts SET tfidf_vector = ? WHERE fact_id = ?")

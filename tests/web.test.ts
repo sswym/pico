@@ -540,3 +540,21 @@ describe("webSearch end-to-end (mocked)", () => {
     expect(urls).toContain("https://shared.test/dup");
   });
 });
+
+test("fetchAndConvert refuses a redirect into a private network address", async () => {
+  let calls = 0;
+  const fetcher = (async () => {
+    calls++;
+    // A public URL 302-redirects to the cloud metadata endpoint.
+    return new Response(null, {
+      status: 302,
+      headers: { location: "https://169.254.169.254/latest/meta-data" },
+    });
+  }) as unknown as typeof fetch;
+
+  await expect(
+    fetchAndConvert("https://example.com/start", { fetcher, bypassCache: true }),
+  ).rejects.toThrow(/private network/i);
+  // Stopped at the redirect boundary — never fetched the private target.
+  expect(calls).toBe(1);
+});
