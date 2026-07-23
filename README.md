@@ -163,19 +163,11 @@ subagent(chain=[
 - `webFetch(url, prompt)` —— 通过 `Bun.fetch` 抓取公开 HTTPS URL，将 HTML 转为 Markdown（去除 `<script>/<style>/<nav>/<footer>`），默认拒绝 localhost/内网地址，响应读取上限 1 MiB，输出 8 KiB 上限，15 分钟 LRU 缓存（50 条）。
 - `webSearch(query, max_results?, allowed_domains?, blocked_domains?)` —— 默认使用 Exa MCP；若存在 `TAVILY_API_KEY`，默认合并 Exa + Tavily 结果并按 URL 去重。设置 `SRCODE_SEARCH_PROVIDER=exa` 或 `SRCODE_SEARCH_PROVIDER=tavily` 可强制单一 provider。
 
-### 7. RTK 命令压缩（可选）
-
-若系统 PATH 中安装了 [`rtk`](https://github.com/rtk-ai/rtk)，srcode 会在内置 `bash` 工具执行前调用 `rtk rewrite <command>`，把受支持的命令透明改写为 RTK 版本，例如 `git status` → `rtk git status`，从而减少进入上下文的 shell 输出。RTK 不可用或没有匹配规则时命令原样执行；RTK deny 规则命中时会阻断该次 `bash` 调用。
-
-- `/rtk` —— 探测并显示当前 RTK rewrite 状态。
-- `SRCODE_RTK=0` —— 禁用自动改写。
-- `SRCODE_RTK_VERBOSE=1` —— 在改写或不可用时输出诊断消息。
-
-### 8. `/init`（生成 AGENTS.md）
+### 7. `/init`（生成 AGENTS.md）
 
 多阶段引导式工作流：询问需要设置什么，可选派出 `scout` 子代理做代码库侦察，通过 `askUserQuestion` 填补信息缺口，然后编写极简的 **AGENTS.md**（以及可选的 AGENTS.local.md），并建议技能/钩子。**srcode 永远不会写入 CLAUDE.md**——这是写死在提示词中的硬规则。
 
-### 9. 权限与高风险动作边界
+### 8. 权限与高风险动作边界
 
 srcode 当前不注册独立的 `/permissions` 扩展；基础工具审批、项目可信任状态与交互权限由上游 `@earendil-works/pi-coding-agent` 负责。
 
