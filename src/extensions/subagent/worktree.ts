@@ -36,8 +36,13 @@ export function createWorktree(
 	agentName: string,
 	index: number,
 ): WorktreeHandle {
-	const branchName = `subagent/${agentName}-${index}-${Date.now()}`;
-	const worktreeDir = path.join(os.tmpdir(), `srcode-worktree-${agentName}-${index}-${process.pid}`);
+	// One unique token for both the branch and the worktree directory. Using
+	// the same token (incl. timestamp) keeps them consistent and prevents a
+	// stale directory from a prior batch — whose cleanup may have silently
+	// failed — from colliding with `git worktree add` on reuse.
+	const unique = `${index}-${process.pid}-${Date.now()}`;
+	const branchName = `subagent/${agentName}-${unique}`;
+	const worktreeDir = path.join(os.tmpdir(), `srcode-worktree-${agentName}-${unique}`);
 
 	execSync(
 		`git worktree add --detach "${worktreeDir}" HEAD`,

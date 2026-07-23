@@ -53,7 +53,10 @@ export function sanitizeFtsQuery(query: string): string {
     if (FTS_STOPWORDS[cleaned]) continue;
     tokens.push(`"${cleaned}"`);
   }
-  if (tokens.length === 0) return query;
+  // No usable tokens (all stopwords / too short): return empty so the caller
+  // skips the match instead of feeding raw, unsanitised text to FTS5 (which
+  // could contain FTS5 syntax characters and raise a query error).
+  if (tokens.length === 0) return "";
   return tokens.join(" OR ");
 }
 
@@ -379,17 +382,28 @@ export class FactRetriever {
 
     if (rows.length < 2) return [];
 
-    // Build entity sets per fact
+    if (rows.length >= MAX_FACTS) {
+      console.warn(
+        `[srcode memory] contradict() compared only the ${MAX_FACTS} most recently updated facts; ` +
+          `older facts were not analysed.`,
+      );
+    }
+
+    // Build entity sets per fact. A single batched query avoids one round-trip
+    // per fact (previously O(N) subqueries for up to MAX_FACTS rows).
     const factEntities = new Map<number, Set<string>>();
-    for (const row of rows) {
-      const entityRows = this.db
-        .query<{ name: string }, [number]>(
-          `SELECT e.name FROM entities e
-           JOIN fact_entities fe ON fe.entity_id = e.entity_id
-           WHERE fe.fact_id = ?`,
-        )
-        .all(row.fact_id) as { name: string }[];
-      factEntities.set(row.fact_id, new Set(entityRows.map((e) => e.name.toLowerCase())));
+    for (const row of rows) factEntities.set(row.fact_id, new Set());
+    const ids = rows.map((r) => r.fact_id);
+    const idPlaceholders = ids.map(() => "?").join(",");
+    const entityRows = this.db
+      .query<{ fact_id: number; name: string }, number[]>(
+        `SELECT fe.fact_id, e.name FROM entities e
+         JOIN fact_entities fe ON fe.entity_id = e.entity_id
+         WHERE fe.fact_id IN (${idPlaceholders})`,
+      )
+      .all(...ids) as { fact_id: number; name: string }[];
+    for (const er of entityRows) {
+      factEntities.get(er.fact_id)?.add(er.name.toLowerCase());
     }
 
     const contradictions: ContradictionResult[] = [];

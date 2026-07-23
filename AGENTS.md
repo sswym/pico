@@ -33,7 +33,7 @@ bun test tests/memory.test.ts  # 运行单个测试文件
 
 ## 架构
 
-srcode 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；srcode 通过 15 个 ExtensionFactory 插件注入功能。
+srcode 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；srcode 通过 18 个 ExtensionFactory 插件注入功能。
 
 ### 入口链
 
@@ -43,7 +43,7 @@ bin/srcode.ts → bin/env-bootstrap.ts（副作用，必须最先导入）→ ma
 
 ### 扩展注册顺序
 
-`vibe → oma → retro-theme → language → logo → memory → subagent → todo → ask → init → plan → web → lsp → hooks → mcp`
+`vibe → oma → retro-theme → language → input-history → logo → memory → subagent → todo → vision → ask → init → plan → web → lsp → hooks → mcp → doctor`
 
 ### 核心模式
 

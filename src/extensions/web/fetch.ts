@@ -219,13 +219,27 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
 
   const fetcher = opts.fetcher ?? globalThis.fetch;
   const timeout = withTimeoutSignal(opts.signal, FETCH_TIMEOUT_MS);
-  let response: Response;
+  let response!: Response;
   try {
-    response = await fetcher(upgraded, {
-      headers: { "User-Agent": FETCH_UA, Accept: "text/markdown, text/html, */*" },
-      signal: timeout.signal,
-      redirect: "follow",
-    });
+    // Follow redirects manually so every hop is re-validated against the
+    // private-network guard. `redirect: "follow"` would let a public URL
+    // bounce to localhost / 169.254.169.254 (cloud metadata) and slip past the
+    // check that only ever ran on the original URL.
+    let currentUrl = upgraded;
+    const MAX_REDIRECTS = 5;
+    for (let hop = 0; ; hop++) {
+      response = await fetcher(currentUrl, {
+        headers: { "User-Agent": FETCH_UA, Accept: "text/markdown, text/html, */*" },
+        signal: timeout.signal,
+        redirect: "manual",
+      });
+      if (response.status < 300 || response.status >= 400) break;
+      const location = response.headers.get("location");
+      if (!location) break;
+      if (hop >= MAX_REDIRECTS) throw new Error("Too many redirects");
+      // Resolve relative Location against the current URL, then re-validate.
+      currentUrl = normalizeUrl(new URL(location, currentUrl).toString(), opts);
+    }
   } finally {
     timeout.cleanup();
   }
@@ -274,6 +288,19 @@ function isPrivateHost(hostname: string): boolean {
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   if (host === "::1" || host === "0:0:0:0:0:0:0:1") return true;
   if (host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:")) return true;
+
+  // IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1 or ::ffff:7f00:1): unwrap and
+  // re-check the embedded IPv4 so mapped loopback/metadata addresses are caught.
+  const mapped = /^::ffff:(.+)$/.exec(host);
+  if (mapped) {
+    const inner = mapped[1]!;
+    if (inner.includes(".")) return isPrivateHost(inner);
+    const hex = inner.replace(/:/g, "");
+    if (/^[0-9a-f]{1,8}$/.test(hex)) {
+      const n = parseInt(hex, 16);
+      return isPrivateHost(`${(n >>> 24) & 0xff}.${(n >>> 16) & 0xff}.${(n >>> 8) & 0xff}.${n & 0xff}`);
+    }
+  }
 
   const parts = host.split(".").map((p) => Number(p));
   if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return false;

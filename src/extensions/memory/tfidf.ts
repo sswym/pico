@@ -9,12 +9,24 @@
  * TF-IDF  = TF * IDF
  */
 
-/** Simple whitespace tokenization with lowercasing and punctuation strip. */
+const CJK_PUNCT_RE = /[，。！？；：、“”‘’（）《》〈〉【】「」『』—…·]/g;
+const CJK_RETRIEVAL_TERMS = [
+  "数据库", "存储", "后端", "前端", "记忆", "偏好", "喜欢", "倾向",
+  "简洁", "精简", "扼要", "简练", "啰嗦", "冗余", "繁琐", "冗长",
+  "清晰", "清楚", "明了", "快速", "高效", "迅捷", "稳定", "健壮",
+  "可靠", "配置", "测试", "构建", "编译", "部署", "发布", "缺陷",
+  "故障", "接口",
+];
+
+/** Simple tokenization with lowercasing, punctuation stripping, and CJK runs. */
 export function tokenize(text: string): string[] {
   if (!text) return [];
-  return text
-    .toLowerCase()
-    .split(/\s+/)
+  const normalized = text.toLowerCase().replace(CJK_PUNCT_RE, " ");
+  const tokens: string[] = [...(normalized.match(/[\p{Script=Han}]+|[a-z0-9][a-z0-9._/-]*/gu) ?? [])];
+  for (const term of CJK_RETRIEVAL_TERMS) {
+    if (normalized.includes(term)) tokens.push(term);
+  }
+  return tokens
     .map((w) => w.replace(/^[.,;:!?"'()[\]{}#@<>]+|[.,;:!?"'()[\]{}#@<>]+$/g, ""))
     .filter((w) => w.length > 1);
 }

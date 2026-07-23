@@ -18,6 +18,7 @@ import { executeMemoryToolAction } from "../src/extensions/memory/tool.ts";
 import { WriteQueue, type MemoryProvider, type MemoryWriteMetadata } from "../src/extensions/memory/provider.ts";
 import { ProviderManager } from "../src/extensions/memory/provider-manager.ts";
 import { memoryExtension } from "../src/extensions/memory/index.ts";
+import { systemPromptBlock } from "../src/extensions/memory/prompt.ts";
 
 let dbPath: string;
 let store: MemoryStore;
@@ -50,6 +51,13 @@ test("search returns FTS hits weighted by trust score", () => {
   const hits = store.search("postgres OR github", { limit: 5, minTrust: 0 });
   expect(hits.map((h) => h.fact_id)).toContain(a);
   expect(hits.map((h) => h.fact_id)).toContain(b);
+});
+
+test("search falls back to synonym-aware matching when FTS misses", () => {
+  store.add("用户偏好用简洁的 TypeScript 代码，避免冗余抽象", { category: "user_pref" });
+  const hits = store.search("用户讨厌啰嗦的 TS 实现，喜欢精简", { limit: 5, minTrust: 0 });
+  expect(hits).toHaveLength(1);
+  expect(hits[0]!.content).toContain("简洁");
 });
 
 test("list filters by category and trust threshold", () => {
@@ -326,6 +334,60 @@ test("memoryExtension captures cwd on session_start before first recall", async 
     try { rmSync(`${tempDb}-wal`); } catch { }
     try { rmSync(`${tempDb}-shm`); } catch { }
   }
+});
+
+test("memoryExtension refreshes recall on each turn instead of freezing the first query", async () => {
+  const oldEnv = process.env.SRCODE_MEMORY_DB;
+  const tempDb = join(tmpdir(), `srcode-ext-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  process.env.SRCODE_MEMORY_DB = tempDb;
+
+  const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
+  const fakePi: any = {
+    on: (event: string, handler: (event: any, ctx: any) => any) => {
+      (handlers[event] ??= []).push(handler);
+    },
+    registerTool: () => {},
+    registerCommand: () => {},
+    sendMessage: () => {},
+  };
+
+  try {
+    memoryExtension(fakePi);
+    await handlers["session_start"]![0]!({}, {
+      cwd: "/tmp/srcode-memory-refresh",
+      sessionManager: { getSessionId: () => "memory-session" },
+    });
+
+    const first = await handlers["before_agent_start"]![0]!({
+      prompt: "redux toolkit",
+      systemPrompt: "BASE",
+    }, { cwd: "/tmp/srcode-memory-refresh" });
+    expect(first.systemPrompt).toContain("BASE");
+    expect(first.systemPrompt).not.toContain("redux toolkit");
+
+    const external = new MemoryStore(tempDb);
+    external.add("this project uses redux toolkit", { category: "project", scope: "project", cwd: "/tmp/srcode-memory-refresh" });
+    external.close();
+
+    const second = await handlers["before_agent_start"]![0]!({
+      prompt: "redux toolkit",
+      systemPrompt: "BASE",
+    }, { cwd: "/tmp/srcode-memory-refresh" });
+    expect(second.systemPrompt).toContain("this project uses redux toolkit");
+
+    await handlers["session_shutdown"]![0]!({}, { cwd: "/tmp/srcode-memory-refresh" });
+  } finally {
+    if (oldEnv === undefined) delete process.env.SRCODE_MEMORY_DB;
+    else process.env.SRCODE_MEMORY_DB = oldEnv;
+    try { rmSync(tempDb); } catch { }
+    try { rmSync(`${tempDb}-wal`); } catch { }
+    try { rmSync(`${tempDb}-shm`); } catch { }
+  }
+});
+
+test("memory prompt templates keep the search instruction in the system prompt", () => {
+  expect(systemPromptBlock(0)).toContain("memory(action=\"search\"");
+  expect(systemPromptBlock(3)).toContain("memory(action=\"search\"");
 });
 
 // ---- Entity system tests --------------------------------------------------
@@ -749,4 +811,19 @@ test("ProviderManager.syncTurn fans out to registered providers", async () => {
     try { rmSync(`${tempDb}-wal`); } catch { }
     try { rmSync(`${tempDb}-shm`); } catch { }
   }
+});
+
+test("correction whose content already exists does not penalise the original", () => {
+  const original = store.add("use npm", { category: "tool" });
+  const dup = store.add("use pnpm", { category: "tool" });
+  const trustBefore = store.get(original)!.trust_score;
+
+  // Correcting with content identical to an existing fact must dedupe to that
+  // fact WITHOUT docking the original's trust — the penalty must not fire when
+  // no new correction is actually inserted.
+  const returned = store.add("use pnpm", { category: "tool", correctionOf: original });
+
+  expect(returned).toBe(dup);
+  expect(store.get(original)!.trust_score).toBe(trustBefore);
+  expect(store.count()).toBe(2);
 });

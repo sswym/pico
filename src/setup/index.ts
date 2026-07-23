@@ -69,8 +69,6 @@ const ENV_KEYS_MANAGED_BY_SETUP = new Set([
   "SRCODE_VISION_MODEL",
   "SRCODE_MEMORY_DB",
   "SRCODE_MEMORY_DENY",
-  "SRCODE_RTK",
-  "SRCODE_RTK_VERBOSE",
 ]);
 
 const MEMORY_BACKENDS = ["builtin", "holographic"] as const;
@@ -86,8 +84,6 @@ const KNOWN_ENV_KEYS = [
   "SRCODE_VISION_MODEL",
   "SRCODE_MEMORY_DB",
   "SRCODE_MEMORY_DENY",
-  "SRCODE_RTK",
-  "SRCODE_RTK_VERBOSE",
 ];
 
 const SAFETY_DEFAULTS = {
