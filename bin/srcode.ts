@@ -44,6 +44,7 @@ import { vibeExtension } from "../src/extensions/vibe.ts";
 import { omaExtension } from "../src/extensions/oma.ts";
 import { webExtension } from "../src/extensions/web/index.ts";
 import lspExtension from "../src/extensions/lsp/index.ts";
+import { rtkExtension } from "../src/extensions/rtk/index.ts";
 import { hooksExtension } from "../src/extensions/hooks/index.ts";
 import { mcpExtension } from "../src/extensions/mcp/index.ts";
 import { doctorExtension } from "../src/extensions/doctor/index.ts";
@@ -212,6 +213,7 @@ await main(args, {
     planExtension,
     webExtension,
     lspExtension,
+    rtkExtension,
     hooksExtension,
     mcpExtension,
     doctorExtension,

@@ -2,10 +2,11 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as defaultInput, stdout as defaultOutput } from "node:process";
+import { spawnSync } from "node:child_process";
 import { srcodeHome, srcodeLspConfigPath, srcodeMcpConfigPath, srcodeModelsPath, srcodeSettingsPath } from "../extensions/paths.ts";
 import type { Settings } from "../extensions/settings.ts";
 
-export type SetupSection = "model" | "tools" | "safety" | "ui" | "memory" | "lsp" | "hooks" | "mcp" | "env";
+export type SetupSection = "model" | "tools" | "safety" | "ui" | "memory" | "lsp" | "hooks" | "mcp" | "integrations" | "env";
 type SetupLanguage = "zh" | "en";
 
 export interface SetupCliOptions {
@@ -49,7 +50,7 @@ interface SetupSectionMeta {
   isConfigured: (settings: JsonObject) => boolean;
 }
 
-const SETUP_SECTIONS: SetupSection[] = ["model", "tools", "safety", "ui", "memory", "lsp", "hooks", "mcp", "env"];
+const SETUP_SECTIONS: SetupSection[] = ["model", "tools", "safety", "ui", "memory", "lsp", "hooks", "mcp", "integrations", "env"];
 
 const KNOWN_PROVIDERS: ProviderChoice[] = [
   { id: "anthropic", label: "Anthropic", envName: "ANTHROPIC_API_KEY", defaultModel: "claude-opus-4-8" },
@@ -69,6 +70,8 @@ const ENV_KEYS_MANAGED_BY_SETUP = new Set([
   "SRCODE_VISION_MODEL",
   "SRCODE_MEMORY_DB",
   "SRCODE_MEMORY_DENY",
+  "CODEGRAPH_TELEMETRY",
+  "SRCODE_RTK",
 ]);
 
 const MEMORY_BACKENDS = ["builtin", "holographic"] as const;
@@ -84,6 +87,8 @@ const KNOWN_ENV_KEYS = [
   "SRCODE_VISION_MODEL",
   "SRCODE_MEMORY_DB",
   "SRCODE_MEMORY_DENY",
+  "CODEGRAPH_TELEMETRY",
+  "SRCODE_RTK",
 ];
 
 const SAFETY_DEFAULTS = {
@@ -141,6 +146,12 @@ const SETUP_SECTION_META: SetupSectionMeta[] = [
     title: "MCP",
     summary: summarizeMcpSection,
     isConfigured: hasMcpSection,
+  },
+  {
+    key: "integrations",
+    title: "Integrations",
+    summary: summarizeIntegrationsSection,
+    isConfigured: hasIntegrationsSection,
   },
   {
     key: "env",
@@ -205,6 +216,18 @@ const TEXT = {
     mcpName: "MCP server name",
     mcpCommand: "MCP server command",
     mcpArgs: "MCP server args (space-separated)",
+    integrationsHeader: "Integrations",
+    codegraphEnable: "Enable CodeGraph semantic code graph?",
+    codegraphInstall: "codegraph was not found on PATH. Install CodeGraph CLI now?",
+    codegraphMcp: "Write srcode user MCP config for CodeGraph?",
+    codegraphInitProject: "Initialize CodeGraph for the current project now?",
+    codegraphTelemetryOff: "Disable CodeGraph telemetry for srcode MCP server?",
+    rtkEnable: "Enable RTK shell output compression?",
+    rtkInstall: "rtk was not found on PATH. Install RTK CLI now?",
+    rtkMode: "RTK integration mode",
+    rtkModeChoices: ["spawnHook (auto-rewrite bash commands)", "instructionsOnly (settings only)"],
+    installSkipped: "install skipped; install the CLI manually before using this integration",
+    installFailed: "install failed",
     envHeader: "Environment",
     envKey: "Environment variable key",
     envValue: "Environment variable value",
@@ -222,6 +245,7 @@ const TEXT = {
     lspConfigSummary: "LSP config",
     hooksConfigSummary: "hooks config",
     mcpConfigSummary: "MCP config",
+    integrationsSummary: "integrations",
     customProviders: "custom providers",
     nextStep: "Run srcode to start, or use /doctor inside srcode to inspect the active settings.",
   },
@@ -279,6 +303,18 @@ const TEXT = {
     mcpName: "MCP server 名称",
     mcpCommand: "MCP server 命令",
     mcpArgs: "MCP server 参数（空格分隔）",
+    integrationsHeader: "集成",
+    codegraphEnable: "启用 CodeGraph 语义代码图？",
+    codegraphInstall: "PATH 中未找到 codegraph。现在安装 CodeGraph CLI？",
+    codegraphMcp: "写入 srcode 用户级 CodeGraph MCP 配置？",
+    codegraphInitProject: "现在为当前项目初始化 CodeGraph？",
+    codegraphTelemetryOff: "为 srcode MCP server 关闭 CodeGraph telemetry？",
+    rtkEnable: "启用 RTK shell 输出压缩？",
+    rtkInstall: "PATH 中未找到 rtk。现在安装 RTK CLI？",
+    rtkMode: "RTK 集成模式",
+    rtkModeChoices: ["spawnHook（自动改写 bash 命令）", "instructionsOnly（只写设置）"],
+    installSkipped: "已跳过安装；使用该集成前请手动安装 CLI",
+    installFailed: "安装失败",
     envHeader: "环境变量",
     envKey: "环境变量名",
     envValue: "环境变量值",
@@ -296,6 +332,7 @@ const TEXT = {
     lspConfigSummary: "LSP 配置",
     hooksConfigSummary: "hooks 配置",
     mcpConfigSummary: "MCP 配置",
+    integrationsSummary: "集成",
     customProviders: "自定义提供商",
     nextStep: "运行 srcode 启动；也可以在 srcode 内使用 /doctor 检查当前设置。",
   },
@@ -336,7 +373,7 @@ export function parseSetupArgs(args: string[]): SetupCliOptions | undefined {
 
 export function setupUsage(): string {
   return [
-    "Usage: srcode setup [model|tools|safety|ui|memory|lsp|hooks|mcp|env] [--non-interactive] [--reset] [--quick] [--reconfigure]",
+    "Usage: srcode setup [model|tools|safety|ui|memory|lsp|hooks|mcp|integrations|env] [--non-interactive] [--reset] [--quick] [--reconfigure]",
     "",
     "Interactive setup wizard for srcode.",
     "",
@@ -349,6 +386,7 @@ export function setupUsage(): string {
     "  lsp     Configure user LSP options",
     "  hooks   Configure user hooks file and project hook safety switch",
     "  mcp     Configure user MCP servers file and project MCP safety switch",
+    "  integrations  Configure optional CodeGraph and RTK integrations",
     "  env     Configure settings.json env variables hydrated at startup",
     "",
     "Options:",
@@ -594,6 +632,7 @@ async function runSection(section: SetupSection, prompt: SetupPrompter, io: Setu
   if (section === "lsp") await runLspSetup(prompt, io);
   if (section === "hooks") await runHooksSetup(prompt, io);
   if (section === "mcp") await runMcpSetup(prompt, io);
+  if (section === "integrations") await runIntegrationsSetup(prompt, io);
   if (section === "env") await runEnvSetup(prompt, io);
 }
 
@@ -821,6 +860,59 @@ async function runMcpSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   writeJson(srcodeMcpConfigPath(), config);
 }
 
+async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
+  const text = TEXT[prompt.language];
+  printHeader(io, text.integrationsHeader);
+  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const integrations = objectSetting(settings.integrations);
+  const codegraph = objectSetting(integrations.codegraph);
+  const rtk = objectSetting(integrations.rtk);
+
+  const enableCodeGraph = await prompt.yesNo(text.codegraphEnable, booleanSetting(codegraph.enabled, false));
+  codegraph.enabled = enableCodeGraph;
+  if (enableCodeGraph) {
+    if (!commandExists("codegraph")) {
+      const install = await prompt.yesNo(text.codegraphInstall, false);
+      if (install) {
+        const result = runInstallCommand("curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh");
+        if (!result.ok) writeLine(io, `${text.installFailed}: ${result.output}`);
+      } else {
+        writeLine(io, text.installSkipped);
+      }
+    }
+    const disableTelemetry = await prompt.yesNo(text.codegraphTelemetryOff, true);
+    if (await prompt.yesNo(text.codegraphMcp, true)) {
+      configureCodeGraphMcp({ telemetry: disableTelemetry ? "0" : undefined });
+    }
+    if (await prompt.yesNo(text.codegraphInitProject, false)) {
+      const result = runCommand(["codegraph", "init"]);
+      if (!result.ok) writeLine(io, `${text.installFailed}: ${result.output}`);
+    }
+  }
+
+  const enableRtk = await prompt.yesNo(text.rtkEnable, booleanSetting(rtk.enabled, false));
+  rtk.enabled = enableRtk;
+  if (enableRtk) {
+    if (!commandExists("rtk")) {
+      const install = await prompt.yesNo(text.rtkInstall, false);
+      if (install) {
+        const result = runInstallCommand("curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh");
+        if (!result.ok) writeLine(io, `${text.installFailed}: ${result.output}`);
+      } else {
+        writeLine(io, text.installSkipped);
+      }
+    }
+    const modeIndex = await prompt.choice(text.rtkMode, text.rtkModeChoices, stringSetting(rtk.mode) === "instructionsOnly" ? 1 : 0);
+    rtk.mode = modeIndex === 1 ? "instructionsOnly" : "spawnHook";
+    rtk.command = stringSetting(rtk.command) ?? "rtk";
+  }
+
+  integrations.codegraph = codegraph;
+  integrations.rtk = rtk;
+  settings.integrations = integrations;
+  writeJson(srcodeSettingsPath(), settings);
+}
+
 async function runEnvSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.envHeader);
@@ -935,6 +1027,25 @@ function summarizeMcpSection(_settings: JsonObject): string | undefined {
   return existsSync(srcodeMcpConfigPath()) ? srcodeMcpConfigPath() : undefined;
 }
 
+function hasIntegrationsSection(settings: JsonObject): boolean {
+  const integrations = objectSetting(settings.integrations);
+  const codegraph = objectSetting(integrations.codegraph);
+  const rtk = objectSetting(integrations.rtk);
+  return typeof codegraph.enabled === "boolean" || typeof rtk.enabled === "boolean";
+}
+
+function summarizeIntegrationsSection(settings: JsonObject): string | undefined {
+  const integrations = objectSetting(settings.integrations);
+  const bits: string[] = [];
+  const codegraph = objectSetting(integrations.codegraph);
+  if (typeof codegraph.enabled === "boolean") bits.push(`codegraph=${codegraph.enabled ? "on" : "off"}`);
+  const rtk = objectSetting(integrations.rtk);
+  if (typeof rtk.enabled === "boolean") {
+    bits.push(`rtk=${rtk.enabled ? stringSetting(rtk.mode) ?? "on" : "off"}`);
+  }
+  return bits.length > 0 ? bits.join(", ") : undefined;
+}
+
 function hasEnvSection(settings: JsonObject): boolean {
   return Object.keys(readSettingsEnv(settings)).length > 0;
 }
@@ -961,7 +1072,7 @@ export function applyNonInteractiveDefaults(): void {
 
 export function resetSetupConfig(): void {
   const settings = readJson(srcodeSettingsPath()) as Settings;
-  for (const key of ["defaultProvider", "defaultModel", "defaultThinkingLevel", "language", "auxiliary", "safety", "memory"]) {
+  for (const key of ["defaultProvider", "defaultModel", "defaultThinkingLevel", "language", "auxiliary", "safety", "memory", "integrations"]) {
     delete settings[key];
   }
   const env = readSettingsEnv(settings);
@@ -988,6 +1099,33 @@ export function writeCustomProvider(config: CustomProviderConfig): void {
   writeJson(srcodeModelsPath(), models);
 }
 
+export function configureCodeGraphMcp(options: { telemetry?: string } = {}): void {
+  const config = readJson(srcodeMcpConfigPath());
+  const servers = objectSetting(config.mcpServers);
+  const server: JsonObject = {
+    command: "codegraph",
+    args: ["serve", "--mcp"],
+  };
+  if (options.telemetry !== undefined) {
+    server.env = { CODEGRAPH_TELEMETRY: options.telemetry };
+  }
+  servers.codegraph = server;
+  config.mcpServers = servers;
+  writeJson(srcodeMcpConfigPath(), config);
+}
+
+export function configureRtkIntegration(options: { enabled: boolean; mode?: "spawnHook" | "instructionsOnly"; command?: string }): void {
+  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const integrations = objectSetting(settings.integrations);
+  integrations.rtk = {
+    enabled: options.enabled,
+    mode: options.mode ?? "spawnHook",
+    command: options.command ?? "rtk",
+  };
+  settings.integrations = integrations;
+  writeJson(srcodeSettingsPath(), settings);
+}
+
 export function buildSetupSummary(settings: JsonObject, models: JsonObject, language: SetupLanguage = "en"): string {
   const text = TEXT[language];
   const lines = [text.complete];
@@ -1008,6 +1146,8 @@ export function buildSetupSummary(settings: JsonObject, models: JsonObject, lang
   if (existsSync(srcodeLspConfigPath())) lines.push(`${text.lspConfigSummary}: ${srcodeLspConfigPath()}`);
   if (existsSync(userHooksPath())) lines.push(`${text.hooksConfigSummary}: ${userHooksPath()}`);
   if (existsSync(srcodeMcpConfigPath())) lines.push(`${text.mcpConfigSummary}: ${srcodeMcpConfigPath()}`);
+  const integrationsSummary = summarizeIntegrationsSection(settings);
+  if (integrationsSummary) lines.push(`${text.integrationsSummary}: ${integrationsSummary}`);
   if (Object.keys(objectSetting(models.providers)).length > 0) {
     lines.push(`${text.customProviders}: ${Object.keys(objectSetting(models.providers)).sort().join(", ")}`);
   }
@@ -1048,6 +1188,37 @@ function readJson(path: string): JsonObject {
 function writeJson(path: string, value: JsonObject): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(value, null, 2) + "\n", "utf-8");
+}
+
+function commandExists(command: string): boolean {
+  const result = spawnSync("sh", ["-c", `command -v ${shellQuote(command)} >/dev/null 2>&1`], {
+    stdio: "ignore",
+  });
+  return result.status === 0;
+}
+
+function runInstallCommand(command: string): { ok: boolean; output: string } {
+  const result = spawnSync("sh", ["-c", command], {
+    encoding: "utf-8",
+    maxBuffer: 1024 * 1024,
+  });
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+  return { ok: result.status === 0, output };
+}
+
+function runCommand(args: string[]): { ok: boolean; output: string } {
+  const [command, ...rest] = args;
+  if (!command) return { ok: false, output: "missing command" };
+  const result = spawnSync(command, rest, {
+    encoding: "utf-8",
+    maxBuffer: 1024 * 1024,
+  });
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+  return { ok: result.status === 0, output };
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function objectSetting(value: unknown): JsonObject {

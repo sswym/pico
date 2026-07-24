@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildSetupSummary, parseSetupArgs, resetSetupConfig, runSetupCommand, writeCustomProvider } from "../src/setup/index.ts";
+import { buildSetupSummary, configureCodeGraphMcp, configureRtkIntegration, parseSetupArgs, resetSetupConfig, runSetupCommand, writeCustomProvider } from "../src/setup/index.ts";
 import { srcodeLspConfigPath, srcodeMcpConfigPath, srcodeModelsPath, srcodeSettingsPath } from "../src/extensions/paths.ts";
 
 const savedEnv = {
@@ -59,6 +59,7 @@ test("parseSetupArgs recognizes setup sections and flags", () => {
   expect(parseSetupArgs(["setup", "lsp"])?.section).toBe("lsp");
   expect(parseSetupArgs(["setup", "hooks"])?.section).toBe("hooks");
   expect(parseSetupArgs(["setup", "mcp"])?.section).toBe("mcp");
+  expect(parseSetupArgs(["setup", "integrations"])?.section).toBe("integrations");
   expect(parseSetupArgs(["setup", "env"])?.section).toBe("env");
   expect(parseSetupArgs(["doctor"])).toBeUndefined();
   expect(parseSetupArgs(["setup", "unknown"])?.error).toContain("unknown setup argument");
@@ -147,6 +148,7 @@ test("resetSetupConfig removes only setup-managed settings", () => {
       safety: { enableProjectHooks: true },
       auxiliary: { vision: { provider: "openai", model: "gpt-4o-mini" } },
       memory: { backend: "holographic" },
+      integrations: { rtk: { enabled: true } },
     }));
 
     resetSetupConfig();
@@ -158,8 +160,44 @@ test("resetSetupConfig removes only setup-managed settings", () => {
     expect(settings.safety).toBeUndefined();
     expect(settings.auxiliary).toBeUndefined();
     expect(settings.memory).toBeUndefined();
+    expect(settings.integrations).toBeUndefined();
     expect(settings.packages).toEqual(["keep-me"]);
     expect(settings.env).toEqual({ CUSTOM_ENV: "keep-me" });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("configureCodeGraphMcp writes srcode user MCP server", () => {
+  const home = useTempHome();
+  try {
+    configureCodeGraphMcp({ telemetry: "0" });
+
+    const config = readJson(srcodeMcpConfigPath());
+    expect(config.mcpServers.codegraph).toEqual({
+      command: "codegraph",
+      args: ["serve", "--mcp"],
+      env: { CODEGRAPH_TELEMETRY: "0" },
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("configureRtkIntegration writes integration settings", () => {
+  const home = useTempHome();
+  try {
+    configureRtkIntegration({ enabled: true, mode: "spawnHook", command: "rtk" });
+
+    const settings = readJson(srcodeSettingsPath());
+    expect(settings.integrations.rtk).toEqual({
+      enabled: true,
+      mode: "spawnHook",
+      command: "rtk",
+    });
+
+    const summary = buildSetupSummary(settings, {}, "en");
+    expect(summary).toContain("integrations: rtk=spawnHook");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
