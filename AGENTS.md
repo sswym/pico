@@ -20,6 +20,7 @@ bun test tests/memory.test.ts  # 运行单个测试文件
 - **构建**：`scripts/build.ts` + `bun build --compile`，产出独立二进制（~102MB）
 - **包管理**：`bun.lock`，`@earendil-works/*` 系列上游依赖
 - **零 lint/formatter 配置** — 不引入 ESLint/Prettier/biome
+- **缩进**：默认 2 空格；`src/extensions/subagent/`、`oma.ts`、`lsp/executor.ts` 沿用 Tab。`.editorconfig` 已记录此分布，新文件跟随所在目录，不要为改缩进产生纯格式 diff
 
 ## 关键 tsconfig 非默认值
 

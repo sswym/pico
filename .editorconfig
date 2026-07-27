@@ -1,0 +1,21 @@
+# srcode intentionally ships no formatter (see AGENTS.md — no ESLint/Prettier/biome).
+# This file only records the indentation each area already uses, so editors stop
+# introducing drift in new files. It reformats nothing on its own.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+
+[*.{ts,tsx,js,json,jsonc,md,yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# Tab-indented by history. Left as-is so no formatting-only diff is needed.
+[src/extensions/subagent/*.ts]
+indent_style = tab
+
+[src/extensions/{oma.ts,lsp/executor.ts}]
+indent_style = tab
