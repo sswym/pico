@@ -56,6 +56,6 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       intervalMs: 600,
     });
 
-    installClaudeLikeFooter(ctx);
+    installClaudeLikeFooter(ctx, { getThinkingLevel: () => pi.getThinkingLevel() });
   });
 };

@@ -26,22 +26,27 @@ test("LOGO has 5 lines and contains the srcode silhouette", () => {
   expect(lines[3]).toContain("|_/|");
 });
 
-test("renderLogoHeader renders a compact Claude-like header", () => {
-  const out = renderLogoHeader(stubTheme);
+test("renderLogoHeader renders a boxed welcome header", () => {
+  const out = renderLogoHeader(stubTheme, 96, { model: { id: "deepseek-v4-flash-free", provider: "zen-openai" } });
   expect(out).not.toContain(LOGO);
-  expect(out).toContain("✻ srcode");
   expect(out).toContain("srcode v");
-  expect(out).toContain("/ commands");
-  expect(out).toContain("! bash");
-  expect(out).toContain("F7 todos");
+  expect(out).toContain("Welcome back!");
+  expect(out).toContain("Tips");
+  expect(out).toContain("/ for commands");
+  expect(out).toContain("! to run bash");
+  expect(out).toContain("Shift+Tab cycle thinking");
+  expect(out).toContain("Loaded");
+  expect(out).toContain("Recent sessions");
+  expect(out).toContain("deepseek-v4-flash-free");
+  expect(out).toContain("zen-openai");
 });
 
 test("renderLogoHeader uses a compact header on narrow terminals", () => {
   const out = renderLogoHeader(stubTheme, 48);
   expect(out).not.toContain(LOGO);
-  expect(out).not.toContain("vibe coding agent");
+  expect(out).not.toContain("Welcome back!");
   expect(out).toContain("srcode v");
-  expect(out).toContain("F7 todos");
+  expect(out).toContain("/ commands");
 });
 
 test("logoExtension only subscribes to session_start", () => {
@@ -79,7 +84,7 @@ test("session_start handler installs a header factory that renders the logo", ()
     sendUserMessage: () => {},
   };
   logoExtension(fakePi);
-  handler({ type: "session_start", reason: "startup" }, { ui: fakeUi });
+  handler({ type: "session_start", reason: "startup" }, { ui: fakeUi, model: { id: "deepseek-v4-flash-free", provider: "zen-openai" } });
   expect(typeof capturedFactory).toBe("function");
 
   // Render the factory: should produce a Container with at least one Text
@@ -87,6 +92,7 @@ test("session_start handler installs a header factory that renders the logo", ()
   const component = capturedFactory({ terminal: { columns: 80 } }, stubTheme);
   const lines = component.render(80);
   const joined = lines.join("\n");
-  expect(joined).toContain("✻ srcode");
-  expect(joined).toContain("F7 todos");
+  expect(joined).toContain("Welcome back!");
+  expect(joined).toContain("Tips");
+  expect(joined).toContain("deepseek-v4-flash-free");
 });
