@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildSetupSummary, configureCodeGraphMcp, configureRtkIntegration, parseSetupArgs, resetSetupConfig, runSection, runSetupCommand, writeCustomProvider, type SetupLanguage, type SetupPrompter } from "../src/setup/index.ts";
+import { buildSetupSummary, configureCodeGraphMcp, configureRtkIntegration, parseSetupArgs, resetSetupConfig, runSection, runSetupCommand, writeCustomProvider, type SetupLanguage, type SetupPrompter, type SetupShell } from "../src/setup/index.ts";
 import { srcodeLspConfigPath, srcodeMcpConfigPath, srcodeModelsPath, srcodeSettingsPath } from "../src/extensions/paths.ts";
 
 const savedEnv = {
@@ -296,6 +296,7 @@ async function withSection(
     home: string;
   }) => void,
   seed?: (home: string) => void,
+  shell?: SetupShell,
 ): Promise<void> {
   const home = useTempHome();
   const collector = collectOutput();
@@ -304,7 +305,7 @@ async function withSection(
     // Sections create this lazily; seeds need it up front.
     mkdirSync(join(home, "agent"), { recursive: true });
     seed?.(home);
-    await runSection(section, prompter, collector.io as any);
+    await runSection(section, prompter, collector.io as any, shell);
     fn({
       settings: () => readJson(srcodeSettingsPath()),
       asked,
@@ -621,4 +622,281 @@ test("runSection dispatches to exactly one section", async () => {
   await withSection("safety", { yesNo: [true, true, true, true] }, ({ home }) => {
     expect(existsSync(join(home, "lsp.json"))).toBe(false);
   });
+});
+
+// --- integrations section -------------------------------------------------
+//
+// The integrations section is the only setup path that shells out, and its
+// install branches run `curl … | sh`. Every test here drives a fake shell that
+// records calls instead of executing them — nothing below spawns a process.
+
+function fakeShell(opts: {
+  exists?: boolean | Record<string, boolean>;
+  installResult?: { ok: boolean; output: string };
+  runResult?: { ok: boolean; output: string };
+} = {}) {
+  const calls = {
+    commandExists: [] as string[],
+    runInstall: [] as string[],
+    run: [] as string[][],
+  };
+  const shell: SetupShell = {
+    commandExists(command) {
+      calls.commandExists.push(command);
+      if (typeof opts.exists === "boolean") return opts.exists;
+      return opts.exists?.[command] ?? false;
+    },
+    runInstall(command) {
+      calls.runInstall.push(command);
+      return opts.installResult ?? { ok: true, output: "" };
+    },
+    run(args) {
+      calls.run.push(args);
+      return opts.runResult ?? { ok: true, output: "" };
+    },
+  };
+  return { shell, calls };
+}
+
+test("integrations section touches no external command when both are declined", async () => {
+  const { shell, calls } = fakeShell();
+  await withSection(
+    "integrations",
+    {},
+    ({ settings }) => {
+      expect(settings().integrations).toMatchObject({
+        codegraph: { enabled: false },
+        rtk: { enabled: false },
+      });
+      // Sentinel: the disabled path must not probe or spawn anything.
+      expect(calls.commandExists).toEqual([]);
+      expect(calls.runInstall).toEqual([]);
+      expect(calls.run).toEqual([]);
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section skips install when codegraph is already present", async () => {
+  const { shell, calls } = fakeShell({ exists: true });
+  await withSection(
+    "integrations",
+    // enable codegraph; telemetry/mcp default to true, init defaults to false.
+    { yesNo: [true] },
+    ({ settings }) => {
+      expect(settings().integrations.codegraph.enabled).toBe(true);
+      expect(calls.commandExists).toContain("codegraph");
+      expect(calls.runInstall).toEqual([]);
+      expect(calls.run).toEqual([]);
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section installs codegraph on request", async () => {
+  const { shell, calls } = fakeShell({ exists: false });
+  await withSection(
+    "integrations",
+    { yesNo: [true, true] },
+    () => {
+      expect(calls.runInstall).toHaveLength(1);
+      expect(calls.runInstall[0]).toContain("codegraph");
+      expect(calls.runInstall[0]).toContain("install.sh");
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section reports a failed codegraph install", async () => {
+  const { shell } = fakeShell({ exists: false, installResult: { ok: false, output: "network down" } });
+  await withSection(
+    "integrations",
+    { yesNo: [true, true] },
+    ({ output }) => {
+      expect(output).toContain("network down");
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section skips the install when the user declines", async () => {
+  const { shell, calls } = fakeShell({ exists: false });
+  await withSection(
+    "integrations",
+    { yesNo: [true, false] },
+    ({ output, settings }) => {
+      expect(calls.runInstall).toEqual([]);
+      expect(output.length).toBeGreaterThan(0);
+      // Declining the install must not disable the integration itself.
+      expect(settings().integrations.codegraph.enabled).toBe(true);
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section registers the codegraph MCP server with telemetry off", async () => {
+  const { shell } = fakeShell({ exists: true });
+  await withSection(
+    "integrations",
+    // enable, telemetryOff=true, mcp=true
+    { yesNo: [true, true, true] },
+    () => {
+      const server = readJson(srcodeMcpConfigPath()).mcpServers.codegraph;
+      expect(server).toMatchObject({ command: "codegraph", args: ["serve", "--mcp"] });
+      expect(server.env.CODEGRAPH_TELEMETRY).toBe("0");
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section leaves telemetry unset when the user keeps it on", async () => {
+  const { shell } = fakeShell({ exists: true });
+  await withSection(
+    "integrations",
+    // enable, telemetryOff=false, mcp=true
+    { yesNo: [true, false, true] },
+    () => {
+      const server = readJson(srcodeMcpConfigPath()).mcpServers.codegraph;
+      expect(server.env?.CODEGRAPH_TELEMETRY).toBeUndefined();
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section skips MCP registration when declined", async () => {
+  const { shell } = fakeShell({ exists: true });
+  await withSection(
+    "integrations",
+    // enable, telemetryOff=true, mcp=false
+    { yesNo: [true, true, false] },
+    ({ home }) => {
+      expect(existsSync(join(home, "mcp-servers.json"))).toBe(false);
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section runs codegraph init on request", async () => {
+  const { shell, calls } = fakeShell({ exists: true });
+  await withSection(
+    "integrations",
+    // enable, telemetryOff=true, mcp=false, init=true
+    { yesNo: [true, true, false, true] },
+    () => {
+      expect(calls.run).toEqual([["codegraph", "init"]]);
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section reports a failed codegraph init", async () => {
+  const { shell } = fakeShell({ exists: true, runResult: { ok: false, output: "not a repo" } });
+  await withSection(
+    "integrations",
+    { yesNo: [true, true, false, true] },
+    ({ output }) => {
+      expect(output).toContain("not a repo");
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section stores rtk in spawnHook mode by default", async () => {
+  const { shell, calls } = fakeShell({ exists: true });
+  await withSection(
+    "integrations",
+    // codegraph declined, rtk enabled, mode choice defaults to 0.
+    { yesNo: [false, true] },
+    ({ settings }) => {
+      expect(settings().integrations.rtk).toEqual({
+        enabled: true,
+        mode: "spawnHook",
+        command: "rtk",
+      });
+      expect(calls.commandExists).toEqual(["rtk"]);
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section stores rtk in instructionsOnly mode when chosen", async () => {
+  const { shell } = fakeShell({ exists: true });
+  await withSection(
+    "integrations",
+    { yesNo: [false, true], choice: [1] },
+    ({ settings }) => {
+      expect(settings().integrations.rtk.mode).toBe("instructionsOnly");
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section installs rtk on request", async () => {
+  const { shell, calls } = fakeShell({ exists: { codegraph: true, rtk: false } });
+  await withSection(
+    "integrations",
+    // codegraph declined, rtk enabled, rtk install accepted
+    { yesNo: [false, true, true] },
+    () => {
+      expect(calls.runInstall).toHaveLength(1);
+      expect(calls.runInstall[0]).toContain("rtk");
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section offers stored values as defaults", async () => {
+  const { shell } = fakeShell({ exists: true });
+  await withSection(
+    "integrations",
+    {},
+    ({ asked, settings }) => {
+      // Stored enabled flags must come back as the prompt defaults...
+      expect(asked.yesNo[0]!.defaultValue).toBe(true);
+      // ...and an empty script must preserve them.
+      expect(settings().integrations.codegraph.enabled).toBe(true);
+      expect(settings().integrations.rtk.enabled).toBe(true);
+      // Stored instructionsOnly must be the pre-selected choice.
+      expect(asked.choice[0]!.defaultIndex).toBe(1);
+    },
+    () => {
+      writeFileSync(srcodeSettingsPath(), JSON.stringify({
+        integrations: {
+          codegraph: { enabled: true },
+          rtk: { enabled: true, mode: "instructionsOnly", command: "rtk" },
+        },
+      }));
+    },
+    shell,
+  );
+});
+
+test("integrations section preserves an existing custom rtk command", async () => {
+  const { shell } = fakeShell({ exists: true });
+  await withSection(
+    "integrations",
+    { yesNo: [false, true] },
+    ({ settings }) => {
+      expect(settings().integrations.rtk.command).toBe("/opt/bin/rtk");
+    },
+    () => {
+      writeFileSync(srcodeSettingsPath(), JSON.stringify({
+        integrations: { rtk: { command: "/opt/bin/rtk" } },
+      }));
+    },
+    shell,
+  );
 });

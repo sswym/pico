@@ -58,6 +58,18 @@ export interface SetupPrompter {
   choice(question: string, choices: string[], defaultIndex?: number): Promise<number>;
 }
 
+/**
+ * External command surface used by the integrations section.
+ *
+ * Behind an interface because the default implementation shells out — the
+ * install paths run `curl … | sh`, which tests must never execute.
+ */
+export interface SetupShell {
+  commandExists(command: string): boolean;
+  runInstall(command: string): { ok: boolean; output: string };
+  run(args: string[]): { ok: boolean; output: string };
+}
+
 interface SetupSectionMeta {
   key: SetupSection;
   title: string;
@@ -625,7 +637,12 @@ async function runChoiceMenu(
   });
 }
 
-export async function runSection(section: SetupSection, prompt: SetupPrompter, io: SetupIo): Promise<void> {
+export async function runSection(
+  section: SetupSection,
+  prompt: SetupPrompter,
+  io: SetupIo,
+  shell: SetupShell = defaultShell,
+): Promise<void> {
   if (section === "model") await runModelSetup(prompt, io);
   if (section === "tools") await runToolsSetup(prompt, io);
   if (section === "safety") await runSafetySetup(prompt, io);
@@ -634,7 +651,7 @@ export async function runSection(section: SetupSection, prompt: SetupPrompter, i
   if (section === "lsp") await runLspSetup(prompt, io);
   if (section === "hooks") await runHooksSetup(prompt, io);
   if (section === "mcp") await runMcpSetup(prompt, io);
-  if (section === "integrations") await runIntegrationsSetup(prompt, io);
+  if (section === "integrations") await runIntegrationsSetup(prompt, io, shell);
   if (section === "env") await runEnvSetup(prompt, io);
 }
 
@@ -862,7 +879,7 @@ async function runMcpSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   writeJson(srcodeMcpConfigPath(), config);
 }
 
-async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
+async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo, shell: SetupShell): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.integrationsHeader);
   const settings = readJson(srcodeSettingsPath()) as Settings;
@@ -873,10 +890,10 @@ async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo): Promise
   const enableCodeGraph = await prompt.yesNo(text.codegraphEnable, booleanSetting(codegraph.enabled, false));
   codegraph.enabled = enableCodeGraph;
   if (enableCodeGraph) {
-    if (!commandExists("codegraph")) {
+    if (!shell.commandExists("codegraph")) {
       const install = await prompt.yesNo(text.codegraphInstall, false);
       if (install) {
-        const result = runInstallCommand("curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh");
+        const result = shell.runInstall("curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh");
         if (!result.ok) writeLine(io, `${text.installFailed}: ${result.output}`);
       } else {
         writeLine(io, text.installSkipped);
@@ -887,7 +904,7 @@ async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo): Promise
       configureCodeGraphMcp({ telemetry: disableTelemetry ? "0" : undefined });
     }
     if (await prompt.yesNo(text.codegraphInitProject, false)) {
-      const result = runCommand(["codegraph", "init"]);
+      const result = shell.run(["codegraph", "init"]);
       if (!result.ok) writeLine(io, `${text.installFailed}: ${result.output}`);
     }
   }
@@ -895,10 +912,10 @@ async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo): Promise
   const enableRtk = await prompt.yesNo(text.rtkEnable, booleanSetting(rtk.enabled, false));
   rtk.enabled = enableRtk;
   if (enableRtk) {
-    if (!commandExists("rtk")) {
+    if (!shell.commandExists("rtk")) {
       const install = await prompt.yesNo(text.rtkInstall, false);
       if (install) {
-        const result = runInstallCommand("curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh");
+        const result = shell.runInstall("curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh");
         if (!result.ok) writeLine(io, `${text.installFailed}: ${result.output}`);
       } else {
         writeLine(io, text.installSkipped);
@@ -1222,6 +1239,12 @@ function runCommand(args: string[]): { ok: boolean; output: string } {
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
+
+const defaultShell: SetupShell = {
+  commandExists,
+  runInstall: runInstallCommand,
+  run: runCommand,
+};
 
 function objectSetting(value: unknown): JsonObject {
   if (value && typeof value === "object" && !Array.isArray(value)) return value as JsonObject;
