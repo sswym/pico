@@ -16,9 +16,11 @@ const plainTheme = {
   bold: (text: string) => text,
 };
 
-test("retro theme uses white-gray editor borders", () => {
-  expect(retroTheme.vars.inputGray).toBe("#d6d3cc");
-  expect(retroTheme.colors.borderMuted).toBe("inputGray");
+test("retro theme uses powerline-footer inspired color scheme", () => {
+  expect(retroTheme.vars.pink).toBe("#d787af");
+  expect(retroTheme.vars.amber).toBe("#febc38");
+  expect(retroTheme.vars.teal).toBe("#00afaf");
+  expect(retroTheme.colors.borderMuted).toBe("warmMuted");
   expect(retroTheme.colors.thinkingOff).toBe("inputGray");
   expect(retroTheme.colors.thinkingMinimal).toBe("inputGray");
 });
@@ -152,7 +154,7 @@ test("createClaudeLikeFooter subscribes to branch changes and renders one line",
       getExtensionStatuses: () => [],
       onBranchChange: (handler) => {
         branchHandler = handler;
-        return () => {};
+        return () => { };
       },
     },
   );
