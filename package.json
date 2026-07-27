@@ -13,7 +13,6 @@
     "start": "bun run bin/srcode.ts",
     "test": "bun test",
     "verify": "bunx tsc --noEmit && bun test",
-    "sync-ccg-to-master": "bash scripts/sync-ccg-to-master.sh",
     "update-deps": "bash scripts/update-deps.sh"
   },
   "devDependencies": {
