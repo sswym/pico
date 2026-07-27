@@ -7,7 +7,7 @@ import { srcodeHome, srcodeLspConfigPath, srcodeMcpConfigPath, srcodeModelsPath,
 import type { Settings } from "../extensions/settings.ts";
 
 export type SetupSection = "model" | "tools" | "safety" | "ui" | "memory" | "lsp" | "hooks" | "mcp" | "integrations" | "env";
-type SetupLanguage = "zh" | "en";
+export type SetupLanguage = "zh" | "en";
 
 export interface SetupCliOptions {
   section?: SetupSection;
@@ -38,9 +38,24 @@ interface JsonObject {
   [key: string]: unknown;
 }
 
-interface SetupIo {
+export interface SetupIo {
   input: NodeJS.ReadableStream;
   output: NodeJS.WritableStream;
+}
+
+/**
+ * Question surface a setup section talks to.
+ *
+ * Sections depend on this interface rather than the readline implementation so
+ * they can be driven by a scripted prompter in tests.
+ */
+export interface SetupPrompter {
+  readonly language: SetupLanguage;
+  text(question: string, defaultValue?: string): Promise<string>;
+  optionalSecret(question: string, currentConfigured: boolean): Promise<string | undefined>;
+  optionalValue(question: string, defaultValue?: string): Promise<string | undefined>;
+  yesNo(question: string, defaultValue: boolean): Promise<boolean>;
+  choice(question: string, choices: string[], defaultIndex?: number): Promise<number>;
 }
 
 interface SetupSectionMeta {
@@ -416,7 +431,7 @@ export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
   try {
     language = await chooseSetupLanguage(io);
     io.output.write("\x1b[2J\x1b[H");
-    const prompt = new SetupPrompter(io, language);
+    const prompt = new ReadlinePrompter(io, language);
     const selectedSections = options.section
       ? [getSectionMeta(options.section)]
       : SETUP_SECTION_META;
@@ -443,7 +458,7 @@ export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
   return 0;
 }
 
-class SetupPrompter {
+class ReadlinePrompter implements SetupPrompter {
   constructor(
     private readonly io: SetupIo,
     readonly language: SetupLanguage,
@@ -610,7 +625,7 @@ async function runChoiceMenu(
   });
 }
 
-async function runSection(section: SetupSection, prompt: SetupPrompter, io: SetupIo): Promise<void> {
+export async function runSection(section: SetupSection, prompt: SetupPrompter, io: SetupIo): Promise<void> {
   if (section === "model") await runModelSetup(prompt, io);
   if (section === "tools") await runToolsSetup(prompt, io);
   if (section === "safety") await runSafetySetup(prompt, io);
