@@ -59,24 +59,8 @@ const KNOWN_PROVIDERS: ProviderChoice[] = [
   { id: "openrouter", label: "OpenRouter", envName: "OPENROUTER_API_KEY", defaultModel: "moonshotai/kimi-k2.6" },
 ];
 
-const ENV_KEYS_MANAGED_BY_SETUP = new Set([
-  "ANTHROPIC_API_KEY",
-  "OPENAI_API_KEY",
-  "GEMINI_API_KEY",
-  "OPENROUTER_API_KEY",
-  "TAVILY_API_KEY",
-  "SRCODE_SEARCH_PROVIDER",
-  "SRCODE_VISION_PROVIDER",
-  "SRCODE_VISION_MODEL",
-  "SRCODE_MEMORY_DB",
-  "SRCODE_MEMORY_DENY",
-  "CODEGRAPH_TELEMETRY",
-  "SRCODE_RTK",
-]);
-
-const MEMORY_BACKENDS = ["builtin", "holographic"] as const;
-const HOOK_EVENTS = ["PreToolUse", "PostToolUse", "PreSessionEnd", "PostUserMessage"] as const;
-const KNOWN_ENV_KEYS = [
+/** Single source of truth: env keys setup owns, in the order the env menu lists them. */
+const ENV_KEYS_MANAGED_BY_SETUP = [
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
   "GEMINI_API_KEY",
@@ -90,6 +74,9 @@ const KNOWN_ENV_KEYS = [
   "CODEGRAPH_TELEMETRY",
   "SRCODE_RTK",
 ];
+
+const MEMORY_BACKENDS = ["builtin", "holographic"] as const;
+const HOOK_EVENTS = ["PreToolUse", "PostToolUse", "PreSessionEnd", "PostUserMessage"] as const;
 
 const SAFETY_DEFAULTS = {
   allowUnattendedPlanApproval: false,
@@ -920,8 +907,8 @@ async function runEnvSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const env = readSettingsEnv(settings);
   writeLine(io, `${text.settingsEnv}: ${Object.keys(env).sort().join(", ") || "(none)"}`);
   while (await prompt.yesNo(text.addEnv, false)) {
-    const keyIndex = await prompt.choice(text.envKey, [...KNOWN_ENV_KEYS, "Custom"], 0);
-    const key = keyIndex === KNOWN_ENV_KEYS.length ? await prompt.text(text.envKey) : KNOWN_ENV_KEYS[keyIndex]!;
+    const keyIndex = await prompt.choice(text.envKey, [...ENV_KEYS_MANAGED_BY_SETUP, "Custom"], 0);
+    const key = keyIndex === ENV_KEYS_MANAGED_BY_SETUP.length ? await prompt.text(text.envKey) : ENV_KEYS_MANAGED_BY_SETUP[keyIndex]!;
     const value = await prompt.optionalValue(text.envValue, env[key] ?? process.env[key] ?? "");
     if (value !== undefined) setOrDelete(env, key, value);
   }
