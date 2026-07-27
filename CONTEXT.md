@@ -72,3 +72,8 @@ default tools. srcode adds behaviour through ExtensionFactory modules.
 - `src/extensions/memory/retrieval.ts`: hybrid retrieval shares the same
   project-scope semantics as `MemoryStore.search`: project queries see global
   plus current-project facts and exclude other project facts.
+- `src/extensions/memory/index.ts`: pi registration adapter only. The `memory`
+  tool routes through `src/extensions/memory/tool.ts`, and the `/memory` slash
+  command routes through `src/extensions/memory/command.ts`. Command side
+  effects (`notify`, `confirm`) are injected via `MemoryCommandDeps` so the
+  whole subcommand surface is testable without a live ExtensionAPI.

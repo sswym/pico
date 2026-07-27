@@ -72,6 +72,8 @@ export const VALID_CATEGORIES = [
   "tool_quirk",
 ] as const;
 export type Category = (typeof VALID_CATEGORIES)[number];
+/** Human-readable category list used in tool descriptions and `/memory` help. */
+export const CATEGORY_LIST = VALID_CATEGORIES.join(" | ");
 
 /** Trust adjustment per feedback action — mirrors holographic store. */
 export const HELPFUL_DELTA = 0.05;

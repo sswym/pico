@@ -7,7 +7,7 @@
  * correction mechanics, extended pattern extraction.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "../src/extensions/memory/store.ts";
@@ -15,6 +15,11 @@ import { CuratedMemoryStore } from "../src/extensions/memory/curated-store.ts";
 import { autoExtractFromMessages } from "../src/extensions/memory/extract.ts";
 import { scanSecrets } from "../src/extensions/memory/secrets.ts";
 import { executeMemoryToolAction } from "../src/extensions/memory/tool.ts";
+import {
+  executeMemoryCommand,
+  parseCommand,
+  type MemoryCommandDeps,
+} from "../src/extensions/memory/command.ts";
 import { WriteQueue, type MemoryProvider, type MemoryWriteMetadata } from "../src/extensions/memory/provider.ts";
 import { ProviderManager } from "../src/extensions/memory/provider-manager.ts";
 import { memoryExtension } from "../src/extensions/memory/index.ts";
@@ -826,4 +831,260 @@ test("correction whose content already exists does not penalise the original", (
   expect(returned).toBe(dup);
   expect(store.get(original)!.trust_score).toBe(trustBefore);
   expect(store.count()).toBe(2);
+});
+
+// --- /memory slash command ------------------------------------------------
+//
+// These cover the routing extracted from index.ts into command.ts: argument
+// parsing, per-subcommand dispatch, and the injected notify/confirm seams.
+
+async function withCommandDeps(
+  fn: (deps: MemoryCommandDeps, sink: { notified: string[]; confirmAnswer: boolean }) => Promise<void>,
+): Promise<void> {
+  const oldEnv = process.env.SRCODE_MEMORY_DB;
+  const tempDb = join(tmpdir(), `srcode-cmd-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const notesDir = mkdtempSync(join(tmpdir(), "srcode-cmd-notes-"));
+  process.env.SRCODE_MEMORY_DB = tempDb;
+  const sink = { notified: [] as string[], confirmAnswer: true };
+  try {
+    const manager = new ProviderManager();
+    const curated = new CuratedMemoryStore({ dir: notesDir });
+    await fn({
+      provider: manager.provider,
+      manager,
+      curated,
+      currentCwd: null,
+      notify: (text) => sink.notified.push(text),
+      confirm: async () => sink.confirmAnswer,
+    }, sink);
+  } finally {
+    if (oldEnv === undefined) delete process.env.SRCODE_MEMORY_DB;
+    else process.env.SRCODE_MEMORY_DB = oldEnv;
+    try { rmSync(tempDb); } catch { }
+    try { rmSync(`${tempDb}-wal`); } catch { }
+    try { rmSync(`${tempDb}-shm`); } catch { }
+    try { rmSync(notesDir, { recursive: true }); } catch { }
+  }
+}
+
+test("parseCommand defaults to list and splits cmd from rest", () => {
+  expect(parseCommand("")).toEqual({ cmd: "list", rest: "" });
+  expect(parseCommand("   ")).toEqual({ cmd: "list", rest: "" });
+  expect(parseCommand("status")).toEqual({ cmd: "status", rest: "" });
+  expect(parseCommand("SEARCH bun runtime")).toEqual({ cmd: "search", rest: "bun runtime" });
+});
+
+test("/memory add then list round-trips the fact", async () => {
+  await withCommandDeps(async (deps) => {
+    const added = await executeMemoryCommand("add user_pref I prefer bun over node", deps);
+    expect(added).toContain("Added:");
+    expect(added).toContain("I prefer bun over node");
+
+    const listed = await executeMemoryCommand("", deps);
+    expect(listed).toContain("Memory — 1 facts:");
+    expect(listed).toContain("I prefer bun over node");
+  });
+});
+
+test("/memory add without a category prefix falls back to general", async () => {
+  await withCommandDeps(async (deps) => {
+    await executeMemoryCommand("add the build script lives in scripts/build.ts", deps);
+    const listed = await executeMemoryCommand("list general", deps);
+    expect(listed).toContain("scripts/build.ts");
+  });
+});
+
+test("/memory add with no content prints usage instead of storing", async () => {
+  await withCommandDeps(async (deps, sink) => {
+    const out = await executeMemoryCommand("add", deps);
+    expect(out).toContain("Usage: /memory add");
+    expect(sink.notified).toHaveLength(1);
+    expect(deps.manager.count()).toBe(0);
+  });
+});
+
+test("/memory search finds a stored fact and reports empty results", async () => {
+  await withCommandDeps(async (deps) => {
+    await executeMemoryCommand("add tool ripgrep is faster than grep", deps);
+
+    const hit = await executeMemoryCommand("search ripgrep", deps);
+    expect(hit).toContain("Search: ripgrep");
+    expect(hit).toContain("ripgrep is faster than grep");
+
+    const miss = await executeMemoryCommand("search kubernetes", deps);
+    expect(miss).toContain("(no facts)");
+  });
+});
+
+test("/memory search without a query prints usage", async () => {
+  await withCommandDeps(async (deps) => {
+    expect(await executeMemoryCommand("search", deps)).toContain("Usage: /memory search");
+    expect(await executeMemoryCommand("search --scope project", deps)).toContain("Usage: /memory search");
+  });
+});
+
+test("/memory remove deletes by id and reports unknown ids", async () => {
+  await withCommandDeps(async (deps) => {
+    await executeMemoryCommand("add general deploys run on fridays", deps);
+    const id = deps.manager.list({ limit: 1 })[0]!.fact_id;
+
+    expect(await executeMemoryCommand(`remove ${id}`, deps)).toBe(`Removed memory #${id}`);
+    expect(deps.manager.count()).toBe(0);
+    expect(await executeMemoryCommand("remove 9999", deps)).toBe("No such memory #9999");
+    expect(await executeMemoryCommand("remove abc", deps)).toContain("Usage: /memory remove");
+  });
+});
+
+test("/memory rm and delete are aliases of remove", async () => {
+  await withCommandDeps(async (deps) => {
+    await executeMemoryCommand("add general first", deps);
+    const first = deps.manager.list({ limit: 1 })[0]!.fact_id;
+    expect(await executeMemoryCommand(`rm ${first}`, deps)).toBe(`Removed memory #${first}`);
+
+    await executeMemoryCommand("add general second", deps);
+    const second = deps.manager.list({ limit: 1 })[0]!.fact_id;
+    expect(await executeMemoryCommand(`delete ${second}`, deps)).toBe(`Removed memory #${second}`);
+  });
+});
+
+test("/memory clear honours the confirm seam in both directions", async () => {
+  await withCommandDeps(async (deps, sink) => {
+    await executeMemoryCommand("add general disposable", deps);
+
+    sink.confirmAnswer = false;
+    expect(await executeMemoryCommand("clear", deps)).toBe("Cancelled.");
+    expect(deps.manager.count()).toBe(1);
+
+    sink.confirmAnswer = true;
+    expect(await executeMemoryCommand("clear", deps)).toBe("Memory cleared.");
+    expect(deps.manager.count()).toBe(0);
+  });
+});
+
+test("/memory count and status report store state", async () => {
+  await withCommandDeps(async (deps) => {
+    await executeMemoryCommand("add general something worth keeping", deps);
+
+    expect(await executeMemoryCommand("count", deps)).toContain("Memory: 1 facts at ");
+
+    const status = await executeMemoryCommand("status", deps);
+    expect(status).toContain("Memory provider: ");
+    expect(status).toContain("Facts: 1");
+    expect(status).toContain("Curated notes: 0");
+  });
+});
+
+test("/memory notes add, list, replace, and remove round-trip", async () => {
+  await withCommandDeps(async (deps) => {
+    expect(await executeMemoryCommand("notes add user works in the srcode repo", deps))
+      .toBe("Added user note.");
+
+    const listed = await executeMemoryCommand("notes", deps);
+    expect(listed).toContain("USER.md:");
+    expect(listed).toContain("works in the srcode repo");
+    expect(listed).toContain("MEMORY.md:");
+    expect(listed).toContain("  (empty)");
+
+    expect(await executeMemoryCommand("notes replace user works in the srcode repo => maintains srcode", deps))
+      .toBe("Replaced user note.");
+    // Target filtering requires the explicit `list` subcommand; a bare
+    // `notes user` parses `user` as the subcommand, not the target.
+    expect(await executeMemoryCommand("notes list user", deps)).toContain("maintains srcode");
+
+    expect(await executeMemoryCommand("notes remove user maintains srcode", deps))
+      .toBe("Removed user note.");
+    expect(deps.curated.count("user")).toBe(0);
+  });
+});
+
+test("/memory notes add defaults to the memory target", async () => {
+  await withCommandDeps(async (deps) => {
+    await executeMemoryCommand("notes add prefers tabs in subagent files", deps);
+    expect(deps.curated.list("memory").memory).toContain("prefers tabs in subagent files");
+    expect(deps.curated.count("user")).toBe(0);
+  });
+});
+
+test("/memory notes replace without a => separator prints usage", async () => {
+  await withCommandDeps(async (deps) => {
+    expect(await executeMemoryCommand("notes replace user just one side", deps))
+      .toContain("Usage: /memory notes replace");
+  });
+});
+
+test("/memory notes clear honours the confirm seam", async () => {
+  await withCommandDeps(async (deps, sink) => {
+    await executeMemoryCommand("notes add memory disposable note", deps);
+
+    sink.confirmAnswer = false;
+    expect(await executeMemoryCommand("notes clear", deps)).toBe("Cancelled.");
+    expect(deps.curated.count()).toBe(1);
+
+    sink.confirmAnswer = true;
+    expect(await executeMemoryCommand("notes clear", deps)).toBe("Cleared all curated notes.");
+    expect(deps.curated.count()).toBe(0);
+  });
+});
+
+test("/memory notes with an unknown subcommand prints notes usage", async () => {
+  await withCommandDeps(async (deps) => {
+    expect(await executeMemoryCommand("notes frobnicate", deps))
+      .toBe("Usage: /memory notes [list|add|remove|replace|clear] [memory|user] ...");
+  });
+});
+
+test("/memory help and unknown commands both print usage", async () => {
+  await withCommandDeps(async (deps) => {
+    const help = await executeMemoryCommand("help", deps);
+    expect(help).toContain("Usage:");
+    expect(help).toContain("/memory contradict");
+    expect(await executeMemoryCommand("definitely-not-a-command", deps)).toBe(help);
+  });
+});
+
+test("/memory --scope project is stripped from the query and scopes the write", async () => {
+  await withCommandDeps(async (deps) => {
+    const scoped: MemoryCommandDeps = { ...deps, currentCwd: "/tmp/some-project" };
+    await executeMemoryCommand("add general --scope project uses a project-local config", scoped);
+
+    // The flag must not leak into stored content.
+    const facts = scoped.manager.list({ limit: 10, scope: "project", cwd: "/tmp/some-project" });
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.content).toBe("uses a project-local config");
+
+    // A global-scoped read must not see the project fact.
+    expect(scoped.manager.list({ limit: 10, scope: "global" })).toHaveLength(0);
+  });
+});
+
+test("/memory related and reason surface entity-linked facts", async () => {
+  await withCommandDeps(async (deps) => {
+    await executeMemoryCommand("add tool bun replaces node for this repo", deps);
+
+    expect(await executeMemoryCommand("related bun", deps)).toContain('Related to "bun":');
+    expect(await executeMemoryCommand("reason bun,node", deps)).toContain("Reason over [bun, node]:");
+    expect(await executeMemoryCommand("related", deps)).toContain("Usage: /memory related");
+    expect(await executeMemoryCommand("reason", deps)).toContain("Usage: /memory reason");
+  });
+});
+
+test("/memory contradict reports when nothing conflicts", async () => {
+  await withCommandDeps(async (deps) => {
+    expect(await executeMemoryCommand("contradict", deps)).toBe("No contradictions found.");
+  });
+});
+
+test("executeMemoryCommand folds thrown errors into the transcript", async () => {
+  await withCommandDeps(async (deps) => {
+    const exploding: MemoryCommandDeps = {
+      ...deps,
+      manager: new Proxy(deps.manager, {
+        get(target, prop, receiver) {
+          if (prop === "count") return () => { throw new Error("db is on fire"); };
+          return Reflect.get(target, prop, receiver);
+        },
+      }),
+    };
+    expect(await executeMemoryCommand("count", exploding)).toBe("Error: db is on fire");
+  });
 });
