@@ -14,7 +14,6 @@ import type { Todo } from "./schema.ts";
 import {
   formatTodoLine,
   summarizeTodos,
-  summarizeTodosCompact,
 } from "./display.ts";
 
 export const TODO_WIDGET_KEY = "srcode-todos";
@@ -29,6 +28,7 @@ interface TodoWidgetState {
   visible: boolean;
   collapsed: boolean;
   registered: boolean;
+  openIds: Set<string>;
   tui?: { requestRender?: (force?: boolean) => void };
 }
 
@@ -39,7 +39,7 @@ const states = new Map<string, TodoWidgetState>();
 function getState(sessionKey: string): TodoWidgetState {
   let state = states.get(sessionKey);
   if (!state) {
-    state = { visible: false, collapsed: false, registered: false };
+    state = { visible: false, collapsed: false, registered: false, openIds: new Set() };
     states.set(sessionKey, state);
   }
   return state;
@@ -95,7 +95,11 @@ export function buildTodoWidgetLines(todos: Todo[], theme: Theme): string[] {
 export function todoStatusText(todos: Todo[]): string | undefined {
   const active = todos.filter((todo) => todo.status !== "completed").length;
   if (active === 0) return undefined;
-  return `todos ${summarizeTodosCompact(todos)} ${TODO_SHORTCUT_HINT}`;
+  return `todos ${active} open`;
+}
+
+function todoOpenId(todo: Todo, index: number): string {
+  return todo.id ?? `${index}:${todo.content}`;
 }
 
 function sessionKey(ctx: { sessionManager?: { getSessionId?: () => string | undefined } }): string {
@@ -120,9 +124,21 @@ export function syncTodoWidget(ctx: ExtensionContext, readTodos: TodoReader): vo
   const todos = readTodos(session);
   const state = getState(session);
   const status = todoStatusText(todos);
+  const open = todos.filter((todo) => todo.status !== "completed");
+  const nextOpenIds = new Set(open.map((todo, index) => todoOpenId(todo, index)));
+  const hasNewOpen = open.some((todo, index) => !state.openIds.has(todoOpenId(todo, index)));
 
   ctx.ui.setStatus(TODO_STATUS_KEY, status);
-  state.visible = !state.collapsed && todos.some((todo) => todo.status !== "completed");
+  if (open.length === 0) {
+    state.visible = false;
+    state.collapsed = false;
+  } else if (hasNewOpen) {
+    state.visible = true;
+    state.collapsed = false;
+  } else {
+    state.visible = !state.collapsed;
+  }
+  state.openIds = nextOpenIds;
   requestRender(session);
 }
 
@@ -140,6 +156,14 @@ export function toggleTodoWidget(ctx: ExtensionContext, readTodos: TodoReader): 
   const session = sessionKey(ctx);
   const state = getState(session);
   const todos = readTodos(session);
+  const hasOpenTodos = todos.some((todo) => todo.status !== "completed");
+  if (!hasOpenTodos) {
+    state.collapsed = false;
+    state.visible = false;
+    ctx.ui.setStatus(TODO_STATUS_KEY, undefined);
+    requestRender(session);
+    return;
+  }
   if (state.visible) {
     state.collapsed = true;
     state.visible = false;
@@ -204,6 +228,7 @@ export function clearTodoWidget(ctx: ExtensionContext): void {
   const state = getState(session);
   state.visible = false;
   state.collapsed = false;
+  state.openIds = new Set();
   ctx.ui.setStatus(TODO_STATUS_KEY, undefined);
   requestRender(session);
 }

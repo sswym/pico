@@ -13,11 +13,6 @@ export function summarizeTodos(todos: Todo[]): string {
   return `${completed}/${todos.length} done · ${active} active`;
 }
 
-export function summarizeTodosCompact(todos: Todo[]): string {
-  const completed = todos.filter((todo) => todo.status === "completed").length;
-  return `${completed}/${todos.length}`;
-}
-
 export function formatTodoLine(todo: Todo, theme?: Theme): string {
   const icon = todoStatusIcon(todo.status);
   const id = todo.id ? ` #${todo.id}` : "";
@@ -31,14 +26,4 @@ export function formatTodoLine(todo: Todo, theme?: Theme): string {
 export function formatTodoList(todos: Todo[]): string {
   if (todos.length === 0) return "_(no tasks)_";
   return todos.map((todo) => formatTodoLine(todo)).join("\n");
-}
-
-export function formatPendingReminder(todos: Todo[]): string {
-  const open = todos.filter((todo) => todo.status !== "completed");
-  if (open.length === 0) return "";
-  const lines = open.map((todo) => {
-    const id = todo.id ? ` #${todo.id}` : "";
-    return `- ${todoStatusIcon(todo.status)}${id} ${todo.content}`;
-  });
-  return `## Open todos\n${lines.join("\n")}`;
 }

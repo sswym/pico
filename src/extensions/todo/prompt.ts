@@ -7,7 +7,6 @@
  */
 import TODO_PROMPT from "../../prompts/todo-tool.md" with { type: "text" };
 export {
-  formatPendingReminder,
   formatTodoList,
 } from "./display.ts";
 

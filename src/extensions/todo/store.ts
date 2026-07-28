@@ -17,9 +17,12 @@ import type { Todo } from "./schema.ts";
 
 export interface CommitResult {
   oldTodos: Todo[];
-  newTodos: Todo[];
+  writtenTodos: Todo[];
+  storedTodos: Todo[];
   /** > 1 in_progress at once — model violates the "exactly one active" rule. */
   multipleInProgress: boolean;
+  /** Caller supplied duplicate ids; later duplicates were reassigned. */
+  duplicateIds: string[];
   /** Final list collapsed to empty because every task is done. */
   collapsed: boolean;
 }
@@ -40,12 +43,22 @@ export class TodoStore {
     const inProgressCount = todos.filter((t) => t.status === "in_progress").length;
     const allDone = todos.length > 0 && todos.every((t) => t.status === "completed");
 
-    // Auto-assign ids for any item the model didn't tag.
+    // Auto-assign ids for missing and repeated ids so future updates stay stable.
     let nextId = todos.reduce((max, t) => {
       const n = t.id ? Number(t.id) : NaN;
       return Number.isFinite(n) ? Math.max(max, n) : max;
     }, 0);
-    const stamped: Todo[] = todos.map((t) => (t.id ? t : { ...t, id: String(++nextId) }));
+    const seenIds = new Set<string>();
+    const duplicateIds: string[] = [];
+    const stamped: Todo[] = todos.map((t) => {
+      if (!t.id) return { ...t, id: String(++nextId) };
+      if (!seenIds.has(t.id)) {
+        seenIds.add(t.id);
+        return t;
+      }
+      duplicateIds.push(t.id);
+      return { ...t, id: String(++nextId) };
+    });
 
     const finalList = allDone ? [] : stamped;
     if (finalList.length === 0) this.bySession.delete(sessionKey);
@@ -53,8 +66,10 @@ export class TodoStore {
 
     return {
       oldTodos,
-      newTodos: stamped, // return what the model wrote, not the collapsed list
+      writtenTodos: stamped,
+      storedTodos: finalList,
       multipleInProgress: inProgressCount > 1,
+      duplicateIds,
       collapsed: allDone,
     };
   }

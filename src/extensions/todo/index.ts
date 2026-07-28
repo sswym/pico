@@ -13,7 +13,7 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
-import { formatPendingReminder, formatTodoList, TODO_DESCRIPTION, TODO_PROMPT } from "./prompt.ts";
+import { formatTodoList, TODO_DESCRIPTION, TODO_PROMPT } from "./prompt.ts";
 import { TodoWriteParams } from "./schema.ts";
 import { TodoStore } from "./store.ts";
 import {
@@ -66,14 +66,21 @@ export const todoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             "More than one task is marked in_progress. The rule is: exactly one active task at a time. Adjust the list on the next call.",
           );
         }
+        if (result.duplicateIds.length > 0) {
+          warnings.push(
+            `Duplicate todo ids were reassigned: ${Array.from(new Set(result.duplicateIds)).join(", ")}. Use the returned ids on the next call.`,
+          );
+        }
 
         const summary = {
           status: "ok",
           oldCount: result.oldTodos.length,
-          newCount: result.newTodos.length,
+          writtenCount: result.writtenTodos.length,
+          storedCount: result.storedTodos.length,
           collapsed: result.collapsed,
           warnings,
-          newTodos: result.newTodos,
+          writtenTodos: result.writtenTodos,
+          storedTodos: result.storedTodos,
         };
 
         const text =
@@ -125,32 +132,16 @@ export const todoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     syncTodoWidget(ctx, (session) => store.get(session));
   });
 
-  // Switching/forking sessions resets the per-session view.
-  pi.on("session_before_switch", () => {
-    // We don't know which key is leaving — easiest to reset everything; the
-    // next commit on the new session repopulates only its own slot.
-    store.resetAll();
+  // Switching/forking sessions clears only the active session's transient list.
+  pi.on("session_before_switch", (_event, ctx) => {
+    store.reset(sessionKey(ctx));
+    clearTodoWidget(ctx);
     return {};
   });
-  pi.on("session_before_fork", () => {
-    store.resetAll();
+  pi.on("session_before_fork", (_event, ctx) => {
+    store.reset(sessionKey(ctx));
+    clearTodoWidget(ctx);
     return {};
   });
 
-  // Nudge the model if a turn ends with open todos. The agent_end event
-  // doesn't carry session context, so we surface a reminder only when the
-  // store tracks a single active list (the common case during a normal turn).
-  pi.on("agent_end", () => {
-    const lists = store.allLists();
-    if (lists.length !== 1) return;
-    const reminder = formatPendingReminder(lists[0]!);
-    if (!reminder) return;
-    try {
-      pi.sendMessage({
-        customType: "srcode.todo.reminder",
-        content: reminder,
-        display: true,
-      });
-    } catch {}
-  });
 };
