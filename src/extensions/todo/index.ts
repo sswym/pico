@@ -60,19 +60,6 @@ export const todoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         ensureTodoWidget(ctx, (session) => store.get(session));
         syncTodoWidget(ctx, (session) => store.get(session));
 
-        // Render the new list back into the chat so it stays anchored above
-        // the user's next message. CCB renders in-place; pi has no in-place
-        // tool view we can rewrite, so we just emit a custom message.
-        try {
-          pi.sendMessage({
-            customType: "srcode.todo",
-            content: formatTodoList(result.newTodos),
-            display: true,
-          });
-        } catch {
-          // If we're in a non-TUI mode that drops custom messages, ignore.
-        }
-
         const warnings: string[] = [];
         if (result.multipleInProgress) {
           warnings.push(

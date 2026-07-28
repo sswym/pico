@@ -22,10 +22,12 @@ function makeFakePi() {
   const tools = new Map<string, any>();
   const commands = new Map<string, any>();
   const shortcuts = new Map<string, any>();
+  const messages: any[] = [];
   return {
     tools,
     commands,
     shortcuts,
+    messages,
     handlers: new Map<string, any>(),
     on(name: string, handler: unknown) {
       this.handlers.set(name, handler);
@@ -33,7 +35,7 @@ function makeFakePi() {
     registerTool: (toolDef: { name: string }) => tools.set(toolDef.name, toolDef),
     registerCommand: (name: string, options: unknown) => commands.set(name, options),
     registerShortcut: (key: string, options: unknown) => shortcuts.set(key, options),
-    sendMessage: () => {},
+    sendMessage: (message: unknown) => messages.push(message),
     sendUserMessage: () => {},
   };
 }
@@ -95,6 +97,7 @@ test("todo extension registers shortcut and syncs widget status after writes", a
 
   expect(widgets[0]?.[0]).toBe("srcode-todos");
   expect(statuses.at(-1)).toEqual(["todo", "todos 0/2 F7"]);
+  expect(fakePi.messages).toEqual([]);
 });
 
 test("todo extension installs a visible F7 entry on session start", async () => {
