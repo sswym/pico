@@ -10,7 +10,6 @@ import lspExtension from "../extensions/lsp/index.ts";
 import { logoExtension } from "../extensions/logo/index.ts";
 import { mcpExtension } from "../extensions/mcp/index.ts";
 import { memoryExtension } from "../extensions/memory/index.ts";
-import { omaExtension } from "../extensions/oma.ts";
 import { planExtension } from "../extensions/plan/index.ts";
 import { retroThemeExtension } from "../extensions/retro-theme/index.ts";
 import { rtkExtension } from "../extensions/rtk/index.ts";
@@ -70,7 +69,6 @@ export class ExtensionRegistry {
 
 export const defaultExtensions = [
   { name: "vibe", factory: vibeExtension, phase: "prompt" },
-  { name: "oma", factory: omaExtension, phase: "prompt" },
   { name: "cache-optimizer", factory: cacheOptimizerExtension, phase: "prompt" },
   { name: "retro-theme", factory: retroThemeExtension, phase: "ui" },
   { name: "language", factory: languageExtension, phase: "prompt" },
