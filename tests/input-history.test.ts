@@ -123,6 +123,23 @@ test("PersistentHistoryEditor renders Claude-style prompt frame when empty", () 
   expect(visibleWidth(lines[2] ?? "")).toBe(120);
 });
 
+test("PersistentHistoryEditor wraps long input instead of truncating it", () => {
+  const editor = new PersistentHistoryEditor(makeFakeTui(), stubTheme, stubKeybindings);
+  editor.setText("abcdefghijklmnopqrstuvwxyz");
+
+  const lines = editor.render(12);
+  const renderedText = lines.join("");
+
+  expect(lines.length).toBeGreaterThan(3);
+  expect(lines[1]?.startsWith("❯ ")).toBe(true);
+  expect(lines[2]?.startsWith("  ")).toBe(true);
+  expect(renderedText).toContain("abcdefghi");
+  expect(renderedText).toContain("stuvwxyz");
+  for (const line of lines) {
+    expect(visibleWidth(line)).toBe(12);
+  }
+});
+
 test("inputHistoryExtension installs a persistent editor factory on session start", () => {
   let handler: any;
   let factory: any;

@@ -1,7 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type {
@@ -18,6 +17,10 @@ interface HistoryEntry {
 }
 
 type SubmitHandler = ((text: string) => void | Promise<void>) | undefined;
+
+function padToWidth(line: string, width: number): string {
+  return `${line}${" ".repeat(Math.max(0, width - visibleWidth(line)))}`;
+}
 
 export function normalizeHistoryText(text: string): string {
   return text.trim();
@@ -107,19 +110,22 @@ export class PersistentHistoryEditor extends CustomEditor {
   }
 
   override render(width: number): string[] {
-    const lines = super.render(width);
+    if (width <= 2) return super.render(width);
+
+    const lines = super.render(width - 2);
     if (lines.length < 2) return lines;
     const prompt = this.borderColor("❯");
-    const contentLine = truncateToWidth(lines[1] ?? "", Math.max(0, width - 2));
-    const promptLine = `${prompt} ${contentLine}`;
-    const paddedPromptLine = `${promptLine}${" ".repeat(Math.max(0, width - visibleWidth(promptLine)))}`;
+    const continuation = " ".repeat(visibleWidth(prompt) + 1);
+    const decorated = lines.map((line, index) => {
+      if (index === 0 || index === lines.length - 1) return padToWidth(line, width);
+      return padToWidth(`${index === 1 ? `${prompt} ` : continuation}${line}`, width);
+    });
 
     if (this.getText().trim().length === 0 && !this.isShowingAutocomplete()) {
-      return [lines[0] ?? "", paddedPromptLine, lines[lines.length - 1] ?? ""];
+      return [decorated[0] ?? "", decorated[1] ?? "", decorated[decorated.length - 1] ?? ""];
     }
 
-    lines[1] = paddedPromptLine;
-    return lines;
+    return decorated;
   }
 }
 
