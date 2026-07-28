@@ -44,7 +44,7 @@ bin/srcode.ts → bin/env-bootstrap.ts（副作用，必须最先导入）→ ma
 
 ### 扩展注册顺序
 
-`vibe → oma → retro-theme → language → input-history → logo → memory → subagent → todo → vision → ask → init → plan → web → lsp → hooks → mcp → doctor`
+`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → doctor`
 
 ### 核心模式
 

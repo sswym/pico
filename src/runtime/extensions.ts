@@ -70,6 +70,7 @@ export class ExtensionRegistry {
 export const defaultExtensions = [
   { name: "vibe", factory: vibeExtension, phase: "prompt" },
   { name: "cache-optimizer", factory: cacheOptimizerExtension, phase: "prompt" },
+  { name: "todo", factory: todoExtension, phase: "tools" },
   { name: "retro-theme", factory: retroThemeExtension, phase: "ui" },
   { name: "language", factory: languageExtension, phase: "prompt" },
   { name: "input-history", factory: inputHistoryExtension, phase: "ui" },
@@ -86,7 +87,6 @@ export const defaultExtensions = [
     phase: "tools",
     safety: { touchesFilesystem: true, spawnsProcess: true },
   },
-  { name: "todo", factory: todoExtension, phase: "tools" },
   {
     name: "vision",
     factory: visionExtension,
