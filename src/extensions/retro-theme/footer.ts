@@ -308,7 +308,7 @@ export function renderExtensionStatusLine(width: number, theme: Theme, footerDat
 export function createPrimaryStatusWidget(ctx: FooterContextWithCwd, options: FooterOptions = {}): FooterFactory {
   return (tui, theme) => ({
     render(width: number): string[] {
-      const git = getCachedGitStatus(ctx.cwd ?? process.cwd(), () => tui.requestRender?.(true));
+      const git = getCachedGitStatus(ctx.cwd ?? process.cwd(), () => tui.requestRender?.());
       return [renderPrimaryStatusLine(width, ctx, theme, git, options)];
     },
     invalidate(): void {},
@@ -317,7 +317,7 @@ export function createPrimaryStatusWidget(ctx: FooterContextWithCwd, options: Fo
 
 export function createClaudeLikeFooter(ctx: FooterContextWithCwd): FooterFactory {
   return (tui, theme, footerData) => {
-    const unsubscribe = footerData.onBranchChange?.(() => tui.requestRender?.(true));
+    const unsubscribe = footerData.onBranchChange?.(() => tui.requestRender?.());
     return {
       render(width: number): string[] {
         return [renderExtensionStatusLine(width, theme, footerData)];

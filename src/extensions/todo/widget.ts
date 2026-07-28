@@ -111,7 +111,7 @@ function hasInteractiveUi(ctx: ExtensionContext): boolean {
 }
 
 function requestRender(session: string): void {
-  states.get(session)?.tui?.requestRender?.(true);
+  states.get(session)?.tui?.requestRender?.();
 }
 
 export function syncTodoWidget(ctx: ExtensionContext, readTodos: TodoReader): void {
