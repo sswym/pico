@@ -1,0 +1,171 @@
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import {
+  cacheOptimizerExtension,
+  compressSkillsInSystemPrompt,
+  formatSkillsForPrompt,
+  optimizeProviderPayload,
+  optimizeSystemPrompt,
+  stripSessionOverviewChurn,
+} from "../src/extensions/cache-optimizer/index.ts";
+
+type FakeHandler = (event: any, ctx: any) => any;
+
+function makeFakePi() {
+  const handlers: Record<string, FakeHandler[]> = {};
+  return {
+    handlers,
+    on: (event: string, handler: FakeHandler) => {
+      (handlers[event] ??= []).push(handler);
+    },
+  };
+}
+
+function makeOpts(overrides: Record<string, unknown> = {}) {
+  return {
+    cwd: "/repo",
+    ...overrides,
+  } as any;
+}
+
+function makeSkill(name: string) {
+  return {
+    name,
+    description: `Detailed description for ${name} that is intentionally long enough to make compression useful.`,
+    filePath: `/home/user/.srcode/skills/${name}/SKILL.md`,
+    disableModelInvocation: false,
+  };
+}
+
+const savedEnv = { ...process.env };
+
+beforeEach(() => {
+  delete process.env.SRCODE_CACHE_OPTIMIZER_DISABLE;
+  delete process.env.SRCODE_CACHE_OPTIMIZER_NO_PROMPT_REWRITE;
+  delete process.env.SRCODE_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION;
+  delete process.env.SRCODE_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY;
+  delete process.env.SRCODE_CACHE_OPTIMIZER_ALLOW_PROXY_LONG_RETENTION;
+  delete process.env.PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE;
+  delete process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION;
+  delete process.env.PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY;
+  delete process.env.PI_CACHE_RETENTION;
+});
+
+afterEach(() => {
+  process.env = { ...savedEnv };
+});
+
+test("strips per-turn churn from session overview", () => {
+  const prompt = [
+    "base",
+    "<session-overview>",
+    "## CURRENT TASK",
+    "Ship cache optimizer",
+    "Working directory: 4 uncommitted files",
+    "Line count: 31 / 2000",
+    "## RECENT COMMITS",
+    "- abc noisy commit",
+    "</session-overview>",
+    "tail",
+  ].join("\n");
+
+  const result = stripSessionOverviewChurn(prompt);
+
+  expect(result).toContain("## CURRENT TASK");
+  expect(result).toContain("Ship cache optimizer");
+  expect(result).not.toContain("Working directory:");
+  expect(result).not.toContain("Line count:");
+  expect(result).not.toContain("RECENT COMMITS");
+});
+
+test("compresses verbose skill block into deterministic index", () => {
+  const skills = [makeSkill("zeta"), makeSkill("alpha"), makeSkill("memory")] as any;
+  const verbose = formatSkillsForPrompt(skills);
+  const prompt = `base${verbose}\ntail`;
+
+  const result = compressSkillsInSystemPrompt(prompt, makeOpts({ skills }));
+
+  expect(result).toContain("Skills under /home/user/.srcode/skills/<name>/SKILL.md:");
+  expect(result).toContain("alpha, memory, zeta");
+  expect(result).not.toContain("<available_skills>");
+  expect(result.length).toBeLessThan(prompt.length);
+});
+
+test("moves unique stable context before dynamic prompt content", () => {
+  const stable = "Project convention: use Bun APIs, import types with import type, and keep extension edits narrowly scoped.";
+  const prompt = [
+    "Dynamic git state changes every turn.",
+    `## AGENTS.md\n\n${stable}`,
+    "More dynamic context.",
+  ].join("\n\n");
+
+  const result = optimizeSystemPrompt(prompt, makeOpts({
+    contextFiles: [{ path: "AGENTS.md", content: stable }],
+  }));
+
+  expect(result.changed).toBe(true);
+  expect(result.systemPrompt.startsWith(`## AGENTS.md\n\n${stable}`)).toBe(true);
+  expect(result.systemPrompt).toContain("\n\n---\n\nDynamic git state");
+});
+
+test("does not lift ambiguous stable candidates", () => {
+  const stable = "Project convention: this exact long stable paragraph appears twice and should not be lifted ambiguously.";
+  const block = `## AGENTS.md\n\n${stable}`;
+  const prompt = [
+    block,
+    "Dynamic context quotes it later:",
+    block,
+  ].join("\n\n");
+
+  const result = optimizeSystemPrompt(prompt, makeOpts({
+    contextFiles: [{ path: "AGENTS.md", content: stable }],
+  }));
+
+  expect(result.changed).toBe(false);
+  expect(result.systemPrompt).toBe(prompt);
+});
+
+test("injects prompt_cache_key and strips unsupported proxy retention", () => {
+  const payload = { model: "gpt", messages: [], prompt_cache_retention: "long" };
+  const model = {
+    provider: "proxy",
+    api: "openai-completions",
+    baseUrl: "https://proxy.example.test/v1",
+  } as any;
+
+  const result = optimizeProviderPayload(payload, model, "session-123") as any;
+
+  expect(result.prompt_cache_key).toBe("session-123");
+  expect(result.prompt_cache_retention).toBeUndefined();
+  expect(payload.prompt_cache_retention).toBe("long");
+});
+
+test("preserves existing prompt_cache_key and official OpenAI retention", () => {
+  const payload = { prompt_cache_key: "existing", prompt_cache_retention: "long" };
+  const model = {
+    provider: "openai",
+    api: "openai-completions",
+    baseUrl: "https://api.openai.com/v1",
+  } as any;
+
+  const result = optimizeProviderPayload(payload, model, "session-123");
+
+  expect(result).toBeUndefined();
+});
+
+test("extension registers prompt and provider hooks", () => {
+  const pi = makeFakePi();
+  cacheOptimizerExtension(pi as any);
+
+  expect(process.env.PI_CACHE_RETENTION).toBe("long");
+  expect(pi.handlers.before_agent_start).toHaveLength(1);
+  expect(pi.handlers.before_provider_request).toHaveLength(1);
+
+  const providerResult = pi.handlers.before_provider_request![0]!({
+    payload: { messages: [] },
+  }, {
+    model: { provider: "proxy", api: "openai-completions", baseUrl: "https://proxy.example.test/v1" },
+    sessionManager: { getSessionId: () => "test-session-id" },
+  });
+
+  expect(providerResult.prompt_cache_key).toBe("test-session-id");
+});

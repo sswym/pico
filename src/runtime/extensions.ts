@@ -1,5 +1,6 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { askExtension } from "../extensions/ask/index.ts";
+import { cacheOptimizerExtension } from "../extensions/cache-optimizer/index.ts";
 import { doctorExtension } from "../extensions/doctor/index.ts";
 import { hooksExtension } from "../extensions/hooks/index.ts";
 import { initExtension } from "../extensions/init/index.ts";
@@ -70,6 +71,7 @@ export class ExtensionRegistry {
 export const defaultExtensions = [
   { name: "vibe", factory: vibeExtension, phase: "prompt" },
   { name: "oma", factory: omaExtension, phase: "prompt" },
+  { name: "cache-optimizer", factory: cacheOptimizerExtension, phase: "prompt" },
   { name: "retro-theme", factory: retroThemeExtension, phase: "ui" },
   { name: "language", factory: languageExtension, phase: "prompt" },
   { name: "input-history", factory: inputHistoryExtension, phase: "ui" },
