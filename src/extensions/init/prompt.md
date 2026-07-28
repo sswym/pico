@@ -1,9 +1,3 @@
----
-name: init
-description: 初始化项目 AGENTS.md，通过并行扫描代码库综合生成
-thinking-level: medium
----
-
 为当前代码库生成 AGENTS.md。
 
 **并行启动多个探查 agent**，分区域扫描代码库：

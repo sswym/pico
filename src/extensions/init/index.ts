@@ -1,32 +1,45 @@
 /**
  * srcode init extension.
  *
- * Registers a `/init` slash command. The handler injects a concise
- * AGENTS.md authoring brief as the next user message, then yields back to
- * the agent loop. The brief (in prompt.md) directs the LLM to parallel-scan
- * the codebase, ask the user what to set up, and synthesise AGENTS.md,
- * AGENTS.local.md, skills, and/or hooks as needed.
+ * Registers a single `/init` slash command that handles both cases:
+ *   - No AGENTS.md → injects a prompt to parallel-scan the codebase and write one
+ *   - AGENTS.md exists → injects audit instructions to check for drift and
+ *     propose targeted edits (never overwrites without confirmation)
  */
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { getEmbeddedContent } from "../embedded-assets.ts";
-import PROMPT_MD from "../../prompts/init.md" with { type: "text" };
+import GENERATE_PROMPT from "./prompt.md" with { type: "text" };
 
-/**
- * Resolve the init prompt content.
- *
- * In compiled-binary mode the prompt is embedded in the binary; in source
- * mode Bun imports it directly. The embedded-assets fallback handles both.
- */
-function loadPrompt(): string {
-  return getEmbeddedContent("prompts/init.md") ?? PROMPT_MD;
-}
+const AUDIT_PROMPT = `AGENTS.md 已存在，正在审计。
+
+请执行以下步骤：
+
+1. 读取完整的 AGENTS.md
+2. 对照当前代码库逐项校验：
+   - 构建/测试/lint 命令是否与 package.json 等配置一致
+   - 目录结构描述是否匹配实际
+   - 风格约定是否与最新代码一致
+   - 工具链描述（Bun/Node、包管理器等）是否准确
+3. 识别 AGENTS.md 未覆盖的重要领域（新扩展、新命令、新技能等）
+4. 以 numbered list 提出修改建议，每条包含：
+   - **位置**：AGENTS.md 中的章节标题或行号
+   - **原因**：不匹配或遗漏
+   - **建议改动**：精确的替换文本
+
+**绝不覆盖 AGENTS.md**。等待用户确认后再修改。`;
 
 export const initExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.registerCommand("init", {
     description:
-      "Initialize AGENTS.md (and optionally AGENTS.local.md, skills, hooks) for this project",
-    handler: async (_args) => {
-      pi.sendUserMessage(loadPrompt());
+      "Initialize AGENTS.md for a new project, or audit and update an existing one",
+    handler: async (_args, ctx) => {
+      const agentsMdPath = resolve(ctx.cwd, "AGENTS.md");
+      if (existsSync(agentsMdPath)) {
+        pi.sendUserMessage(AUDIT_PROMPT);
+      } else {
+        pi.sendUserMessage(GENERATE_PROMPT);
+      }
     },
   });
 };

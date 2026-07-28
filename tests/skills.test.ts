@@ -16,14 +16,14 @@ import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
 const here = dirname(fileURLToPath(import.meta.url));
 const skillsDir = resolve(here, "..", "src", "skills");
 
-test("loadSkillsFromDir returns the three bundled skills with non-empty descriptions", () => {
+test("loadSkillsFromDir returns the two bundled skills with non-empty descriptions", () => {
   const { skills, diagnostics } = loadSkillsFromDir({ dir: skillsDir, source: "bundled" });
 
   expect(diagnostics).toEqual([]);
-  expect(skills).toHaveLength(3);
+  expect(skills).toHaveLength(2);
 
   const names = skills.map((s) => s.name).sort();
-  expect(names).toEqual(["agents-init", "recap", "verify"]);
+  expect(names).toEqual(["recap", "verify"]);
 
   for (const skill of skills) {
     expect(skill.description.length).toBeGreaterThan(0);

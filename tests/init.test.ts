@@ -1,84 +1,47 @@
 /**
- * Tests for the /init extension with the redesigned markdown prompt.
+ * Tests for the smart /init extension.
  *
- * The prompt.md is a concise markdown file with frontmatter that replaces
- * the old verbose prompt.ts. These tests verify:
- *   - Frontmatter parsing (name, description, thinking-level)
- *   - Content guarantees (AGENTS.md focus, no CLAUDE.md recommendation)
- *   - Command-registration wiring
+ * The extension injects a generate-prompt or audit-prompt depending on
+ * whether AGENTS.md already exists in the project root.
  */
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { initExtension } from "../src/extensions/init/index.ts";
-
-// Bun imports markdown with { type: "text" } as a plain string
-import PROMPT_MD from "../src/prompts/init.md" with { type: "text" };
-
-/**
- * Minimal frontmatter parser for testing purposes.
- */
-function parseFrontmatter(content: string): Record<string, unknown> | null {
-  const match = content.match(/^---\n([\s\S]*?)\n---\n/);
-  if (!match) return null;
-  const fm: Record<string, unknown> = {};
-  for (const line of match[1]!.split("\n")) {
-    const sep = line.indexOf(": ");
-    if (sep > 0) {
-      const key = line.slice(0, sep).trim();
-      const value: unknown = line.slice(sep + 2).trim();
-      fm[key] = value;
-    }
-  }
-  return fm;
-}
+import GENERATE_PROMPT from "../src/extensions/init/prompt.md" with { type: "text" };
 
 // ---------------------------------------------------------------------------
-// Frontmatter tests
-// ---------------------------------------------------------------------------
-
-test("prompt.md has valid frontmatter with name and description", () => {
-  const fm = parseFrontmatter(PROMPT_MD);
-  expect(fm).not.toBeNull();
-  expect(fm!.name).toBe("init");
-  expect(typeof fm!.description).toBe("string");
-  expect((fm!.description as string).length).toBeGreaterThan(0);
-});
-
-test("prompt.md has thinking-level medium", () => {
-  const fm = parseFrontmatter(PROMPT_MD);
-  expect(fm).not.toBeNull();
-  expect(fm!["thinking-level"]).toBe("medium");
-});
-
-// ---------------------------------------------------------------------------
-// Content guarantee tests
+// Prompt content tests
 // ---------------------------------------------------------------------------
 
 test("prompt.md centres on AGENTS.md and never recommends CLAUDE.md", () => {
-  const agentsMdHits = (PROMPT_MD.match(/AGENTS\.md/g) ?? []).length;
+  const agentsMdHits = (GENERATE_PROMPT.match(/AGENTS\.md/g) ?? []).length;
   expect(agentsMdHits).toBeGreaterThanOrEqual(3);
 
-  // CLAUDE.md appears in the scan checklist (existing AGENTS.md/CLAUDE.md)
+  // CLAUDE.md appears only in the scan checklist (existing .../CLAUDE.md)
   // and the forbid directive (绝不用 CLAUDE.md) — both legitimate.
-  const claudeMdHits = (PROMPT_MD.match(/CLAUDE\.md/g) ?? []).length;
+  const claudeMdHits = (GENERATE_PROMPT.match(/CLAUDE\.md/g) ?? []).length;
   expect(claudeMdHits).toBeLessThanOrEqual(2);
 
   // Must explicitly forbid CLAUDE.md.
-  expect(PROMPT_MD).toMatch(/绝不用|never|禁止|don.*t.*CLAUDE/i);
+  expect(GENERATE_PROMPT).toMatch(/绝不用|never|禁止|don.*t.*CLAUDE/i);
 });
 
 test("prompt.md contains structure, directives, and output sections", () => {
-  expect(PROMPT_MD).toContain("<structure>");
-  expect(PROMPT_MD).toContain("<directives>");
-  expect(PROMPT_MD).toContain("<output>");
+  expect(GENERATE_PROMPT).toContain("<structure>");
+  expect(GENERATE_PROMPT).toContain("<directives>");
+  expect(GENERATE_PROMPT).toContain("<output>");
 });
 
 test("prompt.md references parallel scanning", () => {
-  expect(PROMPT_MD).toMatch(/并行|parallel/i);
+  expect(GENERATE_PROMPT).toMatch(/并行|parallel/i);
 });
 
-test("prompt.md does not use askUserQuestion (automatic mode)", () => {
-  // The minimalist oh-my-pi style prompt does not interactively ask the user.
-  expect(PROMPT_MD).not.toMatch(/askUserQuestion|askUser/i);
+test("prompt.md does not contain YAML frontmatter", () => {
+  // The file was moved out of src/prompts/ and the frontmatter stripped
+  // since it's now injected as a user message, not a prompt template.
+  expect(GENERATE_PROMPT).not.toMatch(/^---\n/);
 });
 
 // ---------------------------------------------------------------------------
@@ -86,37 +49,69 @@ test("prompt.md does not use askUserQuestion (automatic mode)", () => {
 // ---------------------------------------------------------------------------
 
 test("initExtension registers exactly the /init command", async () => {
-  const tools: Array<{ name: string }> = [];
   const commands: string[] = [];
-  const events: string[] = [];
   const fakePi: any = {
-    on: (n: string) => events.push(n),
-    registerTool: (t: { name: string }) => tools.push(t),
+    on: () => {},
+    registerTool: () => {},
     registerCommand: (n: string) => commands.push(n),
     sendMessage: () => {},
     sendUserMessage: () => {},
   };
   await initExtension(fakePi);
-  expect(tools).toEqual([]);
   expect(commands).toEqual(["init"]);
-  expect(events).toEqual([]);
 });
 
-test("/init handler enqueues the prompt as a user message", async () => {
-  let lastUserMessage: unknown = null;
-  let registered: any = null;
+/**
+ * Helper: create a minimal fake Pi with stored handler + sendUserMessage spy.
+ */
+function createFakePi() {
+  let registeredHandler: ((args: string, ctx: any) => Promise<void>) | null = null;
+  let lastMessage: unknown = null;
+
   const fakePi: any = {
+    registerCommand: (_n: string, opts: any) => {
+      registeredHandler = opts.handler;
+    },
+    sendUserMessage: (content: unknown) => {
+      lastMessage = content;
+    },
     on: () => {},
     registerTool: () => {},
-    registerCommand: (_n: string, opts: any) => {
-      registered = opts;
-    },
     sendMessage: () => {},
-    sendUserMessage: (content: unknown) => {
-      lastUserMessage = content;
-    },
   };
+
+  return {
+    fakePi,
+    getHandler: () => registeredHandler!,
+    getLastMessage: () => lastMessage,
+  };
+}
+
+test("/init handler sends GENERATE_PROMPT when AGENTS.md does not exist", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "srcode-init-test-"));
+  const { fakePi, getHandler, getLastMessage } = createFakePi();
+
   await initExtension(fakePi);
-  await registered.handler("");
-  expect(lastUserMessage).toBe(PROMPT_MD);
+  await getHandler()("", { cwd: tmpDir });
+
+  expect(getLastMessage()).toBe(GENERATE_PROMPT);
+
+  rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test("/init handler sends audit instructions when AGENTS.md exists", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "srcode-init-test-"));
+  writeFileSync(join(tmpDir, "AGENTS.md"), "# Existing AGENTS.md\n\nSome content");
+  const { fakePi, getHandler, getLastMessage } = createFakePi();
+
+  await initExtension(fakePi);
+  await getHandler()("", { cwd: tmpDir });
+
+  // Should NOT be the generate prompt
+  expect(getLastMessage()).not.toBe(GENERATE_PROMPT);
+  // Should contain audit instructions
+  expect(typeof getLastMessage()).toBe("string");
+  expect((getLastMessage() as string)).toMatch(/AGENTS.md 已存在|审计/);
+
+  rmSync(tmpDir, { recursive: true, force: true });
 });
