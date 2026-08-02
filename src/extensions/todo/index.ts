@@ -21,6 +21,7 @@ import {
   ensureTodoWidget,
   registerTodoShortcut,
   syncTodoWidget,
+  unregisterTodoWidget,
 } from "./widget.ts";
 
 const SESSION_FALLBACK = "__default__";
@@ -135,13 +136,19 @@ export const todoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // Switching/forking sessions clears only the active session's transient list.
   pi.on("session_before_switch", (_event, ctx) => {
     store.reset(sessionKey(ctx));
-    clearTodoWidget(ctx);
+    unregisterTodoWidget(ctx);
     return {};
   });
   pi.on("session_before_fork", (_event, ctx) => {
     store.reset(sessionKey(ctx));
-    clearTodoWidget(ctx);
+    unregisterTodoWidget(ctx);
     return {};
+  });
+
+  // /reload tears down extension widgets (pi's resetExtensionUI) but re-fires
+  // session_start — dropping the registration here lets session_start rebuild it.
+  pi.on("session_shutdown", (_event, ctx) => {
+    unregisterTodoWidget(ctx);
   });
 
 };

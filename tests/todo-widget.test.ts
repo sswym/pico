@@ -59,7 +59,7 @@ test("todo widget keeps the active window visible", () => {
   const lines = buildTodoWidgetLines(todos, plainTheme).join("\n");
   expect(lines).toContain("… 5 completed");
   expect(lines).toContain("task 9 active");
-  expect(lines).toContain("F7 / Enter / Esc");
+  expect(lines).toContain("F7 toggle panel");
 });
 
 test("todo extension registers shortcut and syncs widget status after writes", async () => {
@@ -127,6 +127,34 @@ test("todo extension installs a visible F7 entry on session start", async () => 
   expect(statuses.at(-1)).toEqual(["todo", undefined]);
 });
 
+test("todo widget re-registers after session_shutdown (reload path)", async () => {
+  resetTodoWidgetStateForTests();
+  const fakePi = makeFakePi();
+  todoExtension(fakePi as any);
+
+  const statuses: Array<[string, string | undefined]> = [];
+  const widgets: Array<[string, unknown]> = [];
+  const ctx = {
+    hasUI: true,
+    cwd: process.cwd(),
+    sessionManager: { getSessionId: () => "s1" },
+    ui: {
+      setStatus: (key: string, value: string | undefined) => statuses.push([key, value]),
+      setWidget: (key: string, value: unknown) => widgets.push([key, value]),
+    },
+  };
+
+  await fakePi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+  expect(widgets).toHaveLength(1);
+
+  // /reload: shutdown (widgets dropped by pi) then session_start again.
+  await fakePi.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "reload" }, ctx);
+  await fakePi.handlers.get("session_start")({ type: "session_start", reason: "reload" }, ctx);
+
+  expect(widgets).toHaveLength(2);
+  expect(widgets[1]?.[0]).toBe("srcode-todos");
+});
+
 test("todo shortcut does not open an empty panel", async () => {
   resetTodoWidgetStateForTests();
   const fakePi = makeFakePi();
@@ -189,4 +217,37 @@ test("todo widget stays collapsed for updates and reopens for new work", async (
     ],
   }, undefined, undefined, ctx);
   expect(component.render(80).join("\n")).toContain("run tests active");
+});
+
+test("todo widget stays collapsed when the model re-issues fresh ids for the same tasks", async () => {
+  resetTodoWidgetStateForTests();
+  const fakePi = makeFakePi();
+  todoExtension(fakePi as any);
+  const toolDef = fakePi.tools.get("todoWrite");
+
+  const widgets: Array<[string, any]> = [];
+  const ctx = {
+    hasUI: true,
+    cwd: process.cwd(),
+    sessionManager: { getSessionId: () => "s1" },
+    ui: {
+      setStatus: () => {},
+      setWidget: (key: string, value: unknown) => widgets.push([key, value]),
+    },
+  };
+
+  await toolDef.execute("call-1", {
+    todos: [todo("ship widget", "in_progress", "a")],
+  }, undefined, undefined, ctx);
+  const component = widgets[0]![1]({}, plainTheme);
+  expect(component.render(80).join("\n")).toContain("ship widget active");
+
+  collapseTodoWidget(ctx as any);
+  expect(component.render(80)).toEqual([]);
+
+  // Same task, brand-new id: must NOT reopen the panel.
+  await toolDef.execute("call-2", {
+    todos: [todo("ship widget", "in_progress", "b")],
+  }, undefined, undefined, ctx);
+  expect(component.render(80)).toEqual([]);
 });

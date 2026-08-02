@@ -19,16 +19,21 @@ function getSettingsPath(): string {
 
 function readSettings(): Record<string, unknown> {
   try {
-    return JSON.parse(readFileSync(getSettingsPath(), "utf-8"));
+    const parsed = JSON.parse(readFileSync(getSettingsPath(), "utf-8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
   } catch {
-    return {};
+    // missing or malformed settings -> defaults
   }
+  return {};
 }
 
 function writeSettings(settings: Record<string, unknown>): void {
   const settingsPath = getSettingsPath();
   mkdirSync(dirname(settingsPath), { recursive: true });
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  // Same protection as settings.ts: this file may carry API keys.
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
 }
 
 function readLanguage(): string {

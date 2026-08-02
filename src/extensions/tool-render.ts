@@ -91,12 +91,19 @@ export function previewText(
   text: string,
   maxLines = DEFAULT_COLLAPSED_LINES,
   maxLineLength = DEFAULT_COLLAPSED_LINE_LENGTH,
-): { preview: string; hiddenLines: number } {
+): { preview: string; hiddenLines: number; truncatedLine: boolean } {
   const lines = stripTrailingCarriageReturns(text).split("\n");
-  const collapsed = lines.slice(0, maxLines).map((line) => collapseLine(line, maxLineLength));
+  let truncatedLine = false;
+  const collapsed = lines.slice(0, maxLines).map((line) => {
+    const clean = line.trimEnd();
+    if (clean.length <= maxLineLength) return clean;
+    truncatedLine = true;
+    return truncateWithEllipsis(clean, maxLineLength);
+  });
   return {
     preview: collapsed.join("\n").trimEnd(),
     hiddenLines: Math.max(0, lines.length - collapsed.length),
+    truncatedLine,
   };
 }
 
@@ -108,7 +115,7 @@ export function renderToolCallText(
   options?: { collapsedLines?: number; collapsedLineLength?: number },
 ): Text {
   const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-  const serialized = stringifyValue(args).trim();
+  const serialized = (stringifyValue(args) ?? "").trim();
   const summary = summarizeToolCall(toolName, args);
   const title = renderToolTitle(theme, toolName, summary);
   if (!serialized) {
@@ -152,13 +159,13 @@ export function renderToolResultText(
     return text;
   }
 
-  const { preview, hiddenLines } = previewText(
+  const { preview, hiddenLines, truncatedLine } = previewText(
     output,
     renderOptions?.collapsedLines ?? DEFAULT_COLLAPSED_LINES,
     renderOptions?.collapsedLineLength ?? DEFAULT_COLLAPSED_LINE_LENGTH,
   );
   const body = theme.fg(color, preview);
-  if (hiddenLines <= 0) {
+  if (hiddenLines <= 0 && !truncatedLine) {
     text.setText(`\n${body}`);
     return text;
   }

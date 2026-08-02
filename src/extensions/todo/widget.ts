@@ -3,12 +3,7 @@ import type {
   ExtensionContext,
   Theme,
 } from "@earendil-works/pi-coding-agent";
-import {
-  isKeyRelease,
-  Key,
-  matchesKey,
-  truncateToWidth,
-} from "@earendil-works/pi-tui";
+import { Key, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import type { Todo } from "./schema.ts";
 import {
@@ -29,6 +24,7 @@ interface TodoWidgetState {
   collapsed: boolean;
   registered: boolean;
   openIds: Set<string>;
+  openContent: Set<string>;
   tui?: { requestRender?: (force?: boolean) => void };
 }
 
@@ -39,7 +35,7 @@ const states = new Map<string, TodoWidgetState>();
 function getState(sessionKey: string): TodoWidgetState {
   let state = states.get(sessionKey);
   if (!state) {
-    state = { visible: false, collapsed: false, registered: false, openIds: new Set() };
+    state = { visible: false, collapsed: false, registered: false, openIds: new Set(), openContent: new Set() };
     states.set(sessionKey, state);
   }
   return state;
@@ -88,7 +84,7 @@ export function buildTodoWidgetLines(todos: Todo[], theme: Theme): string[] {
     if (window.hiddenAfter > 0) lines.push(theme.fg("dim", `… ${window.hiddenAfter} more`));
   }
 
-  lines.push("", theme.fg("dim", `${TODO_SHORTCUT_HINT} / Enter / Esc collapse`));
+  lines.push("", theme.fg("dim", `${TODO_SHORTCUT_HINT} toggle panel`));
   return lines.slice(0, MAX_WIDGET_LINES);
 }
 
@@ -126,19 +122,28 @@ export function syncTodoWidget(ctx: ExtensionContext, readTodos: TodoReader): vo
   const status = todoStatusText(todos);
   const open = todos.filter((todo) => todo.status !== "completed");
   const nextOpenIds = new Set(open.map((todo, index) => todoOpenId(todo, index)));
-  const hasNewOpen = open.some((todo, index) => !state.openIds.has(todoOpenId(todo, index)));
+  // A task is genuinely new when its content was not open before — id churn
+  // (the model re-issuing fresh ids for the same tasks) must not count as
+  // new work and force the panel open.
+  const hasNewOpen = open.some((todo, index) => {
+    const idKey = todoOpenId(todo, index);
+    return !state.openIds.has(idKey) && !state.openContent.has(todo.content);
+  });
 
   ctx.ui.setStatus(TODO_STATUS_KEY, status);
   if (open.length === 0) {
     state.visible = false;
     state.collapsed = false;
   } else if (hasNewOpen) {
+    // Only genuinely new task content auto-opens the panel; a model
+    // rewriting the list with fresh ids (same content) keeps it collapsed.
     state.visible = true;
     state.collapsed = false;
   } else {
     state.visible = !state.collapsed;
   }
   state.openIds = nextOpenIds;
+  state.openContent = new Set(open.map((t) => t.content));
   requestRender(session);
 }
 
@@ -191,17 +196,9 @@ export function ensureTodoWidget(ctx: ExtensionContext, readTodos: TodoReader): 
           truncateToWidth(line, Math.max(20, width - 2), "…"),
         );
       },
-      handleInput(data: string): void {
-        if (isKeyRelease(data)) return;
-        if (
-          matchesKey(data, TODO_SHORTCUT) ||
-          matchesKey(data, Key.escape) ||
-          matchesKey(data, Key.enter) ||
-          matchesKey(data, Key.return)
-        ) {
-          collapseTodoWidget(ctx);
-        }
-      },
+      // No handleInput: pi only routes keys to the focused editor, so any
+      // key handling here would be dead code (and a future focus change
+      // would double-fire with the F7 shortcut).
       invalidate(): void {
         state.tui = undefined;
       },
@@ -231,4 +228,18 @@ export function clearTodoWidget(ctx: ExtensionContext): void {
   state.openIds = new Set();
   ctx.ui.setStatus(TODO_STATUS_KEY, undefined);
   requestRender(session);
+}
+
+/**
+ * Drop the session's widget registration so the next session_start (reload,
+ * switch, fork) re-registers it. pi clears extension widgets on /reload, but
+ * our `registered` flag survives — without this, the todo panel would stay
+ * gone for the rest of the process.
+ */
+export function unregisterTodoWidget(ctx: ExtensionContext): void {
+  if (!hasInteractiveUi(ctx)) return;
+  const session = sessionKey(ctx);
+  const state = getState(session);
+  state.registered = false;
+  clearTodoWidget(ctx);
 }

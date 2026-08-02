@@ -28,14 +28,20 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     const agentDir =
       process.env.PI_CODING_AGENT_DIR ?? srcodeAgentHome();
     const themeDir = join(agentDir, "themes");
-    if (!existsSync(themeDir)) {
-      mkdirSync(themeDir, { recursive: true });
+    try {
+      if (!existsSync(themeDir)) {
+        mkdirSync(themeDir, { recursive: true });
+      }
+      writeFileSync(
+        join(themeDir, "retro-terminal.json"),
+        JSON.stringify(retroTheme, null, 2),
+        "utf-8",
+      );
+    } catch {
+      // Unwritable themes dir (permissions / read-only mount / disk full):
+      // skip the theme sync instead of aborting the rest of session_start.
+      // The theme may still apply from a previously written copy.
     }
-    writeFileSync(
-      join(themeDir, "retro-terminal.json"),
-      JSON.stringify(retroTheme, null, 2),
-      "utf-8",
-    );
 
     // ── Apply the retro-terminal theme by name ───────────────────────
     // Now the file is in place, pi's loadTheme("retro-terminal") will

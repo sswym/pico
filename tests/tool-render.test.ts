@@ -26,10 +26,39 @@ test("previewText limits lines and truncates long lines", () => {
   const out = previewText("one\ntwo\nthree long line", 2, 6);
   expect(out.preview).toBe("one\ntwo");
   expect(out.hiddenLines).toBe(1);
+  expect(out.truncatedLine).toBe(false);
 
   const oneLine = previewText("abcdefghi", 8, 5);
   expect(oneLine.preview).toBe("abcd…");
   expect(oneLine.hiddenLines).toBe(0);
+  expect(oneLine.truncatedLine).toBe(true);
+});
+
+test("renderToolResultText shows an expand hint when a single line is truncated", () => {
+  const result = {
+    content: [{ type: "text" as const, text: "a very long single line that exceeds the collapsed width limit" }],
+    details: undefined,
+  };
+
+  const collapsed = renderToolResultText(
+    result,
+    { expanded: false, isPartial: false },
+    plainTheme,
+    {},
+    { collapsedLines: 3, collapsedLineLength: 20 },
+  );
+  const collapsedText = renderedText(collapsed);
+  expect(collapsedText).not.toContain("exceeds the collapsed width");
+  expect(collapsedText).toMatch(/to expand/i);
+
+  const expanded = renderToolResultText(
+    result,
+    { expanded: true, isPartial: false },
+    plainTheme,
+    {},
+    { collapsedLines: 3, collapsedLineLength: 20 },
+  );
+  expect(renderedText(expanded)).toContain("exceeds the collapsed width");
 });
 
 test("renderToolResultText collapses by default and expands full output", () => {

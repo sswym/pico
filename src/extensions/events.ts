@@ -30,7 +30,13 @@ export function publishExtensionEvent<K extends keyof ExtensionEvents>(
   const set = handlers[eventName];
   if (!set) return;
   for (const handler of Array.from(set)) {
-    handler(event);
+    try {
+      handler(event);
+    } catch (err) {
+      // One misbehaving subscriber must not break the rest of the chain
+      // (e.g. subagent completion events feeding memory delegation).
+      console.warn(`[srcode events] handler for '${eventName}' threw:`, err);
+    }
   }
 }
 

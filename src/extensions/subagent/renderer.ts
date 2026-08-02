@@ -233,11 +233,11 @@ export function renderSubagentResult(result: any, expanded: boolean, theme: any)
 	}
 
 	if (details.mode === "chain") {
-		const successCount = details.results.filter((r) => r.exitCode === 0).length;
+		const successCount = details.results.filter((r) => !isFailedResult(r)).length;
 		const icon = renderStatusIcon(theme, successCount === details.results.length ? "success" : "error");
 		let text = icon + " " + theme.fg("toolTitle", theme.bold("chain ")) + theme.fg("accent", `${successCount}/${details.results.length} steps`);
 		for (const r of details.results) {
-			const rIcon = renderStatusIcon(theme, r.exitCode === 0 ? "success" : "error");
+			const rIcon = renderStatusIcon(theme, isFailedResult(r) ? "error" : "success");
 			const displayItems = getDisplayItems(r.messages);
 			const stepLabel = r.label ? r.label : `Step ${r.step}`;
 			const phaseTag = r.phase ? theme.fg("warning", `[${r.phase}] `) : "";
