@@ -307,7 +307,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
                 const preferred = a.isPreferred ? " [preferred]" : "";
                 lines.push(`  ${i + 1}. ${a.title}${kind}${preferred}`);
               }
-              return ok(`Code actions (${actions.length}):\n${lines.join("\n")}\n\nUse apply=true with query=<title substring> to apply one.`);
+              return ok(`Code actions (${actions.length}):\n${lines.join("\n")}\n\nThis lsp tool is read-only: apply=true is blocked by policy. Apply the fix manually with edit/write tools.`);
             }
             default:
               return fail(`Unknown action: ${action}`);
@@ -388,24 +388,23 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
       client.didSave(uri);
 
-      // Deferred diagnostics: 500ms inline, then 25s background
+      // Deferred diagnostics: 500ms inline, then a bounded background wait.
+      // The 5s cap keeps the turn responsive while still catching slow servers.
       const diags = await client.waitForDiagnostics(uri, 500);
       let finalDiags = diags;
       if (!finalDiags || finalDiags.length === 0) {
-        const deferredSignal = AbortSignal.timeout(25_000);
-        finalDiags = await client.waitForDiagnostics(uri, 25_000, deferredSignal);
+        const deferredSignal = AbortSignal.timeout(5_000);
+        finalDiags = await client.waitForDiagnostics(uri, 5_000, deferredSignal);
       }
 
-      if (finalDiags && finalDiags.length > 0) {
-        const diagText = formatDiagnosticsForFile(filePath, finalDiags);
-        const messages = diagText.split("\n").filter(Boolean);
-        const freshMessages = ledger.reduce(filePath, messages);
-        if (freshMessages.length > 0) {
-          event.content = [
-            ...event.content,
-            { type: "text", text: `\n[LSP] ${freshMessages.join("\n")}` },
-          ];
-        }
+      const diagText = formatDiagnosticsForFile(filePath, finalDiags ?? []);
+      const messages = diagText.split("\n").filter(Boolean);
+      const freshMessages = ledger.reduce(filePath, messages);
+      if (freshMessages.length > 0) {
+        event.content = [
+          ...event.content,
+          { type: "text", text: `\n[LSP] ${freshMessages.join("\n")}` },
+        ];
       }
     } catch {
       // Silently ignore writethrough failures

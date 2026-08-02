@@ -33,6 +33,17 @@ export const defaultVisionDeps: VisionAnalyzeDeps = {
 };
 
 const cache = new Map<string, string>();
+/** Bound the analysis cache so long sessions don't grow it without limit. */
+const MAX_CACHE_ENTRIES = 200;
+
+function cacheSet(key: string, analysis: string): void {
+  if (cache.size >= MAX_CACHE_ENTRIES) {
+    // Evict the oldest entry (Map preserves insertion order).
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(key, analysis);
+}
 
 export function __resetVisionCacheForTests(): void {
   cache.clear();
@@ -94,10 +105,34 @@ async function imageFromUrl(url: string, deps: VisionAnalyzeDeps, signal?: Abort
 
   const response = await deps.fetchImpl(url, { signal });
   if (!response.ok) throw new Error(`image_url fetch failed: HTTP ${response.status}`);
+  if (!response.body) {
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > MAX_IMAGE_BYTES) throw new Error(`image is too large (${bytes.length} bytes)`);
+    const contentType = response.headers.get("content-type")?.split(";")[0]?.trim();
+    const mimeType = contentType?.startsWith("image/") ? contentType : "image/jpeg";
+    return { type: "image", data: bytes.toString("base64"), mimeType };
+  }
 
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length > MAX_IMAGE_BYTES) throw new Error(`image is too large (${bytes.length} bytes)`);
-
+  // Stream the body so oversized images are aborted while downloading
+  // instead of being fully buffered first.
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > MAX_IMAGE_BYTES) {
+        await reader.cancel();
+        throw new Error(`image is too large (${total} bytes)`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = Buffer.concat(chunks, total);
   const contentType = response.headers.get("content-type")?.split(";")[0]?.trim();
   const mimeType = contentType?.startsWith("image/") ? contentType : "image/jpeg";
   return { type: "image", data: bytes.toString("base64"), mimeType };
@@ -214,7 +249,7 @@ export async function analyzeImageWithVisionModel(
 
   const analysis = assistantText(response);
   if (!analysis) throw new Error("Vision model returned no text");
-  cache.set(key, analysis);
+  cacheSet(key, analysis);
   return { analysis, model: model.id, provider: model.provider, cached: false };
 }
 

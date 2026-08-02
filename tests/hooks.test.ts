@@ -200,6 +200,22 @@ test("runHook hard-kills on timeout", async () => {
   expect(elapsed).toBeLessThan(2000);
 });
 
+test("runHook drains output larger than the pipe buffer without deadlocking", async () => {
+  // >64KB on stdout fills the OS pipe buffer; a read-after-exit implementation
+  // blocks the child on write, never sees it exit, and kills it via timeout.
+  const hook: Hook = {
+    event: "PreToolUse",
+    command: "yes x | head -c 200000",
+    timeoutMs: 5000,
+  };
+  const res = await runHook(hook, {});
+  expect(res.timedOut).toBe(false);
+  expect(res.exitCode).toBe(0);
+  // Output is drained (no deadlock) and truncated at the 4KiB safety cap.
+  expect(res.stdout.length).toBeGreaterThan(4000);
+  expect(res.stdout.endsWith("[truncated]")).toBe(true);
+});
+
 // ---------------------------------------------------------------------------
 // Extension factory wiring
 // ---------------------------------------------------------------------------

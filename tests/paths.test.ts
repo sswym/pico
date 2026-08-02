@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import {
   srcodeAgentHome,
+  srcodeHolographicMemoryPath,
   srcodeHome,
   srcodeInputHistoryPath,
   srcodeLspConfigPath,
@@ -43,4 +44,15 @@ test("SRCODE_MEMORY_DB overrides memory database path only", () => {
 
   expect(srcodeMemoryDbPath()).toBe("/tmp/memory.db");
   expect(srcodeSettingsPath()).toBe(join("/tmp/srcode-custom-home", "agent", "settings.json"));
+});
+
+test("SRCODE_MEMORY_DB never overrides the holographic (JSON) memory path", () => {
+  process.env.SRCODE_HOME = "/tmp/srcode-custom-home";
+  process.env.SRCODE_MEMORY_DB = "/tmp/memory.db";
+  delete process.env.SRCODE_HOLOGRAPHIC_MEMORY_PATH;
+
+  expect(srcodeHolographicMemoryPath()).toBe(join("/tmp/srcode-custom-home", "holographic-memory.json"));
+
+  process.env.SRCODE_HOLOGRAPHIC_MEMORY_PATH = "/tmp/holo.json";
+  expect(srcodeHolographicMemoryPath()).toBe("/tmp/holo.json");
 });

@@ -84,7 +84,17 @@ export function buildAgentProcessArgs(
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 	if (agent.maxTokens) args.push("--max-tokens", String(agent.maxTokens));
 	if (agent.thinking) args.push("--thinking", agent.thinking);
-	if (systemPromptPath) args.push("--append-system-prompt", systemPromptPath);
+	// Frontmatter switches: inheritProjectContext=false strips AGENTS.md/CLAUDE.md
+	// from the child, inheritSkills=false strips the skills catalog.
+	if (agent.inheritProjectContext === false) args.push("--no-context-files");
+	if (agent.inheritSkills === false) args.push("--no-skills");
+	if (systemPromptPath) {
+		if (agent.systemPromptMode === "replace") {
+			args.push("--system-prompt", systemPromptPath);
+		} else {
+			args.push("--append-system-prompt", systemPromptPath);
+		}
+	}
 	args.push(`Task: ${task}`);
 	return args;
 }

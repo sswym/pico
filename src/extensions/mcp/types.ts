@@ -91,6 +91,8 @@ export interface McpServerHandle {
   proc: {
     stdin: {
       write(data: string | Uint8Array): number;
+      /** Flush buffered writes to the child process (Bun FileSink). */
+      flush?(): void;
       end(data?: string | Uint8Array): number | Promise<number>;
     };
     kill(signal?: number): void;

@@ -311,6 +311,15 @@ export async function ensureServer(
       managed.lastActivity = Date.now();
       return managed.client;
     }
+    // Another caller is mid-initialization — await it instead of spawning a
+    // second process for the same server (which would orphan the first).
+    if (managed?.initializing) {
+      await managed.initializing;
+      if (managed.client.ready) {
+        managed.lastActivity = Date.now();
+        return managed.client;
+      }
+    }
   }
 
   // No server ready — start the first matching one (filtered by rootMarkers)
@@ -357,12 +366,16 @@ export async function ensureServer(
         // Propagate command-not-found so callers can offer to install.
         if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) {
           state.servers.delete(name);
+          managed.client.shutdown();
           throw err;
         }
         const msg = err instanceof LspError ? err.message : String(err);
         console.error(`[lsp] Failed to start ${name}:`, msg);
         recordInitFailure(state, name, msg);
         state.servers.delete(name);
+        // Reap the spawned process — otherwise a server that started its
+        // binary but failed initialization leaks for the process lifetime.
+        managed.client.shutdown().catch(() => {});
       } finally {
         managed.initializing = null;
       }
@@ -655,7 +668,9 @@ function prewarmProject(managed: ManagedServer, workspaceRoot: string): void {
           const absPath = join(dir, entry.name);
           try {
             const text = readFileSync(absPath, "utf8");
-            const langId = ext.slice(1);
+            // Use the canonical languageId mapping ("ts" -> "typescript",
+            // "py" -> "python"); some servers reject or mis-handle raw ext.
+            const langId = guessLanguageId(absPath);
             const uri = managed.client.ensureOpen(absPath, text, langId);
             managed.openDocuments.set(absPath, { uri, languageId: langId, version: 1, text });
             return true;

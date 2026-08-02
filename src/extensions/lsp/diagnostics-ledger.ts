@@ -2,10 +2,12 @@
  * Diagnostics deduplication ledger.
  * Tracks diagnostics already sent to the agent, returns only new ones.
  */
-const DIAGNOSTIC_LOCATION_PREFIX_RE = /^.*?:\d+:\d+\s+/;
+const DIAGNOSTIC_LOCATION_PREFIX_RE = /^.*?:(\d+:\d+\s+)/;
 
 function diagnosticIdentity(message: string): string {
-  return message.replace(DIAGNOSTIC_LOCATION_PREFIX_RE, "");
+  // Strip only the path prefix, keeping "line:col" — the same message text
+  // at a different location is a NEW diagnostic and must be re-reported.
+  return message.replace(DIAGNOSTIC_LOCATION_PREFIX_RE, "$1");
 }
 
 export class DiagnosticsLedger {

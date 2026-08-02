@@ -268,3 +268,46 @@ test("MCP tools from a previous cwd stop using closed handles after reconnect", 
   expect(newResult.isError).toBe(false);
   expect(calls).toEqual([{ handle: "two", toolName: "new" }]);
 });
+
+// ─── Real-subprocess integration: requests must actually reach the server ──
+
+import { spawnMcpServer, mcpInitialize, mcpListTools, closeMcpServer } from "../src/extensions/mcp/client.ts";
+
+/** Minimal stdio JSON-RPC echo server: replies to initialize/tools/list. */
+const ECHO_SERVER = `
+let buf = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buf += chunk;
+  let idx;
+  while ((idx = buf.indexOf("\\n")) !== -1) {
+    const line = buf.slice(0, idx);
+    buf = buf.slice(idx + 1);
+    if (!line.trim()) continue;
+    let req;
+    try { req = JSON.parse(line); } catch { process.stderr.write("bad json: " + line + "\\n"); continue; }
+    if (req.method === "initialize") {
+      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: req.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "echo", version: "1.0.0" } } }) + "\\n");
+    } else if (req.method === "tools/list") {
+      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: req.id, result: { tools: [{ name: "ping", description: "pong" }] } }) + "\\n");
+    } else {
+      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: req.id, result: {} }) + "\\n");
+    }
+  }
+});
+`;
+
+test("MCP client requests reach a real subprocess (stdin flush regression)", async () => {
+  const handle = spawnMcpServer("echo", {
+    command: process.execPath,
+    args: ["-e", ECHO_SERVER],
+  });
+  try {
+    const init = await mcpInitialize(handle);
+    expect(init.serverInfo.name).toBe("echo");
+    const tools = await mcpListTools(handle);
+    expect(tools.map((t) => t.name)).toEqual(["ping"]);
+  } finally {
+    closeMcpServer(handle);
+  }
+});

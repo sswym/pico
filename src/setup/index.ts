@@ -594,8 +594,14 @@ async function runChoiceMenu(
       cleanup();
       reject(error);
     };
+    let pending = "";
     const onData = (chunk: Buffer | string) => {
-      const key = chunk.toString("utf-8");
+      pending += chunk.toString("utf-8");
+      // A lone ESC may be the first byte of an arrow sequence split across
+      // chunks — wait for the rest before treating it as a cancel.
+      if (pending === "\x1b") return;
+      const key = pending;
+      pending = "";
       if (key === "\u0003") {
         fail(new Error("Setup cancelled"));
         return;
@@ -1220,8 +1226,13 @@ function runInstallCommand(command: string): { ok: boolean; output: string } {
   const result = spawnSync("sh", ["-c", command], {
     encoding: "utf-8",
     maxBuffer: 1024 * 1024,
+    // `curl | sh` installers can hang on unresponsive sources — bound the wait.
+    timeout: 120_000,
   });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+  if (result.error && result.signal === "SIGTERM") {
+    return { ok: false, output: `${output}\n(command timed out after 120s)`.trim() };
+  }
   return { ok: result.status === 0, output };
 }
 

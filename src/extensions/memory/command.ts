@@ -184,8 +184,9 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
           announce("Usage: /memory related <entity>");
           break;
         }
-        const cat = asCategory(rest) || undefined;
-        const results = manager.related(rest, { category: cat, limit: 20, minTrust: 0 });
+        // The whole argument is the entity — never treat it as a category
+        // (an entity named like a category would silently filter results).
+        const results = manager.related(rest, { limit: 20, minTrust: 0 });
         renderFacts(results, `Related to "${rest}":`);
         break;
       }

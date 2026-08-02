@@ -89,16 +89,28 @@ export function createVisionExtension(deps: VisionAnalyzeDeps = defaultVisionDep
       if (modelSupportsVision(ctx.model)) return { action: "continue" as const };
       if (!readVisionConfig()) return { action: "continue" as const };
 
-      const results = [];
-      for (const image of event.images) {
-        results.push(await analyzeImageWithVisionModel(ctx, image, event.text, deps));
-      }
+      try {
+        const results = [];
+        for (const image of event.images) {
+          results.push(await analyzeImageWithVisionModel(ctx, image, event.text, deps));
+        }
 
-      const note = formatVisionNote(results);
-      const text = event.text.trim().length > 0
-        ? `${event.text}\n\n${note}`
-        : note;
-      return { action: "transform" as const, text, images: [] };
+        const note = formatVisionNote(results);
+        const text = event.text.trim().length > 0
+          ? `${event.text}\n\n${note}`
+          : note;
+        return { action: "transform" as const, text, images: [] };
+      } catch (error) {
+        // Vision failures must never break the user message path — fall
+        // through with the original text and surface the problem.
+        const message = error instanceof Error ? error.message : String(error);
+        const note = `\n\n[image analysis failed: ${message}]`;
+        return {
+          action: "transform" as const,
+          text: event.text.trim().length > 0 ? `${event.text}${note}` : note,
+          images: [],
+        };
+      }
     });
   };
 }

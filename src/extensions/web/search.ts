@@ -1,3 +1,5 @@
+import { withTimeoutSignal } from "./fetch.ts";
+
 /**
  * webSearch tool — Exa MCP API, with optional Tavily merge.
  *
@@ -10,6 +12,8 @@
  * results are merged with URL-based dedup, giving broader coverage.
  *
  * Set `SRCODE_SEARCH_PROVIDER=exa` or `=tavily` to force a single provider.
+ * A forced provider that cannot run (tavily without a key, unknown name) is
+ * an explicit error — it is never silently replaced by another provider.
  */
 
 export interface SearchResult {
@@ -43,8 +47,13 @@ interface ExaToolResult {
 
 const DEFAULT_MAX = 10;
 const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
+/** Wall-clock cap per provider request (headers + body). */
+const SEARCH_TIMEOUT_MS = 15_000;
 
 export async function webSearch(input: SearchInput, opts: SearchOptions = {}): Promise<SearchResult[]> {
+  if (!input.query.trim()) {
+    throw new Error("webSearch: query must not be empty");
+  }
   const env = opts.env ?? {
     provider: process.env.SRCODE_SEARCH_PROVIDER,
     tavilyKey: process.env.TAVILY_API_KEY,
@@ -52,15 +61,26 @@ export async function webSearch(input: SearchInput, opts: SearchOptions = {}): P
   const max = clamp(input.max_results ?? DEFAULT_MAX, 1, 25);
   const provider = env.provider?.toLowerCase();
 
-  let raw: SearchResult[];
-  if (provider === "tavily" && env.tavilyKey) {
-    raw = await tavilySearch(input.query, max, env.tavilyKey, opts);
-  } else if (provider === "exa" || !env.tavilyKey) {
-    raw = await exaSearch(input.query, max, opts);
-  } else {
-    // Hybrid: both Exa and Tavily in parallel, merge & dedup by URL
-    raw = await hybridSearch(input.query, max, env.tavilyKey, opts);
+  if (provider === "tavily") {
+    if (!env.tavilyKey) {
+      throw new Error(
+        "SRCODE_SEARCH_PROVIDER=tavily but TAVILY_API_KEY is not set. " +
+        "Configure the key (settings.json env stanza or environment) or switch to SRCODE_SEARCH_PROVIDER=exa.",
+      );
+    }
+    return filterDomains(await tavilySearch(input.query, max, env.tavilyKey, opts), input.allowed_domains, input.blocked_domains).slice(0, max);
   }
+  if (provider === "exa") {
+    return filterDomains(await exaSearch(input.query, max, opts), input.allowed_domains, input.blocked_domains).slice(0, max);
+  }
+  if (provider !== undefined && provider !== "") {
+    throw new Error(`Unknown SRCODE_SEARCH_PROVIDER value '${env.provider}'. Valid values: exa | tavily.`);
+  }
+
+  // No forced provider: Exa alone without a key, hybrid with one.
+  const raw = env.tavilyKey
+    ? await hybridSearch(input.query, max, env.tavilyKey, opts)
+    : await exaSearch(input.query, max, opts);
 
   return filterDomains(raw, input.allowed_domains, input.blocked_domains).slice(0, max);
 }
@@ -75,30 +95,37 @@ const EXA_FETCH_UA = "srcode/0.2";
 
 async function exaSearch(query: string, max: number, opts: SearchOptions): Promise<SearchResult[]> {
   const fetcher = opts.fetcher ?? globalThis.fetch;
-  const response = await fetcher(EXA_MCP_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json, text/event-stream",
-      "User-Agent": EXA_FETCH_UA,
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: {
-        name: "web_search_exa",
-        arguments: { query, numResults: max },
+  const timeout = withTimeoutSignal(opts.signal, SEARCH_TIMEOUT_MS);
+  let response: Response;
+  let raw: string;
+  try {
+    response = await fetcher(EXA_MCP_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        "User-Agent": EXA_FETCH_UA,
       },
-    }),
-    signal: opts.signal,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Exa search failed: ${response.status} ${response.statusText}`);
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "web_search_exa",
+          arguments: { query, numResults: max },
+        },
+      }),
+      signal: timeout.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Exa search failed: ${response.status} ${response.statusText}`);
+    }
+    // Body download stays inside the timeout scope.
+    raw = await response.text();
+  } finally {
+    timeout.cleanup();
   }
 
-  const raw = await response.text();
   const parsed = parseExaResponse(raw);
 
   if (parsed.error) {
@@ -215,6 +242,11 @@ async function hybridSearch(
     exaSearch(query, max, opts),
     tavilySearch(query, max, tavilyKey, opts),
   ]);
+  if (opts.signal?.aborted) {
+    // Cancellation is not a provider failure — keep the abort semantics
+    // intact instead of folding it into a "Hybrid search failed" message.
+    throw new DOMException("aborted", "AbortError");
+  }
   const exaResults = exaResult.status === "fulfilled" ? exaResult.value : [];
   const tavilyResults = tavilyResult.status === "fulfilled" ? tavilyResult.value : [];
   if (exaResult.status === "rejected" && tavilyResult.status === "rejected") {
@@ -252,26 +284,37 @@ async function tavilySearch(
   opts: SearchOptions,
 ): Promise<SearchResult[]> {
   const fetcher = opts.fetcher ?? globalThis.fetch;
-  const response = await fetcher("https://api.tavily.com/search", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      api_key: apiKey,
-      query,
-      max_results: max,
-      search_depth: "basic",
-    }),
-    signal: opts.signal,
-  });
-  if (!response.ok) {
-    throw new Error(`Tavily search failed: ${response.status} ${response.statusText}`);
+  const timeout = withTimeoutSignal(opts.signal, SEARCH_TIMEOUT_MS);
+  let data: { results?: TavilyAPIResult[] };
+  try {
+    const response = await fetcher("https://api.tavily.com/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        api_key: apiKey,
+        query,
+        max_results: max,
+        search_depth: "basic",
+      }),
+      signal: timeout.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Tavily search failed: ${response.status} ${response.statusText}`);
+    }
+    // Body download stays inside the timeout scope.
+    data = (await response.json()) as { results?: TavilyAPIResult[] };
+  } finally {
+    timeout.cleanup();
   }
-  const data = (await response.json()) as { results?: TavilyAPIResult[] };
-  return (data.results ?? []).map((r) => ({
-    title: r.title ?? "",
-    url: r.url ?? "",
-    snippet: (r.content ?? "").replace(/\s+/g, " ").trim(),
-  }));
+  return (data.results ?? [])
+    .map((r) => ({
+      title: r.title ?? "",
+      url: r.url ?? "",
+      snippet: (r.content ?? "").replace(/\s+/g, " ").trim(),
+    }))
+    // Drop entries without any locator — they render as empty rows and pollute
+    // URL-based dedup in hybrid mode.
+    .filter((r) => r.title || r.url);
 }
 
 // ─── Shared domain filtering ───────────────────────────────────────────────

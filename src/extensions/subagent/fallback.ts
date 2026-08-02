@@ -28,13 +28,18 @@ export async function runWithFallbackModels<TContext>(
 
 	if (!isProviderFailure(result)) return result;
 
-	for (const fallbackModel of agent.fallbackModels) {
-		if (request.signal?.aborted) break;
-		const fallbackAgent = { ...agent, model: fallbackModel, fallbackModels: undefined };
-		const fallbackAgents = request.agents.map((a) => a.name === request.agentName ? fallbackAgent : a);
-		const fallbackResult = await request.run(fallbackAgents, request.context);
-		if (!isFailedResult(fallbackResult)) return fallbackResult;
-	}
+  for (const fallbackModel of agent.fallbackModels) {
+    if (request.signal?.aborted) break;
+    const fallbackAgent = { ...agent, model: fallbackModel, fallbackModels: undefined };
+    const fallbackAgents = request.agents.map((a) => a.name === request.agentName ? fallbackAgent : a);
+    const fallbackResult = await request.run(fallbackAgents, request.context);
+    if (!isFailedResult(fallbackResult)) {
+      // A fallback-model success must still pass the acceptance gate —
+      // skipping onSuccessOrNoFallback here would let unverified output
+      // through whenever the primary model failed.
+      return await request.onSuccessOrNoFallback(fallbackAgent, fallbackResult);
+    }
+  }
 
-	return result;
+  return result;
 }

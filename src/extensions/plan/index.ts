@@ -226,6 +226,19 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     },
   });
 
+  // Leaving a session must not carry plan mode (or its stale plan file) into
+  // the next session — writes would stay blocked against the wrong file.
+  pi.on("session_before_switch", () => {
+    planActive = false;
+    planFile = null;
+    return {};
+  });
+  pi.on("session_before_fork", () => {
+    planActive = false;
+    planFile = null;
+    return {};
+  });
+
   // ---- system prompt injection -----------------------------------------
   // Append the plan-mode rules + plan file path to the system prompt while
   // active. When planActive flips false, the injection drops automatically.

@@ -20,7 +20,8 @@ import {
   type MemoryProvider,
   WriteQueue,
 } from "./provider.ts";
-import type { Category } from "./schema.ts";
+import type { Category, Scope } from "./schema.ts";
+import { HELPFUL_DELTA, UNHELPFUL_DELTA } from "./schema.ts";
 import { srcodeHolographicMemoryPath } from "../paths.ts";
 
 function defaultDbPath(): string {
@@ -142,7 +143,12 @@ export class HolographicMemoryProvider implements MemoryProvider {
     const row = this.rows.find((r) => r.fact_id === factId);
     if (!row) return null;
     if (helpful) row.helpful_count++;
-    // Unhelpful feedback does not decrement (discourages gaming).
+    // Mirror the builtin backend's trust deltas so both providers behave
+    // identically for the same feedback input.
+    const delta = helpful ? HELPFUL_DELTA : UNHELPFUL_DELTA;
+    row.trust_score = Math.max(0, Math.min(1, row.trust_score + delta));
+    row.updated_at = new Date().toISOString();
+    this.queue.push("save", () => this._save());
     return toFact(row);
   }
 
@@ -187,7 +193,7 @@ export class HolographicMemoryProvider implements MemoryProvider {
     return [];
   }
 
-  contradict(_opts?: { category?: string; limit?: number }): ContradictionResult[] {
+  contradict(_opts?: { category?: string; limit?: number; scope?: Scope; cwd?: string }): ContradictionResult[] {
     // Stub: compare all fact pairs for contradiction signals.
     return [];
   }

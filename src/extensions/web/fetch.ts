@@ -34,6 +34,9 @@ const cache = new LRU<string, FetchedPage>({
   ttlMs: FETCH_CACHE_TTL_MS,
 });
 
+/** In-flight fetches keyed by normalized URL — coalesces concurrent misses. */
+const inflight = new Map<string, Promise<FetchedPage>>();
+
 export function clearWebFetchCache(): void {
   cache.clear();
 }
@@ -215,59 +218,79 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
   if (!opts.bypassCache) {
     const hit = cache.get(upgraded);
     if (hit) return hit;
+    // Coalesce concurrent misses for the same URL into one network request.
+    const pending = inflight.get(upgraded);
+    if (pending) return pending;
   }
 
-  const fetcher = opts.fetcher ?? globalThis.fetch;
-  const timeout = withTimeoutSignal(opts.signal, FETCH_TIMEOUT_MS);
-  let response!: Response;
-  let finalUrl = upgraded;
-  try {
-    // Follow redirects manually so every hop is re-validated against the
-    // private-network guard. `redirect: "follow"` would let a public URL
-    // bounce to localhost / 169.254.169.254 (cloud metadata) and slip past the
-    // check that only ever ran on the original URL.
-    let currentUrl = upgraded;
-    const MAX_REDIRECTS = 5;
-    for (let hop = 0; ; hop++) {
-      response = await fetcher(currentUrl, {
-        headers: { "User-Agent": FETCH_UA, Accept: "text/markdown, text/html, */*" },
-        signal: timeout.signal,
-        redirect: "manual",
-      });
-      finalUrl = currentUrl;
-      if (response.status < 300 || response.status >= 400) break;
-      const location = response.headers.get("location");
-      if (!location) break;
-      if (hop >= MAX_REDIRECTS) throw new Error("Too many redirects");
-      // Resolve relative Location against the current URL, then re-validate.
-      currentUrl = normalizeUrl(new URL(location, currentUrl).toString(), opts);
+  const run = (async (): Promise<FetchedPage> => {
+    const fetcher = opts.fetcher ?? globalThis.fetch;
+    const timeout = withTimeoutSignal(opts.signal, FETCH_TIMEOUT_MS);
+    let response!: Response;
+    let finalUrl = upgraded;
+    let body = "";
+    try {
+      // Follow redirects manually so every hop is re-validated against the
+      // private-network guard. `redirect: "follow"` would let a public URL
+      // bounce to localhost / 169.254.169.254 (cloud metadata) and slip past the
+      // check that only ever ran on the original URL.
+      let currentUrl = upgraded;
+      const MAX_REDIRECTS = 5;
+      for (let hop = 0; ; hop++) {
+        response = await fetcher(currentUrl, {
+          headers: { "User-Agent": FETCH_UA, Accept: "text/markdown, text/html, */*" },
+          signal: timeout.signal,
+          redirect: "manual",
+        });
+        finalUrl = currentUrl;
+        if (response.status < 300 || response.status >= 400) break;
+        const location = response.headers.get("location");
+        if (!location) break;
+        if (hop >= MAX_REDIRECTS) throw new Error("Too many redirects");
+        // Resolve relative Location against the current URL, then re-validate.
+        currentUrl = normalizeUrl(new URL(location, currentUrl).toString(), opts);
+      }
+      // Body download stays inside the timeout/abort scope: a stalled body must
+      // not hang the tool after the headers arrived.
+      body = await readResponseText(response, FETCH_MAX_RESPONSE_BYTES);
+    } finally {
+      timeout.cleanup();
     }
-  } finally {
-    timeout.cleanup();
+
+    const contentType = response.headers.get("content-type") ?? "";
+
+    let markdown: string;
+    if (contentType.includes("text/html") || /<html[\s>]/i.test(body.slice(0, 256))) {
+      markdown = htmlToMarkdown(body);
+    } else {
+      markdown = body;
+    }
+
+    const { out, truncated } = truncateBytes(markdown, FETCH_MAX_OUTPUT_BYTES);
+
+    const page: FetchedPage = {
+      url: finalUrl,
+      status: response.status,
+      statusText: response.statusText,
+      contentType,
+      markdown: out,
+      truncated,
+    };
+    // Error pages are not cached as successful content — a cached 404/500 would
+    // be re-served to later fetches for 15 minutes.
+    if (response.status < 400) {
+      cache.set(upgraded, page);
+    }
+    return page;
+  })();
+
+  if (!opts.bypassCache) {
+    inflight.set(upgraded, run);
+    run.finally(() => {
+      if (inflight.get(upgraded) === run) inflight.delete(upgraded);
+    }).catch(() => {});
   }
-
-  const contentType = response.headers.get("content-type") ?? "";
-  const body = await readResponseText(response, FETCH_MAX_RESPONSE_BYTES);
-
-  let markdown: string;
-  if (contentType.includes("text/html") || /<html[\s>]/i.test(body.slice(0, 256))) {
-    markdown = htmlToMarkdown(body);
-  } else {
-    markdown = body;
-  }
-
-  const { out, truncated } = truncateBytes(markdown, FETCH_MAX_OUTPUT_BYTES);
-
-  const page: FetchedPage = {
-    url: finalUrl,
-    status: response.status,
-    statusText: response.statusText,
-    contentType,
-    markdown: out,
-    truncated,
-  };
-  cache.set(upgraded, page);
-  return page;
+  return run;
 }
 
 function normalizeUrl(url: string, opts: WebFetchOptions): string {
@@ -289,7 +312,12 @@ function isPrivateHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   if (host === "::1" || host === "0:0:0:0:0:0:0:1") return true;
-  if (host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:")) return true;
+  // ULA / link-local prefixes only apply to IPv6 literals. Plain domains that
+  // merely start with "fc"/"fd" (fcc.gov, fda.gov, …) are public and must
+  // not be refused as private-network addresses.
+  if (host.includes(":")) {
+    if (host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:")) return true;
+  }
 
   // IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1 or ::ffff:7f00:1): unwrap and
   // re-check the embedded IPv4 so mapped loopback/metadata addresses are caught.
@@ -305,7 +333,13 @@ function isPrivateHost(hostname: string): boolean {
   }
 
   const parts = host.split(".").map((p) => Number(p));
-  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return false;
+  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) {
+    // Non-dotted host: normalize alternate IPv4 spellings (decimal integer
+    // 2130706433, hex 0x7f000001, octal 0177.0.0.1) and re-check, so the
+    // private guard can't be bypassed with a rewritten loopback address.
+    const numeric = parseNumericIpv4(host);
+    return numeric !== null && isPrivateHost(numeric);
+  }
   const [a, b] = parts as [number, number, number, number];
   if (a === 10 || a === 127 || a === 0) return true;
   if (a === 169 && b === 254) return true;
@@ -314,8 +348,24 @@ function isPrivateHost(hostname: string): boolean {
   return false;
 }
 
-function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; cleanup: () => void } {
-  const controller = new AbortController();
+/** Parse a single-component IPv4 spelling (decimal / hex / octal) into dotted form. */
+function parseNumericIpv4(host: string): string | null {
+  const m = /^(0[xX][0-9a-fA-F]+|\d+)$/.exec(host);
+  if (!m) return null;
+  const raw = m[1]!;
+  let n: number;
+  if (raw.startsWith("0x") || raw.startsWith("0X")) {
+    n = Number.parseInt(raw, 16);
+  } else if (raw.length > 1 && raw.startsWith("0")) {
+    n = Number.parseInt(raw, 8);
+  } else {
+    n = Number.parseInt(raw, 10);
+  }
+  if (!Number.isSafeInteger(n) || n < 0 || n > 0xffffffff) return null;
+  return `${(n >>> 24) & 0xff}.${(n >>> 16) & 0xff}.${(n >>> 8) & 0xff}.${n & 0xff}`;
+}
+
+export function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; cleanup: () => void } {  const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`webFetch timed out after ${timeoutMs}ms`)), timeoutMs);
   const abort = () => controller.abort(signal?.reason);
   if (signal?.aborted) abort();

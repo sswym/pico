@@ -124,6 +124,8 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
   return (pi: ExtensionAPI) => {
     const entries: ServerEntry[] = [];
     const activeTools = new Map<string, { handle: McpServerHandle; toolName: string }>();
+    /** Tool names registered this process — reconnect must not re-register. */
+    const registeredTools = new Set<string>();
     let connectedCwd: string | null = null;
 
   // ── Register /mcp command BEFORE async server connections ──────────────
@@ -165,6 +167,13 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
             const schema = tool.inputSchema ?? { type: "object" as const, properties: {} };
             const toolHandle = handle;
             activeTools.set(piToolName, { handle: toolHandle, toolName: tool.name });
+
+            // pi has no tool-unregistration API; registering the same name
+            // twice would leave stale closures behind. Reconnects (cwd change)
+            // reuse the first registration — the execute guard against
+            // inactive handles keeps old sessions safe.
+            if (registeredTools.has(piToolName)) continue;
+            registeredTools.add(piToolName);
 
             pi.registerTool(
               defineTool({

@@ -49,7 +49,10 @@ export function srcodeMemoryDbPath(): string {
 }
 
 export function srcodeHolographicMemoryPath(): string {
-  return process.env.SRCODE_MEMORY_DB ?? join(srcodeHome(), "holographic-memory.json");
+  // Deliberately a separate env var from SRCODE_MEMORY_DB: the two backends
+  // write incompatible formats (SQLite vs JSON), so sharing a path would let
+  // one backend overwrite the other's data file.
+  return process.env.SRCODE_HOLOGRAPHIC_MEMORY_PATH ?? join(srcodeHome(), "holographic-memory.json");
 }
 
 export function srcodeMcpConfigPath(): string {

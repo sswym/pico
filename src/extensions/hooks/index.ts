@@ -64,10 +64,14 @@ export function createHooksExtension(deps: {
   const cwdFn = deps.cwd ?? (() => process.cwd());
 
   return (pi: ExtensionAPI) => {
-    let cached: Hook[] | undefined;
+    let cached: { cwd: string; hooks: Hook[] } | undefined;
     function hooks(): Hook[] {
-      if (!cached) cached = load(cwdFn());
-      return cached;
+      const cwd = cwdFn();
+      // Invalidate when the working directory changes so a session switch to
+      // another project never keeps the previous project's hooks active.
+      if (cached && cached.cwd === cwd) return cached.hooks;
+      cached = { cwd, hooks: load(cwd) };
+      return cached.hooks;
     }
 
     function warn(content: string): void {

@@ -19,6 +19,7 @@ import type {
   ScoredFact,
   SearchOptions,
 } from "./provider.ts";
+import type { Scope } from "./schema.ts";
 import { BuiltinMemoryProvider } from "./builtin-provider.ts";
 import { HolographicMemoryProvider } from "./holographic-provider.ts";
 import { WriteQueue } from "./provider.ts";
@@ -422,7 +423,7 @@ export class ProviderManager {
     return this.provider.reason(entities, opts);
   }
 
-  contradict(opts: { category?: string; limit?: number } = {}): ContradictionResult[] {
+  contradict(opts: { category?: string; limit?: number; scope?: Scope; cwd?: string } = {}): ContradictionResult[] {
     return this.provider.contradict(opts);
   }
 

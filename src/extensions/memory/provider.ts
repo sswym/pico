@@ -185,7 +185,7 @@ export interface MemoryProvider {
   list(opts?: SearchOptions): Fact[];
   related(entity: string, opts?: SearchOptions): ScoredFact[];
   reason(entities: string[], opts?: SearchOptions): ScoredFact[];
-  contradict(opts?: { category?: string; limit?: number }): ContradictionResult[];
+  contradict(opts?: { category?: string; limit?: number; scope?: Scope; cwd?: string }): ContradictionResult[];
 
   // -- Write queue -------------------------------------------------------
 

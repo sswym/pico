@@ -133,6 +133,39 @@ describe("fetchAndConvert", () => {
     expect(webFetchCacheSize()).toBe(1);
   });
 
+  test("abort during body download rejects promptly (timeout scope covers body read)", async () => {
+    // The injected fetcher mirrors real fetch semantics: aborting the request
+    // signal errors the response body stream. If the abort listener were torn
+    // down after the headers arrived (the old bug), reader.read() would hang.
+    const fetcher = (async (_url: string, init?: { signal?: AbortSignal }) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener(
+            "abort",
+            () => controller.error(init.signal?.reason ?? new Error("aborted")),
+            { once: true },
+          );
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    }) as unknown as typeof fetch;
+
+    const ac = new AbortController();
+    const pending = fetchAndConvert("https://example.test/slow", {
+      fetcher,
+      bypassCache: true,
+      signal: ac.signal,
+    });
+    // Headers have already been produced (fetcher body start() ran
+    // synchronously) and the body read is pending; aborting now must reject
+    // the in-flight body read rather than hang.
+    ac.abort(new Error("user abort"));
+    await expect(pending).rejects.toThrow(/abort/i);
+  });
+
   test("upgrades http to https before fetching", async () => {
     let seenUrl = "";
     globalThis.fetch = (async (url: string) => {
@@ -145,6 +178,68 @@ describe("fetchAndConvert", () => {
     }) as unknown as typeof fetch;
     await fetchAndConvert("http://example.test/x");
     expect(seenUrl.startsWith("https://")).toBe(true);
+  });
+
+  test("public domains starting with fc/fd are not treated as private", async () => {
+    globalThis.fetch = (async () => new Response("<p>ok</p>", {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    })) as unknown as typeof fetch;
+    const page = await fetchAndConvert("https://fcc.gov/status", { bypassCache: true });
+    expect(page.status).toBe(200);
+  });
+
+  test("concurrent fetches of the same URL share one network request", async () => {
+    let calls = 0;
+    const fetcher = (async () => {
+      calls++;
+      return new Response("<p>shared</p>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    }) as unknown as typeof fetch;
+
+    const [a, b] = await Promise.all([
+      fetchAndConvert("https://example.test/shared", { fetcher, bypassCache: true }),
+      fetchAndConvert("https://example.test/shared", { fetcher, bypassCache: true }),
+    ]);
+    expect(calls).toBe(2); // bypassCache skips coalescing, one request each
+
+    // Cold URL: the first call registers the in-flight promise synchronously;
+    // the second call must coalesce into it instead of issuing another request.
+    const [c, d] = await Promise.all([
+      fetchAndConvert("https://example.test/coalesce", { fetcher }),
+      fetchAndConvert("https://example.test/coalesce", { fetcher }),
+    ]);
+    expect(calls).toBe(3);
+    expect(c.markdown).toBe(d.markdown);
+  });
+
+  test("alternate IPv4 spellings of loopback are refused as private", async () => {
+    for (const host of ["2130706433", "0x7f000001"]) {
+      await expect(
+        fetchAndConvert(`https://${host}/status`, { fetcher: (async () => new Response("ok")) as unknown as typeof fetch }),
+      ).rejects.toThrow(/private network/i);
+    }
+  });
+
+  test("4xx/5xx responses are not cached and are flagged as errors", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response("<html><body>Not Found</body></html>", {
+        status: 404,
+        statusText: "Not Found",
+        headers: { "content-type": "text/html" },
+      });
+    }) as unknown as typeof fetch;
+
+    const a = await fetchAndConvert("https://example.test/missing");
+    expect(a.status).toBe(404);
+    expect(a.markdown).toContain("Not Found");
+    // Error pages must not populate the cache: a second fetch hits the network.
+    await fetchAndConvert("https://example.test/missing");
+    expect(calls).toBe(2);
   });
 
   test("returns the final URL after following redirects", async () => {
@@ -461,6 +556,24 @@ describe("webSearch end-to-end (mocked)", () => {
     );
     expect(results.length).toBe(1);
     expect(results[0]!.url).toBe("https://allowed.test/a");
+  });
+
+  test("forced tavily without a key is an explicit error, not a silent fallback", async () => {
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      webSearch({ query: "x" }, { env: { provider: "tavily" } }),
+    ).rejects.toThrow(/TAVILY_API_KEY/);
+    expect(fetchCalls).toBe(0);
+
+    await expect(
+      webSearch({ query: "x" }, { env: { provider: "google" } }),
+    ).rejects.toThrow(/Unknown SRCODE_SEARCH_PROVIDER/);
+    expect(fetchCalls).toBe(0);
   });
 
   test("max_results clamps the returned set", async () => {

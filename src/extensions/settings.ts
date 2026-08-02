@@ -26,7 +26,8 @@ export function readSettings(): Settings {
 export function writeSettings(settings: Settings): void {
   const settingsPath = srcodeSettingsPath();
   mkdirSync(dirname(settingsPath), { recursive: true });
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  // settings.json may hold API keys (env stanza) — never world-readable.
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
 }
 
 export function readSettingsObject(key: string): Record<string, unknown> {

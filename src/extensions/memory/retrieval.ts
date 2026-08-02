@@ -352,32 +352,36 @@ export class FactRetriever {
 
   /**
    * Contradict: find potentially contradictory facts via entity overlap + content divergence.
+   * Honors the same scope/cwd isolation as search/probe so facts from other
+   * projects never surface in this project's contradiction report.
    */
-  contradict(opts: { category?: string; threshold?: number; limit?: number } = {}): ContradictionResult[] {
+  contradict(opts: { category?: string; threshold?: number; limit?: number; scope?: Scope; cwd?: string } = {}): ContradictionResult[] {
     const threshold = opts.threshold ?? 0.3;
     const limit = opts.limit ?? 10;
     const MAX_FACTS = 500;
+    const scope = scopeFilter(opts);
 
     let rows: FactRow[];
     if (opts.category) {
       rows = this.db
-        .query<FactRow, [string, number]>(
+        .query<FactRow, [string, ...string[], number]>(
           `SELECT DISTINCT f.* FROM facts f
            JOIN fact_entities fe ON fe.fact_id = f.fact_id
-           WHERE f.category = ?
+           WHERE f.category = ? ${scope.clause}
            ORDER BY f.updated_at DESC
            LIMIT ?`,
         )
-        .all(opts.category, MAX_FACTS) as FactRow[];
+        .all(opts.category, ...scope.params, MAX_FACTS) as FactRow[];
     } else {
       rows = this.db
-        .query<FactRow, [number]>(
+        .query<FactRow, [...string[], number]>(
           `SELECT DISTINCT f.* FROM facts f
            JOIN fact_entities fe ON fe.fact_id = f.fact_id
+           WHERE 1=1 ${scope.clause}
            ORDER BY f.updated_at DESC
            LIMIT ?`,
         )
-        .all(MAX_FACTS) as FactRow[];
+        .all(...scope.params, MAX_FACTS) as FactRow[];
     }
 
     if (rows.length < 2) return [];

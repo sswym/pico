@@ -73,6 +73,7 @@ export default function (pi: ExtensionAPI) {
 			"Agent frontmatter supports: model, tools, thinking, maxExecutionTimeMs, maxTokens, fallbackModels, systemPromptMode, inheritProjectContext, inheritSkills, acceptance.",
 			"User-level overrides may live in ~/.srcode/agent/agents/<name>.md (same name = replaces built-in) or ~/.srcode/subagent.json (partial field overrides).",
 			'Project-local agents in .srcode/agents are opt-in: set agentScope: "both" (or "project").',
+			"Project agents are repo-controlled; interactive sessions confirm before running them, and non-interactive runs refuse them unless SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS=1 is set.",
 			"Do NOT shell out to `ls` to discover agents - call this tool with an obviously wrong agent name to get the authoritative list, or just trust the six built-ins above.",
 		].join(" "),
 		parameters: SubagentParams,

@@ -161,8 +161,12 @@ async function sendRequest(
 
   const body = JSON.stringify({ jsonrpc: "2.0", method, params, id });
   handle.proc.stdin.write(new TextEncoder().encode(body + "\n"));
+  // Bun buffers piped stdin writes (FileSink) — without an explicit flush the
+  // request stays buffered until the buffer fills or the process exits, so
+  // every request would time out against a long-lived MCP server.
+  handle.proc.stdin.flush?.();
 
-  // Flush and wait for response
+  // Wait for response
   return promise;
 }
 
@@ -182,6 +186,7 @@ export async function mcpInitialize(
   // Send initialized notification (fire-and-forget)
   const notif = JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" });
   handle.proc.stdin.write(new TextEncoder().encode(notif + "\n"));
+  handle.proc.stdin.flush?.();
 
   handle.serverInfo = result.serverInfo;
   return result;

@@ -101,10 +101,12 @@ export async function runHook(hook: Hook, vars: HookVars): Promise<HookRunResult
       }
     }, timeoutMs);
 
-    // Wait for exit FIRST. Reading the streams concurrently with `exited`
-    // can hang on SIGKILL'd children: Bun's stream wrappers don't all
-    // close on signal, and `new Response(stream).text()` will then sit
-    // waiting for the (closed-but-not-EOF) pipe forever.
+    // Drain stdout/stderr CONCURRENTLY with the exit wait. Reading only
+    // after `exited` deadlocks any hook that produces more than the pipe
+    // buffer (~64KB): the child blocks writing stdout, never exits, and is
+    // killed by the timeout instead of finishing normally.
+    const stdoutPromise = readAll(child.stdout as ReadableStream<Uint8Array>);
+    const stderrPromise = readAll(child.stderr as ReadableStream<Uint8Array>);
     const exitCode = await child.exited;
     if (timer) clearTimeout(timer);
     timer = undefined;
@@ -112,8 +114,10 @@ export async function runHook(hook: Hook, vars: HookVars): Promise<HookRunResult
     let stdout = "";
     let stderr = "";
     if (!timedOut) {
-      stdout = await readAll(child.stdout as ReadableStream<Uint8Array>);
-      stderr = await readAll(child.stderr as ReadableStream<Uint8Array>);
+      // Normal exit: the pipe is closed, so the concurrent reads finish.
+      // After a timeout SIGKILL the streams may never EOF — don't await them.
+      stdout = await stdoutPromise;
+      stderr = await stderrPromise;
     }
     return { exitCode: typeof exitCode === "number" ? exitCode : -1, stdout, stderr, timedOut };
   } catch (err) {

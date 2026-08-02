@@ -176,9 +176,12 @@ export function executeMemoryToolAction(
       }
       case "contradict": {
         const cat = asCategory(params.category);
+        const scope = parseScope(params.scope);
         const results = provider.contradict({
           category: cat,
           limit: params.limit,
+          scope,
+          cwd: cwdForScope(scope, currentCwd),
         });
         return jsonResult({ count: results.length, contradictions: results });
       }

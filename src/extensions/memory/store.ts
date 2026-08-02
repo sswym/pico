@@ -81,7 +81,14 @@ export interface UpdateOptions {
   trustDelta?: number;
 }
 
-const clampTrust = (n: number) => Math.max(TRUST_MIN, Math.min(TRUST_MAX, n));
+function clampTrust(n: number): number {
+  return Math.max(TRUST_MIN, Math.min(TRUST_MAX, n));
+}
+
+/** Escape LIKE wildcards so entity names containing %/_ are matched literally. */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
 
 function normaliseFtsQuery(raw: string): string {
   const cleaned = raw
@@ -420,9 +427,9 @@ export class MemoryStore {
     // Try entity table first
     const entityRow = this.db
       .query<{ entity_id: number }, [string, string]>(
-        "SELECT entity_id FROM entities WHERE LOWER(name) = ? OR (',' || aliases || ',') LIKE ?",
+        "SELECT entity_id FROM entities WHERE LOWER(name) = ? OR (',' || aliases || ',') LIKE ? ESCAPE '\\'",
       )
-      .get(name, `%,${name},%`);
+      .get(name, `%,${escapeLike(name)},%`);
 
     if (!entityRow) {
       // Fallback to FTS phrase match
@@ -565,10 +572,12 @@ export class MemoryStore {
       .get(lower);
     if (exact) return exact.entity_id;
 
-    // Alias match
+    // Alias match (LIKE wildcards escaped — entity names may contain _/%)
     const alias = this.db
-      .query<{ entity_id: number }, [string]>("SELECT entity_id FROM entities WHERE (',' || aliases || ',') LIKE ?")
-      .get(`%,${lower},%`);
+      .query<{ entity_id: number }, [string]>(
+        "SELECT entity_id FROM entities WHERE (',' || aliases || ',') LIKE ? ESCAPE '\\'",
+      )
+      .get(`%,${escapeLike(lower)},%`);
     if (alias) return alias.entity_id;
 
     // Create new entity

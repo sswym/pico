@@ -129,12 +129,44 @@ export function mergeWorktree(cwd: string, branchName: string): { success: boole
 	}
 }
 
+/**
+ * Commit any uncommitted changes inside a worktree so the follow-up merge has
+ * something to merge. Subagents edit files but do not necessarily commit;
+ * without this, their work would be dropped when the worktree is removed.
+ * Returns false when the commit fails (e.g. missing git identity).
+ */
+export function commitWorktreeChanges(
+	cwd: string,
+	worktreeDir: string,
+): boolean {
+	try {
+		const status = execSync(`git -C "${worktreeDir}" status --porcelain`, { cwd, encoding: "utf-8", stdio: "pipe" });
+		if (!status.trim()) return true;
+		execSync(`git -C "${worktreeDir}" add -A`, { cwd, stdio: "pipe" });
+		execSync(`git -C "${worktreeDir}" commit -m "subagent worktree changes" --no-verify`, {
+			cwd,
+			stdio: "pipe",
+			env: {
+				...process.env,
+				GIT_AUTHOR_NAME: "srcode-subagent",
+				GIT_AUTHOR_EMAIL: "subagent@srcode.local",
+				GIT_COMMITTER_NAME: "srcode-subagent",
+				GIT_COMMITTER_EMAIL: "subagent@srcode.local",
+			},
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export function mergeParallelWorktrees(
 	cwd: string,
 	results: SingleResult[],
 	handles: Array<WorktreeHandle | null>,
 	getDiff: (cwd: string, branchName: string) => string = getWorktreeDiff,
 	merge: (cwd: string, branchName: string) => { success: boolean; conflict?: string } = mergeWorktree,
+	commitChanges: (cwd: string, worktreeDir: string) => boolean = (cwd, dir) => commitWorktreeChanges(cwd, dir),
 ): string[] {
 	const mergeNotes: string[] = [];
 	for (let i = 0; i < results.length; i++) {
@@ -144,6 +176,17 @@ export function mergeParallelWorktrees(
 		if (!result) continue;
 		if (isFailedResult(result)) {
 			mergeNotes.push(`task ${i} (${result.agent}): skipped merge (task failed)`);
+			continue;
+		}
+		// Commit uncommitted edits before diffing — a branch that only has
+		// working-tree changes merges as "no changes" and then gets deleted
+		// with the worktree, silently dropping the task's output.
+		const committed = commitChanges(cwd, handle.worktreeDir);
+		if (!committed) {
+			mergeNotes.push(
+				`task ${i} (${result.agent}): could not commit worktree changes (git identity missing?); ` +
+					`uncommitted edits may be lost after cleanup`,
+			);
 			continue;
 		}
 		const diff = getDiff(cwd, handle.branchName);

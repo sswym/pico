@@ -38,7 +38,10 @@ const WebFetchParams = Type.Object({
 });
 
 const WebSearchParams = Type.Object({
-  query: Type.String({ description: "Free-text search query." }),
+  query: Type.String({
+    minLength: 1,
+    description: "Free-text search query.",
+  }),
   max_results: Type.Optional(
     Type.Integer({
       minimum: 1,
@@ -84,6 +87,8 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               truncated: page.truncated,
               contentType: page.contentType,
             },
+            // 4xx/5xx are failures, not successful fetches.
+            isError: page.status >= 400,
           };
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);

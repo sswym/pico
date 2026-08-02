@@ -168,6 +168,15 @@ export function allowProjectMcp(): boolean {
   return safetyFlag("SRCODE_ENABLE_PROJECT_MCP", "enableProjectMcp");
 }
 
+/**
+ * Allow project-local subagents to run without interactive confirmation.
+ * Interactive sessions still prompt unless the model sets confirmProjectAgents=false;
+ * non-interactive runs refuse project agents unless this env flag is set.
+ */
+export function allowUnattendedProjectAgents(): boolean {
+  return envFlag("SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS") ?? false;
+}
+
 export function capabilitySummary(): string {
   return CAPABILITIES
     .map((c) => `${c.label} (${c.risk}): ${c.description}`)

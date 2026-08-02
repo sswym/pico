@@ -225,6 +225,9 @@ export class BuiltinMemoryProvider implements MemoryProvider {
       return results;
     }
     if (!query) return [];
+    // Cache miss — drop the stale entry so a later re-ask of the old query
+    // can't surface results computed for an earlier turn.
+    this.cachedPrefetch = null;
     return this.store.search(query, {
       limit: 5,
       minTrust: 0.3,

@@ -522,6 +522,18 @@ test("FactRetriever.contradict detects contradictory facts", () => {
   expect(contradictions[0]!.contradiction_score).toBeGreaterThan(0);
 });
 
+test("FactRetriever.contradict isolates project scope from other projects", () => {
+  store.add('the "Deploy Service" uses docker', { category: "project", scope: "project", cwd: "/proj/a" });
+  store.add('the "Deploy Service" uses podman', { category: "project", scope: "project", cwd: "/proj/b" });
+
+  const retriever = store.retriever();
+  const otherProject = retriever.contradict({ threshold: 0.1, limit: 10, scope: "project", cwd: "/proj/a" });
+  expect(otherProject).toHaveLength(0);
+
+  const globalOnly = retriever.contradict({ threshold: 0.1, limit: 10, scope: "global" });
+  expect(globalOnly).toHaveLength(0);
+});
+
 test("FactRetriever.search respects minTrust filter", () => {
   const id = store.add("low trust fact about Docker", { category: "tool" });
   store.add("high trust fact about Docker containers", { category: "tool" });

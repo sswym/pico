@@ -5,6 +5,10 @@
  * the right tool, and that `discoverAgents` finds the four bundled roles.
  */
 import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { runSubagentRequest } from "../src/extensions/subagent/orchestrator.ts";
 import { discoverAgents } from "../src/extensions/subagent/agents.ts";
 import { buildChainTask } from "../src/extensions/subagent/chain.ts";
 import { mapWithConcurrencyLimit } from "../src/extensions/subagent/concurrency.ts";
@@ -256,6 +260,35 @@ test("subagent renderer handles empty result details", () => {
   expect(String(rendered.text ?? rendered.content ?? rendered)).toContain("plain output");
 });
 
+test("subagent renderer counts gate-failed chain steps as failed", () => {
+  const base = {
+    agent: "worker",
+    agentSource: "user" as const,
+    task: "t",
+    exitCode: 0,
+    messages: [{ role: "assistant", content: [{ type: "text", text: "out" }] }],
+    stderr: "",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+  };
+  const gateFailed = { ...base, step: 1, stopReason: "gate_failed", errorMessage: "gate failed" };
+  const ok = { ...base, step: 2 };
+
+  const rendered: any = renderSubagentResult(
+    {
+      content: [{ type: "text", text: "chain" }],
+      details: { mode: "chain", agentScope: "user", projectAgentsDir: null, results: [gateFailed, ok] },
+    },
+    true,
+    plainTheme,
+  );
+  const text = String(rendered.text ?? rendered.content ?? rendered);
+  // gate_failed keeps exitCode 0, so an exitCode-based count would report 2/2;
+  // isFailedResult must drive the status.
+  expect(text).toContain("1/2 steps");
+  expect(text).toContain("Step 1: worker ✗");
+  expect(text).toContain("Step 2: worker ✓");
+});
+
 test("subagent runner applies json mode message and tool-result events", () => {
   const result: SingleResult = {
     agent: "worker",
@@ -373,6 +406,47 @@ test("process helpers build process args and apply timeout exits", () => {
   expect(result.exitCode).toBe(1);
   expect(result.stopReason).toBe("timeout");
   expect(result.errorMessage).toBe("Agent exceeded maxExecutionTimeMs (2500ms)");
+});
+
+test("process helpers honor systemPromptMode / inheritProjectContext / inheritSkills", () => {
+  const agent = {
+    name: "worker",
+    description: "",
+    source: "user" as const,
+    filePath: "worker.md",
+    systemPrompt: "",
+    model: "model-a",
+  };
+
+  const replace = buildAgentProcessArgs(
+    { ...agent, systemPromptMode: "replace" },
+    "t",
+    undefined,
+    "/tmp/prompt.md",
+  );
+  expect(replace).toContain("--system-prompt");
+  expect(replace).toContain("/tmp/prompt.md");
+  expect(replace).not.toContain("--append-system-prompt");
+
+  const stripped = buildAgentProcessArgs(
+    {
+      ...agent,
+      systemPromptMode: "replace",
+      inheritProjectContext: false,
+      inheritSkills: false,
+    },
+    "t",
+    undefined,
+    "/tmp/prompt.md",
+  );
+  expect(stripped).toContain("--no-context-files");
+  expect(stripped).toContain("--no-skills");
+
+  const defaults = buildAgentProcessArgs(agent, "t", undefined, "/tmp/prompt.md");
+  expect(defaults).toContain("--append-system-prompt");
+  expect(defaults).not.toContain("--system-prompt");
+  expect(defaults).not.toContain("--no-context-files");
+  expect(defaults).not.toContain("--no-skills");
 });
 
 test("runJsonProcess parses streamed json lines and captures stderr", async () => {
@@ -648,6 +722,55 @@ test("runWithFallbackModels retries provider failures with fallback models in or
   expect(models).toEqual(["primary", "fallback-a", "fallback-b"]);
 });
 
+test("runWithFallbackModels runs the success handler (acceptance gate) on fallback success", async () => {
+  const makeFailure = (): SingleResult => ({
+    agent: "worker",
+    agentSource: "user",
+    task: "run",
+    exitCode: 1,
+    messages: [],
+    stderr: "",
+    stopReason: "error",
+    errorMessage: "HTTP 429 rate limit",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+  });
+  const success: SingleResult = {
+    agent: "worker",
+    agentSource: "user",
+    task: "run",
+    exitCode: 0,
+    messages: [],
+    stderr: "",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+  };
+  let handlerCalls = 0;
+  let gateAgentModel: string | undefined;
+
+  const result = await runWithFallbackModels({
+    agents: [{
+      name: "worker",
+      description: "",
+      source: "user",
+      filePath: "worker.md",
+      systemPrompt: "",
+      model: "primary",
+      fallbackModels: ["fallback-a"],
+    }],
+    agentName: "worker",
+    context: undefined,
+    run: async (agents) => (agents[0]!.model === "primary" ? makeFailure() : success),
+    onSuccessOrNoFallback: async (agent, runResult) => {
+      handlerCalls++;
+      gateAgentModel = agent?.model;
+      return { ...runResult, stopReason: "gate_checked" };
+    },
+  });
+
+  expect(handlerCalls).toBe(1);
+  expect(gateAgentModel).toBe("fallback-a");
+  expect(result.stopReason).toBe("gate_checked");
+});
+
 test("runWithFallbackModels does not retry non-provider errors or aborted signals", async () => {
   const toolFailure: SingleResult = {
     agent: "worker",
@@ -811,6 +934,7 @@ test("mergeParallelWorktrees reports skipped, empty, merged, and conflicted work
     (_cwd, branch) => branch === "d"
       ? { success: false, conflict: "Merge conflict on branch d. Resolve manually." }
       : { success: true },
+    () => true,
   );
 
   expect(notes).toEqual([
@@ -819,6 +943,30 @@ test("mergeParallelWorktrees reports skipped, empty, merged, and conflicted work
     "task 2 (merged): merged\ndiff for c",
     "task 3 (conflict): Merge conflict on branch d. Resolve manually.",
   ]);
+});
+
+test("mergeParallelWorktrees warns when worktree changes cannot be committed", () => {
+  const makeResult = (agent: string): SingleResult => ({
+    agent,
+    agentSource: "user",
+    task: "run",
+    exitCode: 0,
+    messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] } as any],
+    stderr: "",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+  });
+
+  const notes = mergeParallelWorktrees(
+    "/repo",
+    [makeResult("no-commit")],
+    [{ worktreeDir: "/tmp/x", branchName: "x", cleanup: () => {} }],
+    () => "diff for x\n",
+    () => ({ success: true }),
+    () => false,
+  );
+
+  expect(notes[0]).toContain("could not commit worktree changes");
+  expect(notes[0]).toContain("may be lost");
 });
 
 test("gate helpers summarize failures and build repair task", () => {
@@ -970,4 +1118,43 @@ test("runGateAfterSuccess returns last repair result when repair attempts are ex
   expect(final).toBe(repair);
   expect(final.stopReason).toBe("gate_failed");
   expect(final.errorMessage).toContain("after 1 self-repair attempt");
+});
+
+test("non-interactive runs refuse project-local agents without the opt-in env flag", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "srcode-proj-agents-"));
+  const agentsDir = join(cwd, ".srcode", "agents");
+  mkdirSync(agentsDir, { recursive: true });
+  writeFileSync(
+    join(agentsDir, "proj.md"),
+    [
+      "---",
+      "name: proj",
+      "description: repo-controlled test agent",
+      "---",
+      "Do the thing.",
+    ].join("\n"),
+    "utf-8",
+  );
+  const oldFlag = process.env.SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS;
+  delete process.env.SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS;
+  try {
+    const result = await runSubagentRequest(
+      { agent: "proj", task: "do it", agentScope: "both" },
+      undefined,
+      undefined,
+      {
+        cwd,
+        hasUI: false,
+        ui: { confirm: async () => true },
+        sessionManager: undefined,
+      },
+    );
+    expect(result.content[0]?.type).toBe("text");
+    expect((result.content[0] as { text: string }).text).toContain("Canceled");
+    expect((result.content[0] as { text: string }).text).toContain("SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS");
+  } finally {
+    if (oldFlag === undefined) delete process.env.SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS;
+    else process.env.SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS = oldFlag;
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });

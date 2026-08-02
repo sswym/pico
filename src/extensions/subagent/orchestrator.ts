@@ -5,6 +5,7 @@ import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import { allowUnattendedProjectAgents } from "../policy.ts";
 import { buildChainTask } from "./chain.ts";
 import { mapWithConcurrencyLimit } from "./concurrency.ts";
 import { runWithFallbackModels } from "./fallback.ts";
@@ -274,7 +275,7 @@ export async function runSubagentRequest(
 		};
 	}
 
-	if ((agentScope === "project" || agentScope === "both") && confirmProjectAgents && ctx.hasUI) {
+	if ((agentScope === "project" || agentScope === "both") && (confirmProjectAgents || !ctx.hasUI)) {
 		const requestedAgentNames = new Set<string>();
 		if (params.chain) for (const step of params.chain) requestedAgentNames.add(step.agent);
 		if (params.tasks) for (const t of params.tasks) requestedAgentNames.add(t.agent);
@@ -287,15 +288,35 @@ export async function runSubagentRequest(
 		if (projectAgentsRequested.length > 0) {
 			const names = projectAgentsRequested.map((a) => a.name).join(", ");
 			const dir = discovery.projectAgentsDir ?? "(unknown)";
-			const ok = await ctx.ui.confirm(
-				"Run project-local agents?",
-				`Agents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
-			);
-			if (!ok)
-				return {
-					content: [{ type: "text", text: "Canceled: project-local agents not approved." }],
-					details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
-				};
+
+			if (!ctx.hasUI) {
+				// Non-interactive runs (CI, --print) cannot confirm — refuse
+				// unless explicitly opted in, mirroring plan-mode's
+				// SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL gate.
+				if (!allowUnattendedProjectAgents()) {
+					return {
+						content: [
+							{
+								type: "text",
+								text:
+									"Canceled: project-local agents need approval in this non-interactive run. " +
+									"Set SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS=1 to allow them.",
+							},
+						],
+						details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
+					};
+				}
+			} else {
+				const ok = await ctx.ui.confirm(
+					"Run project-local agents?",
+					`Agents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
+				);
+				if (!ok)
+					return {
+						content: [{ type: "text", text: "Canceled: project-local agents not approved." }],
+						details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
+					};
+			}
 		}
 	}
 
