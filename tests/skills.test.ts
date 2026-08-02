@@ -1,7 +1,7 @@
 /**
  * Bundled-skills smoke test.
  *
- * srcode ships three skills under src/skills/ that bin/srcode.ts wires
+ * pico ships three skills under src/skills/ that bin/pico.ts wires
  * into the agent via `--skill`. We don't test the wiring here (that's a
  * shell-arg concern); we just confirm the on-disk skills load cleanly
  * through pi-coding-agent's own loader, with the metadata downstream

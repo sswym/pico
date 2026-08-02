@@ -1,8 +1,8 @@
 /**
- * Shared capability and safety-policy helpers for srcode extensions.
+ * Shared capability and safety-policy helpers for pico extensions.
  *
  * This is intentionally small: pi-coding-agent owns the main permission
- * system, while srcode extensions use this module for local defaults that
+ * system, while pico extensions use this module for local defaults that
  * would otherwise drift across tools.
  */
 import { readSettingsObject } from "./settings.ts";
@@ -126,46 +126,46 @@ export interface SafetyFlagStatus {
 export function safetyStatuses(): SafetyFlagStatus[] {
   return [
     {
-      envName: "SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL",
+      envName: "PICO_ALLOW_UNATTENDED_PLAN_APPROVAL",
       settingsKey: "allowUnattendedPlanApproval",
       enabled: allowUnattendedPlanApproval(),
-      source: safetyFlagSource("SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL", "allowUnattendedPlanApproval"),
+      source: safetyFlagSource("PICO_ALLOW_UNATTENDED_PLAN_APPROVAL", "allowUnattendedPlanApproval"),
     },
     {
-      envName: "SRCODE_ALLOW_LSP_FORMAT_ON_WRITE",
+      envName: "PICO_ALLOW_LSP_FORMAT_ON_WRITE",
       settingsKey: "allowLspFormatOnWrite",
       enabled: allowLspFormatOnWrite(),
-      source: safetyFlagSource("SRCODE_ALLOW_LSP_FORMAT_ON_WRITE", "allowLspFormatOnWrite"),
+      source: safetyFlagSource("PICO_ALLOW_LSP_FORMAT_ON_WRITE", "allowLspFormatOnWrite"),
     },
     {
-      envName: "SRCODE_ENABLE_PROJECT_HOOKS",
+      envName: "PICO_ENABLE_PROJECT_HOOKS",
       settingsKey: "enableProjectHooks",
       enabled: allowProjectHooks(),
-      source: safetyFlagSource("SRCODE_ENABLE_PROJECT_HOOKS", "enableProjectHooks"),
+      source: safetyFlagSource("PICO_ENABLE_PROJECT_HOOKS", "enableProjectHooks"),
     },
     {
-      envName: "SRCODE_ENABLE_PROJECT_MCP",
+      envName: "PICO_ENABLE_PROJECT_MCP",
       settingsKey: "enableProjectMcp",
       enabled: allowProjectMcp(),
-      source: safetyFlagSource("SRCODE_ENABLE_PROJECT_MCP", "enableProjectMcp"),
+      source: safetyFlagSource("PICO_ENABLE_PROJECT_MCP", "enableProjectMcp"),
     },
   ];
 }
 
 export function allowUnattendedPlanApproval(): boolean {
-  return safetyFlag("SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL", "allowUnattendedPlanApproval");
+  return safetyFlag("PICO_ALLOW_UNATTENDED_PLAN_APPROVAL", "allowUnattendedPlanApproval");
 }
 
 export function allowLspFormatOnWrite(): boolean {
-  return safetyFlag("SRCODE_ALLOW_LSP_FORMAT_ON_WRITE", "allowLspFormatOnWrite");
+  return safetyFlag("PICO_ALLOW_LSP_FORMAT_ON_WRITE", "allowLspFormatOnWrite");
 }
 
 export function allowProjectHooks(): boolean {
-  return safetyFlag("SRCODE_ENABLE_PROJECT_HOOKS", "enableProjectHooks");
+  return safetyFlag("PICO_ENABLE_PROJECT_HOOKS", "enableProjectHooks");
 }
 
 export function allowProjectMcp(): boolean {
-  return safetyFlag("SRCODE_ENABLE_PROJECT_MCP", "enableProjectMcp");
+  return safetyFlag("PICO_ENABLE_PROJECT_MCP", "enableProjectMcp");
 }
 
 /**
@@ -174,7 +174,7 @@ export function allowProjectMcp(): boolean {
  * non-interactive runs refuse project agents unless this env flag is set.
  */
 export function allowUnattendedProjectAgents(): boolean {
-  return envFlag("SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS") ?? false;
+  return envFlag("PICO_ALLOW_UNATTENDED_PROJECT_AGENTS") ?? false;
 }
 
 export function capabilitySummary(): string {

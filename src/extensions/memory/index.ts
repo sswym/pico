@@ -1,5 +1,5 @@
 /**
- * srcode memory extension.
+ * pico memory extension.
  *
  * Wires a long-term-memory store into pi-coding-agent:
  *   - registers a `memory` tool (LLM-callable)
@@ -203,7 +203,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       // Surface output in chat as a custom message so it's visible in the
       // session log and survives across re-renders.
       pi.sendMessage({
-        customType: "srcode.memory",
+        customType: "pico.memory",
         content,
         display: true,
       });

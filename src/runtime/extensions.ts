@@ -21,7 +21,7 @@ import { webExtension } from "../extensions/web/index.ts";
 
 export type ExtensionPhase = "prompt" | "ui" | "tools" | "runtime" | "diagnostics";
 
-export interface SrcodeExtension {
+export interface PicoExtension {
   name: string;
   factory: ExtensionFactory;
   phase: ExtensionPhase;
@@ -34,9 +34,9 @@ export interface SrcodeExtension {
 }
 
 export class ExtensionRegistry {
-  readonly extensions: readonly SrcodeExtension[];
+  readonly extensions: readonly PicoExtension[];
 
-  constructor(extensions: readonly SrcodeExtension[]) {
+  constructor(extensions: readonly PicoExtension[]) {
     this.extensions = extensions;
     this.validate();
   }
@@ -54,7 +54,7 @@ export class ExtensionRegistry {
 
     for (const extension of this.extensions) {
       if (seen.has(extension.name)) {
-        throw new Error(`Duplicate srcode extension registered: ${extension.name}`);
+        throw new Error(`Duplicate pico extension registered: ${extension.name}`);
       }
       seen.add(extension.name);
 
@@ -127,7 +127,7 @@ export const defaultExtensions = [
     safety: { touchesFilesystem: true, spawnsProcess: true },
   },
   { name: "doctor", factory: doctorExtension, phase: "diagnostics" },
-] satisfies readonly SrcodeExtension[];
+] satisfies readonly PicoExtension[];
 
 export function createDefaultExtensionRegistry(): ExtensionRegistry {
   return new ExtensionRegistry(defaultExtensions);

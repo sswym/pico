@@ -73,7 +73,7 @@ export function createVisionExtension(deps: VisionAnalyzeDeps = defaultVisionDep
         const aux = config ? `${config.provider}/${config.model}` : "(not configured)";
         ctx.ui.notify(
           [
-            "srcode vision",
+            "pico vision",
             `current model: ${current}`,
             `current model supports image: ${currentVision}`,
             `auxiliary vision model: ${aux}`,

@@ -1,5 +1,5 @@
 /**
- * srcode hooks extension — wires the file-driven hook config into pi's
+ * pico hooks extension — wires the file-driven hook config into pi's
  * tool & session lifecycle.
  *
  * Events handled:
@@ -14,7 +14,7 @@
  * from `event.toolName`, and $TURN from `turn_end.turnIndex`.
  *
  * Errors inside hook execution never escape. On runner failure we either
- * block the tool (PreToolUse + blocking) or emit a `srcode.hook.warn`
+ * block the tool (PreToolUse + blocking) or emit a `pico.hook.warn`
  * custom message.
  */
 import type {
@@ -77,7 +77,7 @@ export function createHooksExtension(deps: {
     function warn(content: string): void {
       try {
         pi.sendMessage({
-          customType: "srcode.hook.warn",
+          customType: "pico.hook.warn",
           content,
           display: true,
         });
@@ -86,7 +86,7 @@ export function createHooksExtension(deps: {
       }
       // Surface to stderr too — useful for non-interactive runs / CI.
       try {
-        console.warn(`[srcode hooks] ${content}`);
+        console.warn(`[pico hooks] ${content}`);
       } catch {}
     }
 
@@ -167,7 +167,7 @@ export function createHooksExtension(deps: {
           // useful, so just log to stderr.
           const why = res.timedOut ? "timeout" : `exit ${res.exitCode}`;
           try {
-            console.warn(`[srcode hooks] PreSessionEnd hook \`${hook.command}\` ${why}`);
+            console.warn(`[pico hooks] PreSessionEnd hook \`${hook.command}\` ${why}`);
           } catch {}
         }
       }

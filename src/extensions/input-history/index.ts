@@ -8,7 +8,7 @@ import type {
   ExtensionContext,
   KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { srcodeInputHistoryPath } from "../paths.ts";
+import { picoInputHistoryPath } from "../paths.ts";
 
 const DEFAULT_LIMIT = 100;
 
@@ -56,7 +56,7 @@ export function serializeHistoryFile(entries: string[]): string {
   return entries.map((text) => JSON.stringify({ text })).join("\n") + (entries.length > 0 ? "\n" : "");
 }
 
-export function readInputHistory(path = srcodeInputHistoryPath(), limit = DEFAULT_LIMIT): string[] {
+export function readInputHistory(path = picoInputHistoryPath(), limit = DEFAULT_LIMIT): string[] {
   try {
     return parseHistoryFile(readFileSync(path, "utf-8"), limit);
   } catch {
@@ -64,7 +64,7 @@ export function readInputHistory(path = srcodeInputHistoryPath(), limit = DEFAUL
   }
 }
 
-export function writeInputHistory(entries: string[], path = srcodeInputHistoryPath(), limit = DEFAULT_LIMIT): void {
+export function writeInputHistory(entries: string[], path = picoInputHistoryPath(), limit = DEFAULT_LIMIT): void {
   const compacted = compactHistory(entries, limit);
   mkdirSync(dirname(path), { recursive: true });
   const tmpPath = `${path}.${process.pid}.tmp`;
@@ -72,7 +72,7 @@ export function writeInputHistory(entries: string[], path = srcodeInputHistoryPa
   renameSync(tmpPath, path);
 }
 
-export function appendInputHistory(text: string, path = srcodeInputHistoryPath(), limit = DEFAULT_LIMIT): void {
+export function appendInputHistory(text: string, path = picoInputHistoryPath(), limit = DEFAULT_LIMIT): void {
   const normalized = normalizeHistoryText(text);
   if (!normalized) return;
   writeInputHistory([...readInputHistory(path, limit), normalized], path, limit);
@@ -85,7 +85,7 @@ export class PersistentHistoryEditor extends CustomEditor {
     tui: TUI,
     theme: EditorTheme,
     keybindings: KeybindingsManager,
-    private readonly historyPath = srcodeInputHistoryPath(),
+    private readonly historyPath = picoInputHistoryPath(),
     options?: EditorOptions,
   ) {
     super(tui, theme, keybindings, options);

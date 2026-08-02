@@ -1,12 +1,12 @@
 /**
- * /doctor surfaces srcode's local safety switches and capability boundaries.
+ * /doctor surfaces pico's local safety switches and capability boundaries.
  */
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import {
   capabilitySummary,
   safetyStatuses,
 } from "../policy.ts";
-import { srcodeSettingsPath } from "../paths.ts";
+import { picoSettingsPath } from "../paths.ts";
 
 function enabled(value: boolean): string {
   return value ? "enabled" : "disabled";
@@ -17,10 +17,10 @@ export function buildDoctorReport(cwd: string): string {
     `  ${status.settingsKey}: ${enabled(status.enabled)} (${status.source}; env ${status.envName})`
   ));
   return [
-    "srcode doctor",
+    "pico doctor",
     "",
     `cwd: ${cwd}`,
-    `settings: ${srcodeSettingsPath()}`,
+    `settings: ${picoSettingsPath()}`,
     "",
     "Safety switches:",
     ...safetyLines,
@@ -32,11 +32,11 @@ export function buildDoctorReport(cwd: string): string {
 
 export const doctorExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.registerCommand("doctor", {
-    description: "Show srcode safety switches and capability boundaries",
+    description: "Show pico safety switches and capability boundaries",
     handler: async (_args, ctx) => {
       const report = buildDoctorReport(ctx.cwd ?? process.cwd());
       pi.sendMessage({
-        customType: "srcode.doctor",
+        customType: "pico.doctor",
         content: report,
         display: true,
       });

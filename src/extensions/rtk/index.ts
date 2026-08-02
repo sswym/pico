@@ -93,7 +93,7 @@ function commandStartsWith(command: string, prefix: string): boolean {
 
 export const rtkExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   const config = readRtkConfig();
-  if (!config.enabled || config.mode !== "spawnHook" || process.env.SRCODE_RTK === "0") return;
+  if (!config.enabled || config.mode !== "spawnHook" || process.env.PICO_RTK === "0") return;
 
   const bashTool = createBashTool(process.cwd(), {
     spawnHook: ({ command, cwd, env }) => ({

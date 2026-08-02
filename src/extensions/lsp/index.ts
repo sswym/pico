@@ -1,5 +1,5 @@
 /**
- * srcode LSP extension — unified `lsp` tool.
+ * pico LSP extension — unified `lsp` tool.
  *
  * One tool with an `action` parameter that routes to language server operations:
  *   hover, definition, type_definition, implementation, references,
@@ -382,7 +382,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       } else if (state.config?.formatOnWrite === true) {
         event.content = [
           ...event.content,
-          { type: "text", text: "\n[LSP] formatOnWrite configured but skipped; set SRCODE_ALLOW_LSP_FORMAT_ON_WRITE=1 to allow automatic file rewrites." },
+          { type: "text", text: "\n[LSP] formatOnWrite configured but skipped; set PICO_ALLOW_LSP_FORMAT_ON_WRITE=1 to allow automatic file rewrites." },
         ];
       }
 

@@ -1,5 +1,5 @@
 /**
- * srcode plan extension — read-only "plan first, edit later" mode.
+ * pico plan extension — read-only "plan first, edit later" mode.
  *
  * Mirrors Claude Code's plan mode: while active, the LLM may only research
  * (read/grep/find/ls) and write its plan to a session-scoped markdown file.
@@ -9,11 +9,11 @@
  * `ctx.ui.confirm` and lets the user approve before writes resume.
  *
  * Non-interactive runs stay in plan mode unless
- * SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL=1 is set.
+ * PICO_ALLOW_UNATTENDED_PLAN_APPROVAL=1 is set.
  *
  * State is module-level (`planActive`, `planFile`) on purpose — there is one
- * extension instance per srcode process, and that process owns one logical
- * plan-mode toggle at a time. Persistence to ~/.srcode/plans/<sid>.md
+ * extension instance per pico process, and that process owns one logical
+ * plan-mode toggle at a time. Persistence to ~/.pico/plans/<sid>.md
  * means re-entering plan mode in the same session resumes the existing plan.
  */
 import { existsSync, mkdirSync } from "node:fs";
@@ -26,7 +26,7 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
-import { srcodeHome } from "../paths.ts";
+import { picoHome } from "../paths.ts";
 import { allowUnattendedPlanApproval } from "../policy.ts";
 import { PLAN_MODE_BLOCK } from "./prompt.ts";
 
@@ -34,7 +34,7 @@ const PLAN_ALLOWED_TOOLS = new Set(["read", "grep", "find", "ls", "EnterPlanMode
 
 const SESSION_FALLBACK = "default";
 
-// Module-level state: one srcode process == one plan-mode toggle. The
+// Module-level state: one pico process == one plan-mode toggle. The
 // extension factory runs once at startup, so this state lives for the
 // process lifetime. We accept the global because pi-coding-agent does not
 // expose a per-extension state slot, and threading state through the API
@@ -44,7 +44,7 @@ let planActive = false;
 let planFile: string | null = null;
 
 function plansDir(): string {
-  return join(srcodeHome(), "plans");
+  return join(picoHome(), "plans");
 }
 
 function resolvePlanFile(ctx: ExtensionContext): string {
@@ -203,7 +203,7 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           ? `Plan approved. Plan mode disabled.\n\n${summary}`
           : ctx.hasUI
             ? `Plan rejected. Stay in plan mode and refine ${path}.`
-            : `Plan requires interactive approval. Stay in plan mode and refine ${path}, or set SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL=1 for batch runs.`;
+            : `Plan requires interactive approval. Stay in plan mode and refine ${path}, or set PICO_ALLOW_UNATTENDED_PLAN_APPROVAL=1 for batch runs.`;
 
         return {
           content: [{ type: "text" as const, text }],

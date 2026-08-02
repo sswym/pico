@@ -1,7 +1,7 @@
 /**
  * Tool render helpers.
  *
- * Covers the shared collapsed/expanded text renderer used by srcode custom
+ * Covers the shared collapsed/expanded text renderer used by pico custom
  * tools. It does not test terminal color styling or keybinding configuration.
  */
 import { expect, test } from "bun:test";
@@ -90,13 +90,13 @@ test("renderToolResultText collapses by default and expands full output", () => 
 });
 
 test("renderToolCallText keeps tool arguments visible", () => {
-  const call = renderToolCallText("memory", { action: "search", query: "srcode" }, plainTheme, {});
+  const call = renderToolCallText("memory", { action: "search", query: "pico" }, plainTheme, {});
   const text = renderedText(call);
   expect(text).toContain("• memory");
   expect(text).toContain("memory");
-  expect(text).toContain('search "srcode"');
+  expect(text).toContain('search "pico"');
   expect(text).toContain('"action": "search"');
-  expect(text).toContain('"query": "srcode"');
+  expect(text).toContain('"query": "pico"');
 });
 
 test("summarizeToolCall renders high-signal summaries", () => {

@@ -11,7 +11,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { srcodeHome } from "../paths.ts";
+import { picoHome } from "../paths.ts";
 import { scanSecrets } from "./secrets.ts";
 import { extractText, type ExtractableMessage } from "./extract.ts";
 
@@ -53,7 +53,7 @@ const INSTRUCTION_PATTERNS = [
 ];
 
 function defaultDir(): string {
-  return join(srcodeHome(), "memories");
+  return join(picoHome(), "memories");
 }
 
 function pathFor(dir: string, target: CuratedTarget): string {

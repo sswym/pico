@@ -1,5 +1,5 @@
 /**
- * srcode askUserQuestion extension.
+ * pico askUserQuestion extension.
  *
  * Lets the LLM pose 1-4 structured multiple-choice questions to the user
  * and receive their selections plus optional free-text "Other" notes —

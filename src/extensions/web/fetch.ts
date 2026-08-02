@@ -18,7 +18,7 @@ export const FETCH_CACHE_MAX = 50;
 export const FETCH_MAX_OUTPUT_BYTES = 8 * 1024;
 export const FETCH_MAX_RESPONSE_BYTES = 1024 * 1024;
 export const FETCH_TIMEOUT_MS = 15_000;
-const FETCH_UA = "srcode/0.2";
+const FETCH_UA = "pico/0.2";
 
 export interface FetchedPage {
   url: string;

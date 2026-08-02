@@ -96,7 +96,7 @@ test("todo extension registers shortcut and syncs widget status after writes", a
     ctx,
   );
 
-  expect(widgets[0]?.[0]).toBe("srcode-todos");
+  expect(widgets[0]?.[0]).toBe("pico-todos");
   expect(statuses.at(-1)).toEqual(["todo", "todos 2 open"]);
   expect(fakePi.messages).toEqual([]);
   expect(fakePi.handlers.has("agent_end")).toBe(false);
@@ -123,7 +123,7 @@ test("todo extension installs a visible F7 entry on session start", async () => 
   expect(handler).toBeDefined();
   await handler({ type: "session_start", reason: "startup" }, ctx);
 
-  expect(widgets[0]?.[0]).toBe("srcode-todos");
+  expect(widgets[0]?.[0]).toBe("pico-todos");
   expect(statuses.at(-1)).toEqual(["todo", undefined]);
 });
 
@@ -152,7 +152,7 @@ test("todo widget re-registers after session_shutdown (reload path)", async () =
   await fakePi.handlers.get("session_start")({ type: "session_start", reason: "reload" }, ctx);
 
   expect(widgets).toHaveLength(2);
-  expect(widgets[1]?.[0]).toBe("srcode-todos");
+  expect(widgets[1]?.[0]).toBe("pico-todos");
 });
 
 test("todo shortcut does not open an empty panel", async () => {

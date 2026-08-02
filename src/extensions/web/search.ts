@@ -11,7 +11,7 @@ import { withTimeoutSignal } from "./fetch.ts";
  * the default mode is **hybrid**: Exa + Tavily are queried in parallel and
  * results are merged with URL-based dedup, giving broader coverage.
  *
- * Set `SRCODE_SEARCH_PROVIDER=exa` or `=tavily` to force a single provider.
+ * Set `PICO_SEARCH_PROVIDER=exa` or `=tavily` to force a single provider.
  * A forced provider that cannot run (tavily without a key, unknown name) is
  * an explicit error — it is never silently replaced by another provider.
  */
@@ -55,7 +55,7 @@ export async function webSearch(input: SearchInput, opts: SearchOptions = {}): P
     throw new Error("webSearch: query must not be empty");
   }
   const env = opts.env ?? {
-    provider: process.env.SRCODE_SEARCH_PROVIDER,
+    provider: process.env.PICO_SEARCH_PROVIDER,
     tavilyKey: process.env.TAVILY_API_KEY,
   };
   const max = clamp(input.max_results ?? DEFAULT_MAX, 1, 25);
@@ -64,8 +64,8 @@ export async function webSearch(input: SearchInput, opts: SearchOptions = {}): P
   if (provider === "tavily") {
     if (!env.tavilyKey) {
       throw new Error(
-        "SRCODE_SEARCH_PROVIDER=tavily but TAVILY_API_KEY is not set. " +
-        "Configure the key (settings.json env stanza or environment) or switch to SRCODE_SEARCH_PROVIDER=exa.",
+        "PICO_SEARCH_PROVIDER=tavily but TAVILY_API_KEY is not set. " +
+        "Configure the key (settings.json env stanza or environment) or switch to PICO_SEARCH_PROVIDER=exa.",
       );
     }
     return filterDomains(await tavilySearch(input.query, max, env.tavilyKey, opts), input.allowed_domains, input.blocked_domains).slice(0, max);
@@ -74,7 +74,7 @@ export async function webSearch(input: SearchInput, opts: SearchOptions = {}): P
     return filterDomains(await exaSearch(input.query, max, opts), input.allowed_domains, input.blocked_domains).slice(0, max);
   }
   if (provider !== undefined && provider !== "") {
-    throw new Error(`Unknown SRCODE_SEARCH_PROVIDER value '${env.provider}'. Valid values: exa | tavily.`);
+    throw new Error(`Unknown PICO_SEARCH_PROVIDER value '${env.provider}'. Valid values: exa | tavily.`);
   }
 
   // No forced provider: Exa alone without a key, hybrid with one.
@@ -91,7 +91,7 @@ function clamp(n: number, lo: number, hi: number): number {
 
 // ─── Exa MCP ────────────────────────────────────────────────────────────────
 
-const EXA_FETCH_UA = "srcode/0.2";
+const EXA_FETCH_UA = "pico/0.2";
 
 async function exaSearch(query: string, max: number, opts: SearchOptions): Promise<SearchResult[]> {
   const fetcher = opts.fetcher ?? globalThis.fetch;

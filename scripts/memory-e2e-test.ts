@@ -1,7 +1,7 @@
 /**
- * srcode memory system — end-to-end effect test.
+ * pico memory system — end-to-end effect test.
  *
- * Drives the REAL srcode CLI (--print mode) against isolated temp DBs and
+ * Drives the REAL pico CLI (--print mode) against isolated temp DBs and
  * reads sqlite to verify four dimensions:
  *   1. Retrieval recall + trust weighting
  *   2. Correction chain (correction_of) + contradiction detection
@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const PKG = "node_modules/@earendil-works/pi-coding-agent";
-const MODEL = process.env.SRCODE_TEST_MODEL ?? "zen-openai/hy3-free";
+const MODEL = process.env.PICO_TEST_MODEL ?? "zen-openai/hy3-free";
 const TIMEOUT = 180_000;
 
 interface Scenario {
@@ -30,21 +30,21 @@ interface Scenario {
 }
 
 function freshDb(): string {
-  const dir = mkdtempSync(join(tmpdir(), "srcode-mem-"));
+  const dir = mkdtempSync(join(tmpdir(), "pico-mem-"));
   return join(dir, "memory.db");
 }
 
 function runCli(dbPath: string, prompt: string): string {
   const res = spawnSync(
     "bun",
-    ["run", "bin/srcode.ts", "--print", "--provider", "zen-openai", "--model", "hy3-free", prompt],
+    ["run", "bin/pico.ts", "--print", "--provider", "zen-openai", "--model", "hy3-free", prompt],
     {
       cwd: process.cwd(),
       env: {
         ...process.env,
         PI_PACKAGE_DIR: PKG,
-        SRCODE_MEMORY_DB: dbPath,
-        SRCODE_HOME: "",
+        PICO_MEMORY_DB: dbPath,
+        PICO_HOME: "",
       },
       timeout: TIMEOUT,
     },
@@ -141,7 +141,7 @@ let fail = 0;
 const dbDirs: string[] = [];
 
 console.log("=".repeat(70));
-console.log("srcode 记忆系统 端到端效果测试");
+console.log("pico 记忆系统 端到端效果测试");
 console.log(`model=${MODEL}  (临时 db 隔离)`);
 console.log("=".repeat(70));
 

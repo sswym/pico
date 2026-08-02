@@ -4,7 +4,7 @@
  *
  * Applies the theme on session_start by:
  *   1. Syncing the bundled retro-terminal.json to the custom themes
- *      directory (~/.srcode/agent/themes/) so pi's discovery can find it.
+ *      directory (~/.pico/agent/themes/) so pi's discovery can find it.
  *   2. Calling ctx.ui.setTheme("retro-terminal") which loads it via the
  *      theme discovery system (getCustomThemeInfos → loadThemeJson).
  */
@@ -15,7 +15,7 @@ import type {
   ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import retroTheme from "../../theme/retro-terminal.json" with { type: "json" };
-import { srcodeAgentHome } from "../paths.ts";
+import { picoAgentHome } from "../paths.ts";
 import { installClaudeLikeFooter } from "./footer.ts";
 
 export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
@@ -23,10 +23,10 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     // ── Sync theme to filesystem so discovery finds it ───────────────
     // ctx.ui.setTheme() checks instanceof Theme for objects, but we can
     // only pass a plain JSON import. So we write the file to the custom
-    // themes dir (~/.srcode/agent/themes/) and load it by name instead.
+    // themes dir (~/.pico/agent/themes/) and load it by name instead.
     // We always overwrite so edits to the JSON are picked up on restart.
     const agentDir =
-      process.env.PI_CODING_AGENT_DIR ?? srcodeAgentHome();
+      process.env.PI_CODING_AGENT_DIR ?? picoAgentHome();
     const themeDir = join(agentDir, "themes");
     try {
       if (!existsSync(themeDir)) {

@@ -572,7 +572,7 @@ describe("webSearch end-to-end (mocked)", () => {
 
     await expect(
       webSearch({ query: "x" }, { env: { provider: "google" } }),
-    ).rejects.toThrow(/Unknown SRCODE_SEARCH_PROVIDER/);
+    ).rejects.toThrow(/Unknown PICO_SEARCH_PROVIDER/);
     expect(fetchCalls).toBe(0);
   });
 

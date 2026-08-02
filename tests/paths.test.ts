@@ -1,58 +1,58 @@
 import { afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import {
-  srcodeAgentHome,
-  srcodeHolographicMemoryPath,
-  srcodeHome,
-  srcodeInputHistoryPath,
-  srcodeLspConfigPath,
-  srcodeMcpConfigPath,
-  srcodeMemoryDbPath,
-  srcodeModelsPath,
-  srcodeSessionDir,
-  srcodeSettingsPath,
+  picoAgentHome,
+  picoHolographicMemoryPath,
+  picoHome,
+  picoInputHistoryPath,
+  picoLspConfigPath,
+  picoMcpConfigPath,
+  picoMemoryDbPath,
+  picoModelsPath,
+  picoSessionDir,
+  picoSettingsPath,
 } from "../src/extensions/paths.ts";
 
-const originalHome = process.env.SRCODE_HOME;
-const originalMemoryDb = process.env.SRCODE_MEMORY_DB;
+const originalHome = process.env.PICO_HOME;
+const originalMemoryDb = process.env.PICO_MEMORY_DB;
 
 afterEach(() => {
-  if (originalHome === undefined) delete process.env.SRCODE_HOME;
-  else process.env.SRCODE_HOME = originalHome;
-  if (originalMemoryDb === undefined) delete process.env.SRCODE_MEMORY_DB;
-  else process.env.SRCODE_MEMORY_DB = originalMemoryDb;
+  if (originalHome === undefined) delete process.env.PICO_HOME;
+  else process.env.PICO_HOME = originalHome;
+  if (originalMemoryDb === undefined) delete process.env.PICO_MEMORY_DB;
+  else process.env.PICO_MEMORY_DB = originalMemoryDb;
 });
 
-test("srcode path helpers honor SRCODE_HOME", () => {
-  process.env.SRCODE_HOME = "/tmp/srcode-custom-home";
-  delete process.env.SRCODE_MEMORY_DB;
+test("pico path helpers honor PICO_HOME", () => {
+  process.env.PICO_HOME = "/tmp/pico-custom-home";
+  delete process.env.PICO_MEMORY_DB;
 
-  expect(srcodeHome()).toBe("/tmp/srcode-custom-home");
-  expect(srcodeAgentHome()).toBe(join("/tmp/srcode-custom-home", "agent"));
-  expect(srcodeSessionDir()).toBe(join("/tmp/srcode-custom-home", "agent", "sessions"));
-  expect(srcodeSettingsPath()).toBe(join("/tmp/srcode-custom-home", "agent", "settings.json"));
-  expect(srcodeModelsPath()).toBe(join("/tmp/srcode-custom-home", "agent", "models.json"));
-  expect(srcodeInputHistoryPath()).toBe(join("/tmp/srcode-custom-home", "agent", "input-history.jsonl"));
-  expect(srcodeMemoryDbPath()).toBe(join("/tmp/srcode-custom-home", "memory.db"));
-  expect(srcodeMcpConfigPath()).toBe(join("/tmp/srcode-custom-home", "mcp-servers.json"));
-  expect(srcodeLspConfigPath()).toBe(join("/tmp/srcode-custom-home", "lsp.json"));
+  expect(picoHome()).toBe("/tmp/pico-custom-home");
+  expect(picoAgentHome()).toBe(join("/tmp/pico-custom-home", "agent"));
+  expect(picoSessionDir()).toBe(join("/tmp/pico-custom-home", "agent", "sessions"));
+  expect(picoSettingsPath()).toBe(join("/tmp/pico-custom-home", "agent", "settings.json"));
+  expect(picoModelsPath()).toBe(join("/tmp/pico-custom-home", "agent", "models.json"));
+  expect(picoInputHistoryPath()).toBe(join("/tmp/pico-custom-home", "agent", "input-history.jsonl"));
+  expect(picoMemoryDbPath()).toBe(join("/tmp/pico-custom-home", "memory.db"));
+  expect(picoMcpConfigPath()).toBe(join("/tmp/pico-custom-home", "mcp-servers.json"));
+  expect(picoLspConfigPath()).toBe(join("/tmp/pico-custom-home", "lsp.json"));
 });
 
-test("SRCODE_MEMORY_DB overrides memory database path only", () => {
-  process.env.SRCODE_HOME = "/tmp/srcode-custom-home";
-  process.env.SRCODE_MEMORY_DB = "/tmp/memory.db";
+test("PICO_MEMORY_DB overrides memory database path only", () => {
+  process.env.PICO_HOME = "/tmp/pico-custom-home";
+  process.env.PICO_MEMORY_DB = "/tmp/memory.db";
 
-  expect(srcodeMemoryDbPath()).toBe("/tmp/memory.db");
-  expect(srcodeSettingsPath()).toBe(join("/tmp/srcode-custom-home", "agent", "settings.json"));
+  expect(picoMemoryDbPath()).toBe("/tmp/memory.db");
+  expect(picoSettingsPath()).toBe(join("/tmp/pico-custom-home", "agent", "settings.json"));
 });
 
-test("SRCODE_MEMORY_DB never overrides the holographic (JSON) memory path", () => {
-  process.env.SRCODE_HOME = "/tmp/srcode-custom-home";
-  process.env.SRCODE_MEMORY_DB = "/tmp/memory.db";
-  delete process.env.SRCODE_HOLOGRAPHIC_MEMORY_PATH;
+test("PICO_MEMORY_DB never overrides the holographic (JSON) memory path", () => {
+  process.env.PICO_HOME = "/tmp/pico-custom-home";
+  process.env.PICO_MEMORY_DB = "/tmp/memory.db";
+  delete process.env.PICO_HOLOGRAPHIC_MEMORY_PATH;
 
-  expect(srcodeHolographicMemoryPath()).toBe(join("/tmp/srcode-custom-home", "holographic-memory.json"));
+  expect(picoHolographicMemoryPath()).toBe(join("/tmp/pico-custom-home", "holographic-memory.json"));
 
-  process.env.SRCODE_HOLOGRAPHIC_MEMORY_PATH = "/tmp/holo.json";
-  expect(srcodeHolographicMemoryPath()).toBe("/tmp/holo.json");
+  process.env.PICO_HOLOGRAPHIC_MEMORY_PATH = "/tmp/holo.json";
+  expect(picoHolographicMemoryPath()).toBe("/tmp/holo.json");
 });

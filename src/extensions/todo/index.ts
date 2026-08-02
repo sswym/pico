@@ -1,5 +1,5 @@
 /**
- * srcode todo extension.
+ * pico todo extension.
  *
  * Registers a `todoWrite` tool that the LLM uses to maintain a session task
  * list, plus a `/todo` slash command for the user to peek/clear it. State
@@ -121,7 +121,7 @@ export const todoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       }
 
       pi.sendMessage({
-        customType: "srcode.todo",
+        customType: "pico.todo",
         content: lines.join("\n"),
         display: true,
       });

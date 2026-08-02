@@ -9,7 +9,7 @@
  * Entities unlock probe/related/reason queries that FTS5 alone can't do.
  *
  * Extraction rules (extended beyond hermes' English-only regexes for the
- * srcode use case, which mixes Chinese prose with ASCII code identifiers
+ * pico use case, which mixes Chinese prose with ASCII code identifiers
  * like npm / bun / Postgres / TypeScript):
  *   - Multi-word capitalized proper nouns (English)         -> "Alice Wong"
  *   - Single quoted terms (double / single / 「」)           -> "Redis"

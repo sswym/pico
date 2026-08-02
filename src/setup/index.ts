@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as defaultInput, stdout as defaultOutput } from "node:process";
 import { spawnSync } from "node:child_process";
-import { srcodeHome, srcodeLspConfigPath, srcodeMcpConfigPath, srcodeModelsPath, srcodeSettingsPath } from "../extensions/paths.ts";
+import { picoHome, picoLspConfigPath, picoMcpConfigPath, picoModelsPath, picoSettingsPath } from "../extensions/paths.ts";
 import type { Settings } from "../extensions/settings.ts";
 
 export type SetupSection = "model" | "tools" | "safety" | "ui" | "memory" | "lsp" | "hooks" | "mcp" | "integrations" | "env";
@@ -93,13 +93,13 @@ const ENV_KEYS_MANAGED_BY_SETUP = [
   "GEMINI_API_KEY",
   "OPENROUTER_API_KEY",
   "TAVILY_API_KEY",
-  "SRCODE_SEARCH_PROVIDER",
-  "SRCODE_VISION_PROVIDER",
-  "SRCODE_VISION_MODEL",
-  "SRCODE_MEMORY_DB",
-  "SRCODE_MEMORY_DENY",
+  "PICO_SEARCH_PROVIDER",
+  "PICO_VISION_PROVIDER",
+  "PICO_VISION_MODEL",
+  "PICO_MEMORY_DB",
+  "PICO_MEMORY_DENY",
   "CODEGRAPH_TELEMETRY",
-  "SRCODE_RTK",
+  "PICO_RTK",
 ];
 
 const MEMORY_BACKENDS = ["builtin", "holographic"] as const;
@@ -177,7 +177,7 @@ const SETUP_SECTION_META: SetupSectionMeta[] = [
 
 const TEXT = {
   en: {
-    setupTitle: "srcode setup",
+    setupTitle: "pico setup",
     languageQuestion: "Choose setup language",
     languageChoices: ["中文", "English"],
     menuHint: "Use Up/Down or j/k, Enter to select, Esc to keep current",
@@ -204,8 +204,8 @@ const TEXT = {
     visionProvider: "Vision provider",
     visionModel: "Vision model",
     safetyHeader: "Safety",
-    projectHooks: "Enable project .srcode/hooks.json shell hooks?",
-    projectMcp: "Enable project .srcode/mcp-servers.json MCP servers?",
+    projectHooks: "Enable project .pico/hooks.json shell hooks?",
+    projectMcp: "Enable project .pico/mcp-servers.json MCP servers?",
     lspFormat: "Allow LSP format-on-write after edits?",
     unattendedPlan: "Allow non-interactive plan approvals?",
     uiHeader: "UI",
@@ -233,9 +233,9 @@ const TEXT = {
     integrationsHeader: "Integrations",
     codegraphEnable: "Enable CodeGraph semantic code graph?",
     codegraphInstall: "codegraph was not found on PATH. Install CodeGraph CLI now?",
-    codegraphMcp: "Write srcode user MCP config for CodeGraph?",
+    codegraphMcp: "Write pico user MCP config for CodeGraph?",
     codegraphInitProject: "Initialize CodeGraph for the current project now?",
-    codegraphTelemetryOff: "Disable CodeGraph telemetry for srcode MCP server?",
+    codegraphTelemetryOff: "Disable CodeGraph telemetry for pico MCP server?",
     rtkEnable: "Enable RTK shell output compression?",
     rtkInstall: "rtk was not found on PATH. Install RTK CLI now?",
     rtkMode: "RTK integration mode",
@@ -249,8 +249,8 @@ const TEXT = {
     leaveKeep: "leave empty to keep current",
     leaveSkip: "leave empty to skip",
     invalidYesNo: "Please enter y or n.",
-    nonInteractiveError: "error: srcode setup needs an interactive terminal. Use --non-interactive for defaults.",
-    complete: "srcode setup complete",
+    nonInteractiveError: "error: pico setup needs an interactive terminal. Use --non-interactive for defaults.",
+    complete: "pico setup complete",
     models: "models",
     defaultModelSummary: "default model",
     settingsEnv: "settings env",
@@ -261,10 +261,10 @@ const TEXT = {
     mcpConfigSummary: "MCP config",
     integrationsSummary: "integrations",
     customProviders: "custom providers",
-    nextStep: "Run srcode to start, or use /doctor inside srcode to inspect the active settings.",
+    nextStep: "Run pico to start, or use /doctor inside pico to inspect the active settings.",
   },
   zh: {
-    setupTitle: "srcode 设置",
+    setupTitle: "pico 设置",
     languageQuestion: "选择设置界面语言",
     languageChoices: ["中文", "English"],
     menuHint: "使用上下方向键或 j/k 移动，Enter 选择，Esc 保留当前项",
@@ -291,8 +291,8 @@ const TEXT = {
     visionProvider: "视觉模型提供商",
     visionModel: "视觉模型",
     safetyHeader: "安全开关",
-    projectHooks: "启用项目 .srcode/hooks.json shell hooks？",
-    projectMcp: "启用项目 .srcode/mcp-servers.json MCP 服务器？",
+    projectHooks: "启用项目 .pico/hooks.json shell hooks？",
+    projectMcp: "启用项目 .pico/mcp-servers.json MCP 服务器？",
     lspFormat: "允许 LSP 在写入后自动格式化？",
     unattendedPlan: "允许非交互模式自动批准计划？",
     uiHeader: "界面",
@@ -320,9 +320,9 @@ const TEXT = {
     integrationsHeader: "集成",
     codegraphEnable: "启用 CodeGraph 语义代码图？",
     codegraphInstall: "PATH 中未找到 codegraph。现在安装 CodeGraph CLI？",
-    codegraphMcp: "写入 srcode 用户级 CodeGraph MCP 配置？",
+    codegraphMcp: "写入 pico 用户级 CodeGraph MCP 配置？",
     codegraphInitProject: "现在为当前项目初始化 CodeGraph？",
-    codegraphTelemetryOff: "为 srcode MCP server 关闭 CodeGraph telemetry？",
+    codegraphTelemetryOff: "为 pico MCP server 关闭 CodeGraph telemetry？",
     rtkEnable: "启用 RTK shell 输出压缩？",
     rtkInstall: "PATH 中未找到 rtk。现在安装 RTK CLI？",
     rtkMode: "RTK 集成模式",
@@ -336,8 +336,8 @@ const TEXT = {
     leaveKeep: "留空保留当前值",
     leaveSkip: "留空跳过",
     invalidYesNo: "请输入 y 或 n。",
-    nonInteractiveError: "error: srcode setup 需要交互式终端。可使用 --non-interactive 写入默认配置。",
-    complete: "srcode 设置完成",
+    nonInteractiveError: "error: pico setup 需要交互式终端。可使用 --non-interactive 写入默认配置。",
+    complete: "pico 设置完成",
     models: "模型配置",
     defaultModelSummary: "默认模型",
     settingsEnv: "settings env",
@@ -348,7 +348,7 @@ const TEXT = {
     mcpConfigSummary: "MCP 配置",
     integrationsSummary: "集成",
     customProviders: "自定义提供商",
-    nextStep: "运行 srcode 启动；也可以在 srcode 内使用 /doctor 检查当前设置。",
+    nextStep: "运行 pico 启动；也可以在 pico 内使用 /doctor 检查当前设置。",
   },
 } satisfies Record<SetupLanguage, Record<string, string | string[]>>;
 
@@ -387,14 +387,14 @@ export function parseSetupArgs(args: string[]): SetupCliOptions | undefined {
 
 export function setupUsage(): string {
   return [
-    "Usage: srcode setup [model|tools|safety|ui|memory|lsp|hooks|mcp|integrations|env] [--non-interactive] [--reset] [--quick] [--reconfigure]",
+    "Usage: pico setup [model|tools|safety|ui|memory|lsp|hooks|mcp|integrations|env] [--non-interactive] [--reset] [--quick] [--reconfigure]",
     "",
-    "Interactive setup wizard for srcode.",
+    "Interactive setup wizard for pico.",
     "",
     "Sections:",
     "  model   Configure default provider/model, API key env, or a custom provider",
     "  tools   Configure web search and auxiliary vision model",
-    "  safety  Configure srcode safety switches",
+    "  safety  Configure pico safety switches",
     "  ui      Configure response language",
     "  memory  Configure memory backend and memory-related env",
     "  lsp     Configure user LSP options",
@@ -426,12 +426,12 @@ export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
   }
   if (options.reset) {
     resetSetupConfig();
-    writeLine(io, `srcode setup reset complete\nsettings: ${srcodeSettingsPath()}`);
+    writeLine(io, `pico setup reset complete\nsettings: ${picoSettingsPath()}`);
     return 0;
   }
   if (options.nonInteractive) {
     applyNonInteractiveDefaults();
-    writeLine(io, buildSetupSummary(readJson(srcodeSettingsPath()), readJson(srcodeModelsPath()), "en"));
+    writeLine(io, buildSetupSummary(readJson(picoSettingsPath()), readJson(picoModelsPath()), "en"));
     return 0;
   }
   if (!isInteractive(io)) {
@@ -452,7 +452,7 @@ export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
 
     for (const meta of selectedSections) {
       if (!meta) continue;
-      const settings = readJson(srcodeSettingsPath());
+      const settings = readJson(picoSettingsPath());
       if (!options.reconfigure && options.quick && meta.isConfigured(settings)) {
         printSectionSummary(io, language, meta, settings);
         continue;
@@ -466,7 +466,7 @@ export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
   }
 
   writeLine(io, "");
-  writeLine(io, buildSetupSummary(readJson(srcodeSettingsPath()), readJson(srcodeModelsPath()), language));
+  writeLine(io, buildSetupSummary(readJson(picoSettingsPath()), readJson(picoModelsPath()), language));
   return 0;
 }
 
@@ -668,8 +668,8 @@ function getSectionMeta(section: SetupSection): SetupSectionMeta | undefined {
 function printSetupIntro(io: SetupIo, language: SetupLanguage): void {
   const text = TEXT[language];
   printHeader(io, text.setupTitle);
-  writeLine(io, `${text.home}: ${srcodeHome()}`);
-  writeLine(io, `${text.settings}: ${srcodeSettingsPath()}`);
+  writeLine(io, `${text.home}: ${picoHome()}`);
+  writeLine(io, `${text.settings}: ${picoSettingsPath()}`);
   writeLine(io, "");
 }
 
@@ -683,7 +683,7 @@ function printSectionSummary(io: SetupIo, language: SetupLanguage, meta: SetupSe
 async function runModelSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.modelHeader);
-  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const settings = readJson(picoSettingsPath()) as Settings;
   const choices = [
     ...KNOWN_PROVIDERS.map((p) => `${p.label} (${p.id})`),
     text.customProvider,
@@ -709,7 +709,7 @@ async function runModelSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> 
     const value = await prompt.optionalSecret(`${provider.envName}`, typeof current === "string" && current.length > 0);
     if (value) setSettingsEnv(settings, provider.envName, value);
   }
-  writeJson(srcodeSettingsPath(), settings);
+  writeJson(picoSettingsPath(), settings);
 }
 
 async function configureCustomProvider(prompt: SetupPrompter): Promise<void> {
@@ -723,10 +723,10 @@ async function configureCustomProvider(prompt: SetupPrompter): Promise<void> {
   };
   writeCustomProvider(config);
 
-  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const settings = readJson(picoSettingsPath()) as Settings;
   settings.defaultProvider = config.id;
   settings.defaultModel = config.model;
-  writeJson(srcodeSettingsPath(), settings);
+  writeJson(picoSettingsPath(), settings);
 }
 
 async function chooseApi(prompt: SetupPrompter): Promise<CustomProviderConfig["api"]> {
@@ -742,16 +742,16 @@ async function chooseApi(prompt: SetupPrompter): Promise<CustomProviderConfig["a
 async function runToolsSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.toolsHeader);
-  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const settings = readJson(picoSettingsPath()) as Settings;
   const env = readSettingsEnv(settings);
 
   const searchIndex = await prompt.choice(
     text.webSearchProvider,
     text.searchChoices,
-    env.SRCODE_SEARCH_PROVIDER === "exa" ? 1 : env.SRCODE_SEARCH_PROVIDER === "tavily" ? 2 : 0,
+    env.PICO_SEARCH_PROVIDER === "exa" ? 1 : env.PICO_SEARCH_PROVIDER === "tavily" ? 2 : 0,
   );
-  if (searchIndex === 0) delete env.SRCODE_SEARCH_PROVIDER;
-  else env.SRCODE_SEARCH_PROVIDER = searchIndex === 1 ? "exa" : "tavily";
+  if (searchIndex === 0) delete env.PICO_SEARCH_PROVIDER;
+  else env.PICO_SEARCH_PROVIDER = searchIndex === 1 ? "exa" : "tavily";
 
   const tavily = await prompt.optionalSecret("TAVILY_API_KEY", typeof env.TAVILY_API_KEY === "string" && env.TAVILY_API_KEY.length > 0);
   if (tavily) env.TAVILY_API_KEY = tavily;
@@ -766,13 +766,13 @@ async function runToolsSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> 
   }
 
   settings.env = env;
-  writeJson(srcodeSettingsPath(), settings);
+  writeJson(picoSettingsPath(), settings);
 }
 
 async function runSafetySetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.safetyHeader);
-  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const settings = readJson(picoSettingsPath()) as Settings;
   const safety = { ...SAFETY_DEFAULTS, ...objectSetting(settings.safety) };
 
   safety.enableProjectHooks = await prompt.yesNo(
@@ -793,22 +793,22 @@ async function runSafetySetup(prompt: SetupPrompter, io: SetupIo): Promise<void>
   );
 
   settings.safety = safety;
-  writeJson(srcodeSettingsPath(), settings);
+  writeJson(picoSettingsPath(), settings);
 }
 
 async function runUiSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.uiHeader);
-  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const settings = readJson(picoSettingsPath()) as Settings;
   const defaultLanguage = prompt.language === "zh" ? "简体中文" : "English";
   settings.language = await prompt.text(text.responseLanguage, stringSetting(settings.language) ?? defaultLanguage);
-  writeJson(srcodeSettingsPath(), settings);
+  writeJson(picoSettingsPath(), settings);
 }
 
 async function runMemorySetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.memoryHeader);
-  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const settings = readJson(picoSettingsPath()) as Settings;
   const memory = objectSetting(settings.memory);
   const currentBackend = stringSetting(memory.backend) ?? "builtin";
   const backendIndex = Math.max(0, MEMORY_BACKENDS.indexOf(currentBackend as typeof MEMORY_BACKENDS[number]));
@@ -816,35 +816,35 @@ async function runMemorySetup(prompt: SetupPrompter, io: SetupIo): Promise<void>
   settings.memory = memory;
 
   const env = readSettingsEnv(settings);
-  const deny = await prompt.optionalValue(text.memoryDeny, env.SRCODE_MEMORY_DENY ?? process.env.SRCODE_MEMORY_DENY);
-  if (deny !== undefined) setOrDelete(env, "SRCODE_MEMORY_DENY", deny);
-  const dbPath = await prompt.optionalValue("SRCODE_MEMORY_DB", env.SRCODE_MEMORY_DB ?? process.env.SRCODE_MEMORY_DB);
-  if (dbPath !== undefined) setOrDelete(env, "SRCODE_MEMORY_DB", dbPath);
+  const deny = await prompt.optionalValue(text.memoryDeny, env.PICO_MEMORY_DENY ?? process.env.PICO_MEMORY_DENY);
+  if (deny !== undefined) setOrDelete(env, "PICO_MEMORY_DENY", deny);
+  const dbPath = await prompt.optionalValue("PICO_MEMORY_DB", env.PICO_MEMORY_DB ?? process.env.PICO_MEMORY_DB);
+  if (dbPath !== undefined) setOrDelete(env, "PICO_MEMORY_DB", dbPath);
   settings.env = env;
-  writeJson(srcodeSettingsPath(), settings);
+  writeJson(picoSettingsPath(), settings);
 }
 
 async function runLspSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.lspHeader);
-  writeLine(io, `${text.lspConfig}: ${srcodeLspConfigPath()}`);
-  const config = readJson(srcodeLspConfigPath());
+  writeLine(io, `${text.lspConfig}: ${picoLspConfigPath()}`);
+  const config = readJson(picoLspConfigPath());
   config.formatOnWrite = await prompt.yesNo(text.lspFormatOnWrite, booleanSetting(config.formatOnWrite, false));
   const idle = await prompt.text(text.lspIdleTimeout, numberSetting(config.idleTimeoutMs)?.toString() ?? "600000");
   const parsedIdle = Number.parseInt(idle, 10);
   if (Number.isFinite(parsedIdle) && parsedIdle > 0) config.idleTimeoutMs = parsedIdle;
-  writeJson(srcodeLspConfigPath(), config);
+  writeJson(picoLspConfigPath(), config);
 }
 
 async function runHooksSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.hooksHeader);
   writeLine(io, `${text.hookConfig}: ${userHooksPath()}`);
-  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const settings = readJson(picoSettingsPath()) as Settings;
   const safety = { ...SAFETY_DEFAULTS, ...objectSetting(settings.safety) };
   safety.enableProjectHooks = await prompt.yesNo(text.projectHooks, booleanSetting(safety.enableProjectHooks, false));
   settings.safety = safety;
-  writeJson(srcodeSettingsPath(), settings);
+  writeJson(picoSettingsPath(), settings);
 
   const config = readJson(userHooksPath());
   const hooks = Array.isArray(config.hooks) ? config.hooks.filter((h): h is JsonObject => h && typeof h === "object" && !Array.isArray(h)) : [];
@@ -866,14 +866,14 @@ async function runHooksSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> 
 async function runMcpSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.mcpHeader);
-  writeLine(io, `${text.mcpConfig}: ${srcodeMcpConfigPath()}`);
-  const settings = readJson(srcodeSettingsPath()) as Settings;
+  writeLine(io, `${text.mcpConfig}: ${picoMcpConfigPath()}`);
+  const settings = readJson(picoSettingsPath()) as Settings;
   const safety = { ...SAFETY_DEFAULTS, ...objectSetting(settings.safety) };
   safety.enableProjectMcp = await prompt.yesNo(text.projectMcp, booleanSetting(safety.enableProjectMcp, false));
   settings.safety = safety;
-  writeJson(srcodeSettingsPath(), settings);
+  writeJson(picoSettingsPath(), settings);
 
-  const config = readJson(srcodeMcpConfigPath());
+  const config = readJson(picoMcpConfigPath());
   const servers = objectSetting(config.mcpServers);
   if (await prompt.yesNo(text.createMcp, false)) {
     const name = await prompt.text(text.mcpName, "local");
@@ -882,13 +882,13 @@ async function runMcpSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
     servers[name] = args.length > 0 ? { command, args } : { command };
   }
   config.mcpServers = servers;
-  writeJson(srcodeMcpConfigPath(), config);
+  writeJson(picoMcpConfigPath(), config);
 }
 
 async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo, shell: SetupShell): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.integrationsHeader);
-  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const settings = readJson(picoSettingsPath()) as Settings;
   const integrations = objectSetting(settings.integrations);
   const codegraph = objectSetting(integrations.codegraph);
   const rtk = objectSetting(integrations.rtk);
@@ -935,13 +935,13 @@ async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo, shell: S
   integrations.codegraph = codegraph;
   integrations.rtk = rtk;
   settings.integrations = integrations;
-  writeJson(srcodeSettingsPath(), settings);
+  writeJson(picoSettingsPath(), settings);
 }
 
 async function runEnvSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.envHeader);
-  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const settings = readJson(picoSettingsPath()) as Settings;
   const env = readSettingsEnv(settings);
   writeLine(io, `${text.settingsEnv}: ${Object.keys(env).sort().join(", ") || "(none)"}`);
   while (await prompt.yesNo(text.addEnv, false)) {
@@ -951,7 +951,7 @@ async function runEnvSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
     if (value !== undefined) setOrDelete(env, key, value);
   }
   settings.env = env;
-  writeJson(srcodeSettingsPath(), settings);
+  writeJson(picoSettingsPath(), settings);
 }
 
 function hasModelSection(settings: JsonObject): boolean {
@@ -967,13 +967,13 @@ function summarizeModelSection(settings: JsonObject): string | undefined {
 
 function hasToolsSection(settings: JsonObject): boolean {
   const env = readSettingsEnv(settings);
-  return typeof env.SRCODE_SEARCH_PROVIDER === "string" || typeof env.TAVILY_API_KEY === "string" || hasVisionSettings(settings as Settings);
+  return typeof env.PICO_SEARCH_PROVIDER === "string" || typeof env.TAVILY_API_KEY === "string" || hasVisionSettings(settings as Settings);
 }
 
 function summarizeToolsSection(settings: JsonObject): string | undefined {
   const env = readSettingsEnv(settings);
   const bits = [];
-  if (typeof env.SRCODE_SEARCH_PROVIDER === "string") bits.push(`search=${env.SRCODE_SEARCH_PROVIDER}`);
+  if (typeof env.PICO_SEARCH_PROVIDER === "string") bits.push(`search=${env.PICO_SEARCH_PROVIDER}`);
   if (typeof env.TAVILY_API_KEY === "string") bits.push("tavily=set");
   if (hasVisionSettings(settings as Settings)) {
     const vision = objectSetting(objectSetting(settings.auxiliary).vision);
@@ -1011,7 +1011,7 @@ function summarizeUiSection(settings: JsonObject): string | undefined {
 function hasMemorySection(settings: JsonObject): boolean {
   const memory = objectSetting(settings.memory);
   const env = readSettingsEnv(settings);
-  return typeof memory.backend === "string" || typeof env.SRCODE_MEMORY_DB === "string" || typeof env.SRCODE_MEMORY_DENY === "string";
+  return typeof memory.backend === "string" || typeof env.PICO_MEMORY_DB === "string" || typeof env.PICO_MEMORY_DENY === "string";
 }
 
 function summarizeMemorySection(settings: JsonObject): string | undefined {
@@ -1019,17 +1019,17 @@ function summarizeMemorySection(settings: JsonObject): string | undefined {
   const env = readSettingsEnv(settings);
   const bits = [];
   if (typeof memory.backend === "string") bits.push(`backend=${memory.backend}`);
-  if (typeof env.SRCODE_MEMORY_DB === "string") bits.push(`db=${env.SRCODE_MEMORY_DB}`);
-  if (typeof env.SRCODE_MEMORY_DENY === "string") bits.push("deny=set");
+  if (typeof env.PICO_MEMORY_DB === "string") bits.push(`db=${env.PICO_MEMORY_DB}`);
+  if (typeof env.PICO_MEMORY_DENY === "string") bits.push("deny=set");
   return bits.length > 0 ? bits.join(", ") : undefined;
 }
 
 function hasLspSection(_settings: JsonObject): boolean {
-  return existsSync(srcodeLspConfigPath());
+  return existsSync(picoLspConfigPath());
 }
 
 function summarizeLspSection(settings: JsonObject): string | undefined {
-  const config = readJson(srcodeLspConfigPath());
+  const config = readJson(picoLspConfigPath());
   const bits: string[] = [];
   if (typeof config.formatOnWrite === "boolean") bits.push(`formatOnWrite=${config.formatOnWrite ? "on" : "off"}`);
   if (typeof config.idleTimeoutMs === "number") bits.push(`idle=${config.idleTimeoutMs}`);
@@ -1045,11 +1045,11 @@ function summarizeHooksSection(_settings: JsonObject): string | undefined {
 }
 
 function hasMcpSection(_settings: JsonObject): boolean {
-  return existsSync(srcodeMcpConfigPath());
+  return existsSync(picoMcpConfigPath());
 }
 
 function summarizeMcpSection(_settings: JsonObject): string | undefined {
-  return existsSync(srcodeMcpConfigPath()) ? srcodeMcpConfigPath() : undefined;
+  return existsSync(picoMcpConfigPath()) ? picoMcpConfigPath() : undefined;
 }
 
 function hasIntegrationsSection(settings: JsonObject): boolean {
@@ -1081,7 +1081,7 @@ function summarizeEnvSection(settings: JsonObject): string | undefined {
 }
 
 export function applyNonInteractiveDefaults(): void {
-  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const settings = readJson(picoSettingsPath()) as Settings;
   settings.language ??= "简体中文";
   settings.safety = { ...SAFETY_DEFAULTS, ...objectSetting(settings.safety) };
 
@@ -1092,11 +1092,11 @@ export function applyNonInteractiveDefaults(): void {
     }
   }
   settings.env = env;
-  writeJson(srcodeSettingsPath(), settings);
+  writeJson(picoSettingsPath(), settings);
 }
 
 export function resetSetupConfig(): void {
-  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const settings = readJson(picoSettingsPath()) as Settings;
   for (const key of ["defaultProvider", "defaultModel", "defaultThinkingLevel", "language", "auxiliary", "safety", "memory", "integrations"]) {
     delete settings[key];
   }
@@ -1104,11 +1104,11 @@ export function resetSetupConfig(): void {
   for (const key of ENV_KEYS_MANAGED_BY_SETUP) delete env[key];
   if (Object.keys(env).length === 0) delete settings.env;
   else settings.env = env;
-  writeJson(srcodeSettingsPath(), settings);
+  writeJson(picoSettingsPath(), settings);
 }
 
 export function writeCustomProvider(config: CustomProviderConfig): void {
-  const models = readJson(srcodeModelsPath());
+  const models = readJson(picoModelsPath());
   const providers = objectSetting(models.providers);
   providers[config.id] = {
     baseUrl: config.baseUrl,
@@ -1121,11 +1121,11 @@ export function writeCustomProvider(config: CustomProviderConfig): void {
   };
   removeUndefined(providers[config.id] as JsonObject);
   models.providers = providers;
-  writeJson(srcodeModelsPath(), models);
+  writeJson(picoModelsPath(), models);
 }
 
 export function configureCodeGraphMcp(options: { telemetry?: string } = {}): void {
-  const config = readJson(srcodeMcpConfigPath());
+  const config = readJson(picoMcpConfigPath());
   const servers = objectSetting(config.mcpServers);
   const server: JsonObject = {
     command: "codegraph",
@@ -1136,11 +1136,11 @@ export function configureCodeGraphMcp(options: { telemetry?: string } = {}): voi
   }
   servers.codegraph = server;
   config.mcpServers = servers;
-  writeJson(srcodeMcpConfigPath(), config);
+  writeJson(picoMcpConfigPath(), config);
 }
 
 export function configureRtkIntegration(options: { enabled: boolean; mode?: "spawnHook" | "instructionsOnly"; command?: string }): void {
-  const settings = readJson(srcodeSettingsPath()) as Settings;
+  const settings = readJson(picoSettingsPath()) as Settings;
   const integrations = objectSetting(settings.integrations);
   integrations.rtk = {
     enabled: options.enabled,
@@ -1148,14 +1148,14 @@ export function configureRtkIntegration(options: { enabled: boolean; mode?: "spa
     command: options.command ?? "rtk",
   };
   settings.integrations = integrations;
-  writeJson(srcodeSettingsPath(), settings);
+  writeJson(picoSettingsPath(), settings);
 }
 
 export function buildSetupSummary(settings: JsonObject, models: JsonObject, language: SetupLanguage = "en"): string {
   const text = TEXT[language];
   const lines = [text.complete];
-  lines.push(`${text.settings}: ${srcodeSettingsPath()}`);
-  if (existsSync(srcodeModelsPath())) lines.push(`${text.models}: ${srcodeModelsPath()}`);
+  lines.push(`${text.settings}: ${picoSettingsPath()}`);
+  if (existsSync(picoModelsPath())) lines.push(`${text.models}: ${picoModelsPath()}`);
   const provider = stringSetting(settings.defaultProvider);
   const model = stringSetting(settings.defaultModel);
   if (provider && model) lines.push(`${text.defaultModelSummary}: ${provider}/${model}`);
@@ -1168,9 +1168,9 @@ export function buildSetupSummary(settings: JsonObject, models: JsonObject, lang
     const vision = objectSetting(objectSetting(settings.auxiliary).vision);
     lines.push(`${text.vision}: ${stringSetting(vision.provider)}/${stringSetting(vision.model)}`);
   }
-  if (existsSync(srcodeLspConfigPath())) lines.push(`${text.lspConfigSummary}: ${srcodeLspConfigPath()}`);
+  if (existsSync(picoLspConfigPath())) lines.push(`${text.lspConfigSummary}: ${picoLspConfigPath()}`);
   if (existsSync(userHooksPath())) lines.push(`${text.hooksConfigSummary}: ${userHooksPath()}`);
-  if (existsSync(srcodeMcpConfigPath())) lines.push(`${text.mcpConfigSummary}: ${srcodeMcpConfigPath()}`);
+  if (existsSync(picoMcpConfigPath())) lines.push(`${text.mcpConfigSummary}: ${picoMcpConfigPath()}`);
   const integrationsSummary = summarizeIntegrationsSection(settings);
   if (integrationsSummary) lines.push(`${text.integrationsSummary}: ${integrationsSummary}`);
   if (Object.keys(objectSetting(models.providers)).length > 0) {
@@ -1280,7 +1280,7 @@ function setOrDelete(target: Record<string, string>, key: string, value: string)
 }
 
 function userHooksPath(): string {
-  return join(srcodeHome(), "hooks.json");
+  return join(picoHome(), "hooks.json");
 }
 
 function splitArgs(value: string): string[] {
@@ -1319,6 +1319,6 @@ function writeLine(io: SetupIo, line: string): void {
 }
 
 export function __resetSetupFilesForTests(): void {
-  rmSync(srcodeSettingsPath(), { force: true });
-  rmSync(srcodeModelsPath(), { force: true });
+  rmSync(picoSettingsPath(), { force: true });
+  rmSync(picoModelsPath(), { force: true });
 }

@@ -1,4 +1,4 @@
-# srcode 项目技术总结与复盘（内部归档）
+# pico 项目技术总结与复盘（内部归档）
 
 | 项 | 值 |
 |---|---|
@@ -14,7 +14,7 @@
 
 ### 1.1 定位
 
-srcode 是基于 `@earendil-works/pi-coding-agent`（下文简称 pi）的 **thin wrapper** 型终端编码代理。上游提供 agent loop、tool runtime、session 管理、TUI；srcode 通过扩展工厂注入产品化能力（记忆、子代理、任务清单、计划模式、网络、LSP 等），不 fork 上游核心。
+pico 是基于 `@earendil-works/pi-coding-agent`（下文简称 pi）的 **thin wrapper** 型终端编码代理。上游提供 agent loop、tool runtime、session 管理、TUI；pico 通过扩展工厂注入产品化能力（记忆、子代理、任务清单、计划模式、网络、LSP 等），不 fork 上游核心。
 
 设计原则：
 
@@ -30,14 +30,14 @@ srcode 是基于 `@earendil-works/pi-coding-agent`（下文简称 pi）的 **thi
 | 语言 | TypeScript（strict、verbatimModuleSyntax、noUncheckedIndexedAccess） | 上游同栈，类型面干净 |
 | 存储 | bun:sqlite（WAL + FTS5） | 零依赖全文检索 + 事务 |
 | 语义检索 | TF-IDF 稀疏向量（纯 TS，存 JSON 列） | 替代 hermes 的 HRR numpy 依赖，离线可跑 |
-| 测试 | bun:test，`__reset*ForTests()` 钩子 + `SRCODE_HOME` 临时目录隔离 | 完全离线、无 mock 库 |
+| 测试 | bun:test，`__reset*ForTests()` 钩子 + `PICO_HOME` 临时目录隔离 | 完全离线、无 mock 库 |
 | 构建 | `scripts/build.ts` 三阶段（嵌入资源 → `bun build --compile` → package.json） | 产物为 ~102MB 独立二进制 |
 
 ### 1.3 整体架构
 
 ```mermaid
 flowchart TD
-    U[用户终端] --> BIN[bin/srcode.ts]
+    U[用户终端] --> BIN[bin/pico.ts]
     BIN --> BOOT[bin/env-bootstrap.ts<br/>副作用: 目录/环境水合, 必须先于上游导入]
     BOOT --> MAIN[pi main<br/>agent loop / tool runtime / session / TUI]
     MAIN --> REG[ExtensionRegistry<br/>19 个扩展工厂, 按序注册]
@@ -53,14 +53,14 @@ flowchart TD
 **入口链**（顺序敏感）：
 
 ```
-bin/srcode.ts
+bin/pico.ts
   → bin/env-bootstrap.ts   // 必须最先导入：设置 PI_CODING_AGENT_DIR 等
   → buildRuntimeArgs()     // 自动注入 --prompt-template / --skill（可 -np/-ns 关闭）
   → runSetupCommandIfRequested()  // 包管理命令短路
   → main(args, { extensionFactories })
 ```
 
-**编译二进制模式**：`prepareEmbeddedRuntime()` 把嵌入资源（prompts/skills/themes/agents）解包到 `$TMPDIR/srcode-<rand>`，注册 exit/SIGINT/SIGTERM 清理，并设置 `PI_PACKAGE_DIR` 指向解包目录。
+**编译二进制模式**：`prepareEmbeddedRuntime()` 把嵌入资源（prompts/skills/themes/agents）解包到 `$TMPDIR/pico-<rand>`，注册 exit/SIGINT/SIGTERM 清理，并设置 `PI_PACKAGE_DIR` 指向解包目录。
 
 ### 1.4 扩展注册顺序与依赖约束
 
@@ -130,7 +130,7 @@ flowchart LR
 - **纠错检测**：`turn_end` 对用户消息跑 `CORRECTION_PATTERNS`，命中即写入 correction 类事实 + curated 笔记（截断 400 字符）。
 - **秘密扫描**：写前 `scanSecrets`（AWS/GitHub/SSH/Stripe/Google key 等模式），命中即拒绝入库；curated 快照注入时对含秘密条目打 `[BLOCKED]` 占位。
 - **provider 抽象**：`MemoryProvider` 接口 + `ProviderManager` 注册表（`registerMemoryProviderFactory`）；内置 `builtin`（SQLite）与 `holographic`（**demo stub**，JSON 全量读写，related/reason/contradict 空实现）。
-- **路径隔离**：`SRCODE_MEMORY_DB` 只作用于 SQLite；holographic 使用独立 `SRCODE_HOLOGRAPHIC_MEMORY_PATH`（整改前两后端共用同一 env，存在互覆写风险，§4.4）。
+- **路径隔离**：`PICO_MEMORY_DB` 只作用于 SQLite；holographic 使用独立 `PICO_HOLOGRAPHIC_MEMORY_PATH`（整改前两后端共用同一 env，存在互覆写风险，§4.4）。
 
 ### 3.2 子代理编排（subagent）
 
@@ -150,12 +150,12 @@ flowchart TD
 
 实现要点：
 
-- **进程模型**：子代理为独立进程 `srcode --mode json -p "Task: …"`；stdout 按行解析 `message_end`/`tool_result_end` JSON 事件流；SIGTERM 5s 后 SIGKILL 升级；stderr 累积进结果（**无界**，见 §5.2）。
-- **临时提示词**：agent 的 systemPrompt 写入 `$TMPDIR/srcode-subagent-*`（0o600），finally 清理。
+- **进程模型**：子代理为独立进程 `pico --mode json -p "Task: …"`；stdout 按行解析 `message_end`/`tool_result_end` JSON 事件流；SIGTERM 5s 后 SIGKILL 升级；stderr 累积进结果（**无界**，见 §5.2）。
+- **临时提示词**：agent 的 systemPrompt 写入 `$TMPDIR/pico-subagent-*`（0o600），finally 清理。
 - **frontmatter 契约**：`model/tools/thinking/maxExecutionTimeMs/maxTokens/fallbackModels/systemPromptMode/inheritProjectContext/inheritSkills/outputMode/acceptance`。整改前三个开关字段（systemPromptMode/inheritProjectContext/inheritSkills）**解析但从未生效**，已映射到 `--system-prompt`/`--no-context-files`/`--no-skills`（§4.1）。
 - **验收门**：`acceptance.evidence` 命令在**主进程**以 `execSync`（60s 超时）执行；`selfRepair` 循环重试；criteria 与 evidence **按下标配对**（设计脆弱点，见 §5.2）。整改前 fallback 模型成功路径绕过验收门（§4.2）。
-- **项目代理安全门禁**：`.srcode/agents/*.md` 为仓库可控代码（可含任意 evidence 命令）。交互模式弹确认；非交互模式**默认拒绝**，需 `SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS=1`（整改前 `hasUI` 为 false 时整个确认被跳过，§4.3）。
-- **worktree 模式**：并行任务各自 `git worktree add --detach` + 命名分支；合并前先 `git add -A && commit`（注入 `srcode-subagent` 身份），否则未提交改动随 worktree 删除而丢失（§4.4）。
+- **项目代理安全门禁**：`.pico/agents/*.md` 为仓库可控代码（可含任意 evidence 命令）。交互模式弹确认；非交互模式**默认拒绝**，需 `PICO_ALLOW_UNATTENDED_PROJECT_AGENTS=1`（整改前 `hasUI` 为 false 时整个确认被跳过，§4.3）。
+- **worktree 模式**：并行任务各自 `git worktree add --detach` + 命名分支；合并前先 `git add -A && commit`（注入 `pico-subagent` 身份），否则未提交改动随 worktree 删除而丢失（§4.4）。
 
 ### 3.3 会话任务清单（todo）
 
@@ -169,7 +169,7 @@ flowchart TD
 flowchart TD
     ENTER[EnterPlanMode / /plan] --> ACTIVE{planActive 全局态}
     ACTIVE -- 激活 --> BLOCK[tool_call 阻断<br/>白名单: read/grep/find/ls + 三个 plan 工具]
-    BLOCK --> SUBMIT[SubmitPlan 写 plan 文件<br/>~/.srcode/plans/<sid>.md]
+    BLOCK --> SUBMIT[SubmitPlan 写 plan 文件<br/>~/.pico/plans/<sid>.md]
     SUBMIT --> EXIT[ExitPlanMode 弹审批]
     EXIT --> AP{批准?}
     AP -- 否 --> BLOCK
@@ -177,11 +177,11 @@ flowchart TD
     OFF --> EXEC[按计划执行]
 ```
 
-要点：进程级单开关（有意为之，一个进程一个 plan 态）；非交互模式需 `SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL=1` 才能自动批准；session 切换/分叉时重置（整改后，防止旧会话 plan 文件串台）。
+要点：进程级单开关（有意为之，一个进程一个 plan 态）；非交互模式需 `PICO_ALLOW_UNATTENDED_PLAN_APPROVAL=1` 才能自动批准；session 切换/分叉时重置（整改后，防止旧会话 plan 文件串台）。
 
 ### 3.5 Web 搜索与抓取（web）
 
-- **webSearch**：默认 Exa MCP 端点（JSON-RPC 2.0，兼容 SSE 分帧）；有 `TAVILY_API_KEY` 时 hybrid 并行合并（URL 去重）；`SRCODE_SEARCH_PROVIDER=exa|tavily` 强制单源，**强制但缺 key/非法值 → 显式报错**（整改前静默降级，§4.3）。单请求 15s 超时（headers+body 同一作用域）。
+- **webSearch**：默认 Exa MCP 端点（JSON-RPC 2.0，兼容 SSE 分帧）；有 `TAVILY_API_KEY` 时 hybrid 并行合并（URL 去重）；`PICO_SEARCH_PROVIDER=exa|tavily` 强制单源，**强制但缺 key/非法值 → 显式报错**（整改前静默降级，§4.3）。单请求 15s 超时（headers+body 同一作用域）。
 - **webFetch**：http→https 升级、**手动重定向**（每跳复检私网）、私网防护（IPv4 段 / IPv6 ULA / mapped-IPv6 / 整数与十六进制 IP 写法）、1MiB body 上限、8KiB 输出截断（UTF-8 边界回退）、15min/50 条 LRU、同 URL 并发合并（single-flight）。4xx/5xx **不缓存**且 `isError=true`（整改后）。
 - 已知残留：防护仅字符串级 hostname 判定，`*.nip.io` 类 DNS 重绑定域名可绕过（见 §5.2）。
 
@@ -190,7 +190,7 @@ flowchart TD
 - 统一 `lsp` 工具 + `action` 路由：hover/definition/references/diagnostics/symbols/code_actions/capabilities/status 只读；rename/rename_file/reload/request 及 code_actions apply=true 由 `isLspWriteOrHighRiskInput` **双层阻断**（execute 入口 + tool_call hook）。
 - 懒启动 + session_start 预热；`ensureServer` 有 initializing 在途复用（整改后，消除并发双 spawn 孤儿进程）；初始化失败统一 `client.shutdown()` 回收进程（整改后）。
 - 写透传：edit/write 后 `didSave` → 500ms 内联 + 5s 上限的诊断等待（整改前 25.5s 阻塞 turn，§4.5），经 `DiagnosticsLedger` 去重后追加进 tool_result（identity 保留行号，整改后）。
-- `formatOnWrite` 受 `SRCODE_ALLOW_LSP_FORMAT_ON_WRITE` 双重管控（policy + 执行点）。
+- `formatOnWrite` 受 `PICO_ALLOW_LSP_FORMAT_ON_WRITE` 双重管控（policy + 执行点）。
 - 已知残留：诊断等待仍为轮询窗口而非事件驱动；prewarm 已改用 `guessLanguageId` 规范映射（整改后）。
 
 ### 3.7 安全策略（policy）
@@ -199,15 +199,15 @@ flowchart TD
 
 | 开关 | env | 作用点 |
 |---|---|---|
-| 计划自动批准 | `SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL` | plan ExitPlanMode |
-| LSP 写后格式化 | `SRCODE_ALLOW_LSP_FORMAT_ON_WRITE` | lsp 写透传 |
-| 项目级 hooks | `SRCODE_ENABLE_PROJECT_HOOKS` | hooks 配置加载 |
-| 项目级 MCP | `SRCODE_ENABLE_PROJECT_MCP` | mcp 配置加载 |
-| 非交互项目代理（env-only） | `SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS` | subagent 门禁 |
+| 计划自动批准 | `PICO_ALLOW_UNATTENDED_PLAN_APPROVAL` | plan ExitPlanMode |
+| LSP 写后格式化 | `PICO_ALLOW_LSP_FORMAT_ON_WRITE` | lsp 写透传 |
+| 项目级 hooks | `PICO_ENABLE_PROJECT_HOOKS` | hooks 配置加载 |
+| 项目级 MCP | `PICO_ENABLE_PROJECT_MCP` | mcp 配置加载 |
+| 非交互项目代理（env-only） | `PICO_ALLOW_UNATTENDED_PROJECT_AGENTS` | subagent 门禁 |
 
 ### 3.8 构建与发布
 
-三阶段：**① 嵌入资源生成**（`src/generated/embedded-assets.ts`，prompts/skills/themes/agents 打包进二进制）→ **② `bun build --compile`**（~102MB 单文件）→ **③ 生成 build/package.json**（`piConfig.name="srcode"`，使上游读 `SRCODE_CODING_AGENT_DIR`）。产物旁需要 prompts/agents 目录（编译模式由嵌入式资源提取兜底，见 §6.2）。
+三阶段：**① 嵌入资源生成**（`src/generated/embedded-assets.ts`，prompts/skills/themes/agents 打包进二进制）→ **② `bun build --compile`**（~102MB 单文件）→ **③ 生成 build/package.json**（`piConfig.name="pico"`，使上游读 `PICO_CODING_AGENT_DIR`）。产物旁需要 prompts/agents 目录（编译模式由嵌入式资源提取兜底，见 §6.2）。
 
 ---
 
@@ -248,14 +248,14 @@ flowchart TD
 
 **坑 7：非交互模式跳过项目代理确认（中）**
 - 现象：确认条件 `confirmProjectAgents && ctx.hasUI`——非交互（CI/--print）下 `hasUI=false`，仓库可控的项目代理（含任意 evidence 命令）自动执行。
-- 方案：非交互模式默认拒绝，`SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS=1` 显式放行；与 plan 模式开关对齐。工具描述同步说明。
+- 方案：非交互模式默认拒绝，`PICO_ALLOW_UNATTENDED_PROJECT_AGENTS=1` 显式放行；与 plan 模式开关对齐。工具描述同步说明。
 
 **坑 8：settings.json 0644 明文密钥（中）**
 - 现象：`writeSettings` 未指定 mode（umask 022 → 0644），而 `env` stanza 存 TAVILY_API_KEY 等；对照 input-history 已用 0o600。
 - 方案：settings.ts / language.ts 写入统一 `mode: 0o600`。
 
 **坑 9：webSearch provider 强制选择被静默忽略（中）**
-- 现象：`SRCODE_SEARCH_PROVIDER=tavily` 但无 key 时静默走 Exa；非法值静默走 hybrid。setup 向导会写入该配置，用户配置与实际来源不一致且无提示。
+- 现象：`PICO_SEARCH_PROVIDER=tavily` 但无 key 时静默走 Exa；非法值静默走 hybrid。setup 向导会写入该配置，用户配置与实际来源不一致且无提示。
 - 方案：强制 tavily 缺 key、未知 provider 值 → 显式抛错，不发请求。
 
 **坑 10：私网防护误伤与绕过并存**
@@ -264,9 +264,9 @@ flowchart TD
 
 ### 4.4 数据一致性与边界
 
-**坑 11：SRCODE_MEMORY_DB 双后端共用导致数据互覆写（高）**
+**坑 11：PICO_MEMORY_DB 双后端共用导致数据互覆写（高）**
 - 现象：SQLite 库路径与 holographic JSON 路径共用同一 env；JSON 后端 `_save()` 会把整个 SQLite 库覆写为 JSON，`_load()` 对非 JSON 静默置空。
-- 方案：holographic 改用独立 `SRCODE_HOLOGRAPHIC_MEMORY_PATH`；`paths.test.ts` 增加互不覆盖断言。
+- 方案：holographic 改用独立 `PICO_HOLOGRAPHIC_MEMORY_PATH`；`paths.test.ts` 增加互不覆盖断言。
 
 **坑 12：contradict 无 scope 过滤，跨项目事实泄漏（中）**
 - 现象：`contradict()` SQL 无 scope 条件，工具层只传 category/limit；而 search/probe/list 均有 scope 隔离——其他项目的 project 事实全文出现在当前项目输出中。
@@ -348,34 +348,34 @@ flowchart TD
 
 ```bash
 bun run start      # 源码模式开发
-bun run build      # 三阶段构建，产物 build/srcode（~102MB 独立二进制）
+bun run build      # 三阶段构建，产物 build/pico（~102MB 独立二进制）
 bun run verify     # tsc --noEmit + 全量测试
 bun test tests/<feature>.test.ts  # 单文件测试
 ```
 
 编译模式注意：
 
-- 二进制内置 prompts/skills/themes/agents 资源，启动时解包到 `$TMPDIR/srcode-<rand>`（exit/SIGINT/SIGTERM 清理）；`PI_PACKAGE_DIR` 指向解包目录；
-- `build/package.json` 设 `piConfig.name="srcode"`，上游据此读 `SRCODE_CODING_AGENT_DIR`；
+- 二进制内置 prompts/skills/themes/agents 资源，启动时解包到 `$TMPDIR/pico-<rand>`（exit/SIGINT/SIGTERM 清理）；`PI_PACKAGE_DIR` 指向解包目录；
+- `build/package.json` 设 `piConfig.name="pico"`，上游据此读 `PICO_CODING_AGENT_DIR`；
 - 版本检查默认禁用（`PI_SKIP_VERSION_CHECK=1`），避免 wrapper 版本与上游版本误报更新。
 
 ### 6.3 关键环境变量
 
 | 变量 | 用途 | 默认 |
 |---|---|---|
-| `SRCODE_HOME` | 数据根目录重定位 | `~/.srcode` |
-| `SRCODE_MEMORY_DB` | SQLite 记忆库路径 | `$SRCODE_HOME/memory.db` |
-| `SRCODE_HOLOGRAPHIC_MEMORY_PATH` | holographic JSON 库路径（与上者互不影响） | `$SRCODE_HOME/holographic-memory.json` |
-| `SRCODE_MEMORY_DENY` | 记忆写入黑名单关键词（逗号分隔） | 空 |
-| `SRCODE_SEARCH_PROVIDER` | 搜索源强制：`exa` / `tavily` | hybrid |
+| `PICO_HOME` | 数据根目录重定位 | `~/.pico` |
+| `PICO_MEMORY_DB` | SQLite 记忆库路径 | `$PICO_HOME/memory.db` |
+| `PICO_HOLOGRAPHIC_MEMORY_PATH` | holographic JSON 库路径（与上者互不影响） | `$PICO_HOME/holographic-memory.json` |
+| `PICO_MEMORY_DENY` | 记忆写入黑名单关键词（逗号分隔） | 空 |
+| `PICO_SEARCH_PROVIDER` | 搜索源强制：`exa` / `tavily` | hybrid |
 | `TAVILY_API_KEY` | Tavily 密钥（settings.json `env` stanza 或环境） | 无 |
-| `SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL` | 非交互自动批准计划 | 0 |
-| `SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS` | 非交互放行项目代理 | 0 |
-| `SRCODE_ALLOW_LSP_FORMAT_ON_WRITE` | 允许 LSP 写后格式化二次写文件 | 0 |
-| `SRCODE_ENABLE_PROJECT_HOOKS` | 启用项目级 hooks.json | 0 |
-| `SRCODE_ENABLE_PROJECT_MCP` | 启用项目级 mcp-servers.json | 0 |
-| `SRCODE_CACHE_OPTIMIZER_DISABLE` 等 | 缓存优化器细分开关 | 开 |
-| `SRCODE_VISION_PROVIDER` / `SRCODE_VISION_MODEL` | 辅助视觉模型 | 无 |
+| `PICO_ALLOW_UNATTENDED_PLAN_APPROVAL` | 非交互自动批准计划 | 0 |
+| `PICO_ALLOW_UNATTENDED_PROJECT_AGENTS` | 非交互放行项目代理 | 0 |
+| `PICO_ALLOW_LSP_FORMAT_ON_WRITE` | 允许 LSP 写后格式化二次写文件 | 0 |
+| `PICO_ENABLE_PROJECT_HOOKS` | 启用项目级 hooks.json | 0 |
+| `PICO_ENABLE_PROJECT_MCP` | 启用项目级 mcp-servers.json | 0 |
+| `PICO_CACHE_OPTIMIZER_DISABLE` 等 | 缓存优化器细分开关 | 开 |
+| `PICO_VISION_PROVIDER` / `PICO_VISION_MODEL` | 辅助视觉模型 | 无 |
 | `PI_CACHE_RETENTION` | 上游缓存保留策略（optimizer 写入 long） | 无 |
 
 环境变量与 settings.json 的关系：env 优先；settings `env` stanza 在启动时水合（仅当环境未设置）；`safety` 字段为开关兜底。
@@ -383,7 +383,7 @@ bun test tests/<feature>.test.ts  # 单文件测试
 ### 6.4 数据目录
 
 ```
-~/.srcode/
+~/.pico/
 ├── agent/
 │   ├── settings.json        # 配置 + env 密钥（0600）
 │   ├── models.json          # 模型配置
@@ -401,13 +401,13 @@ bun test tests/<feature>.test.ts  # 单文件测试
 
 ### 6.5 日志与可观测性
 
-- **无统一日志系统**（已知局限）：关键节点走 stderr/console——hooks 警告（`[srcode hooks] …`）、事件订阅者异常（`[srcode events] …`）、LSP 启动失败（`[lsp] Failed to start …`）、记忆外部 provider 异常（`[memory] …`）、contradict 样本截断警告；
+- **无统一日志系统**（已知局限）：关键节点走 stderr/console——hooks 警告（`[pico hooks] …`）、事件订阅者异常（`[pico events] …`）、LSP 启动失败（`[lsp] Failed to start …`）、记忆外部 provider 异常（`[memory] …`）、contradict 样本截断警告；
 - 会话内工具执行实时可见（TUI）；`/doctor` 输出安全开关状态与能力清单；
-- 建议接入方向：统一 `[srcode]` 前缀 + 级别 + 可选日志文件，纳入迭代规划。
+- 建议接入方向：统一 `[pico]` 前缀 + 级别 + 可选日志文件，纳入迭代规划。
 
 ### 6.6 风险点位与运维注意事项
 
-1. **临时目录残留**：`srcode-subagent-*`（提示词）、`srcode-agent-output-*`（大输出）、`srcode-worktree-*`（worktree）由系统 tmp 清理兜底；异常退出（SIGKILL）可能残留，运维可定期清理；
+1. **临时目录残留**：`pico-subagent-*`（提示词）、`pico-agent-output-*`（大输出）、`pico-worktree-*`（worktree）由系统 tmp 清理兜底；异常退出（SIGKILL）可能残留，运维可定期清理；
 2. **磁盘满**：主题同步等 fs 写入已降级（不阻断 session_start）；记忆库 WAL 增长属正常，无 VACUUM 策略（纳入 L12 迭代）；
 3. **settings.json 权限**：已统一 0600，勿手动放宽；多用户机器注意 umask；
 4. **子代理进程**：异常挂起由 maxExecutionTimeMs 超时 + SIGKILL 升级兜底；并行任务并发上限 4、单批上限 8；

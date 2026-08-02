@@ -99,7 +99,7 @@ interface AgentRunSupport {
 }
 
 async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
-	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "srcode-subagent-"));
+	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pico-subagent-"));
 	const safeName = agentName.replace(/[^\w.-]+/g, "_");
 	const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
 	await withFileMutationQueue(filePath, async () => {
@@ -121,7 +121,7 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 		return { command: process.execPath, args };
 	}
 
-	return { command: "srcode", args };
+	return { command: "pico", args };
 }
 
 async function runSingleAgent(
@@ -175,7 +175,7 @@ async function runSingleAgent(
 
 		try {
 			await spillLargeFileOnlyOutput(currentResult, agent.name, agent.outputMode, PER_TASK_OUTPUT_CAP, {
-				tmpPrefix: path.join(os.tmpdir(), "srcode-agent-output-"),
+				tmpPrefix: path.join(os.tmpdir(), "pico-agent-output-"),
 				mkdtemp: (prefix) => fs.promises.mkdtemp(prefix),
 				writeFile: (filePath, content) => fs.promises.writeFile(filePath, content, { encoding: "utf-8", mode: 0o600 }),
 				now: () => Date.now(),
@@ -292,7 +292,7 @@ export async function runSubagentRequest(
 			if (!ctx.hasUI) {
 				// Non-interactive runs (CI, --print) cannot confirm — refuse
 				// unless explicitly opted in, mirroring plan-mode's
-				// SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL gate.
+				// PICO_ALLOW_UNATTENDED_PLAN_APPROVAL gate.
 				if (!allowUnattendedProjectAgents()) {
 					return {
 						content: [
@@ -300,7 +300,7 @@ export async function runSubagentRequest(
 								type: "text",
 								text:
 									"Canceled: project-local agents need approval in this non-interactive run. " +
-									"Set SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS=1 to allow them.",
+									"Set PICO_ALLOW_UNATTENDED_PROJECT_AGENTS=1 to allow them.",
 							},
 						],
 						details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),

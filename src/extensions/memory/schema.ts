@@ -1,5 +1,5 @@
 /**
- * SQLite schema for the srcode memory store.
+ * SQLite schema for the pico memory store.
  *
  * Ported from hermes-agent's holographic memory plugin
  * (~/hermes-agent/plugins/memory/holographic/store.py:_SCHEMA):

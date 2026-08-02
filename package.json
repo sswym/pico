@@ -1,16 +1,16 @@
 {
-  "name": "srcode",
+  "name": "pico",
   "version": "0.1.0",
   "license": "MIT",
   "description": "Vibe coding agent with long-term memory",
   "type": "module",
   "private": true,
   "bin": {
-    "srcode": "./bin/srcode.ts"
+    "pico": "./bin/pico.ts"
   },
   "scripts": {
     "build": "bun run scripts/build.ts",
-    "start": "bun run bin/srcode.ts",
+    "start": "bun run bin/pico.ts",
     "test": "bun test",
     "verify": "bunx tsc --noEmit && bun test",
     "update-deps": "bash scripts/update-deps.sh"
@@ -20,10 +20,10 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.82.1",
-    "@earendil-works/pi-ai": "^0.82.1",
-    "@earendil-works/pi-coding-agent": "^0.82.1",
-    "@earendil-works/pi-tui": "^0.82.1",
+    "@earendil-works/pi-agent-core": "^0.83.0",
+    "@earendil-works/pi-ai": "^0.83.0",
+    "@earendil-works/pi-coding-agent": "^0.83.0",
+    "@earendil-works/pi-tui": "^0.83.0",
     "ignore": "^7.0.5",
     "node-html-parser": "^9.0.0"
   }

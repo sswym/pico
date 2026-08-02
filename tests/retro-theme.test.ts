@@ -33,16 +33,16 @@ function fakeCtx(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
-test("renderClaudeLikeFooterLine includes srcode, statuses, context bar, model, and branch", () => {
+test("renderClaudeLikeFooterLine includes pico, statuses, context bar, model, and branch", () => {
   const line = renderClaudeLikeFooterLine(120, fakeCtx({
     getContextUsage: () => ({ tokens: 19000, percent: 9.5, contextWindow: 200000 }),
-    cwd: "/home/david/srcode",
+    cwd: "/home/david/pico",
   }), plainTheme as any, {
     getGitBranch: () => "main",
     getExtensionStatuses: () => ["MCP: 1 connected", "LSP: typescript-language-server"],
   }, { staged: 2, unstaged: 1, untracked: 3 }, { getThinkingLevel: () => "medium" });
 
-  expect(line).toContain("dir srcode");
+  expect(line).toContain("dir pico");
   expect(line).toContain("think:med");
   expect(line).toContain("MCP 1");
   expect(line).toContain("LSP: typescript");
@@ -59,7 +59,7 @@ test("renderPrimaryStatusLine matches the editor-above status direction", () => 
   const line = renderPrimaryStatusLine(120, fakeCtx({
     model: { id: "deepseek-v4-flash-free" },
     getContextUsage: () => ({ tokens: 0, percent: 0, contextWindow: 200000 }),
-    cwd: "/home/david/srcode",
+    cwd: "/home/david/pico",
   }), plainTheme as any, {
     branch: "ccg",
     staged: 1,
@@ -69,7 +69,7 @@ test("renderPrimaryStatusLine matches the editor-above status direction", () => 
 
   expect(line).toContain("deepseek-v4-flash-free");
   expect(line).toContain("think:med");
-  expect(line).toContain("dir srcode");
+  expect(line).toContain("dir pico");
   expect(line).toContain("⎇ ccg *2 +1 ?2");
   expect(line).toContain("◫ 0/200k (0.0%) AC");
 });
@@ -105,7 +105,7 @@ test("renderClaudeLikeFooterLine keeps narrow output within width", () => {
   });
 
   expect(visibleWidth(line)).toBeLessThanOrEqual(42);
-  expect(line).toContain("srcode");
+  expect(line).toContain("pico");
 });
 
 test("renderClaudeLikeFooterLine accepts non-array extension statuses", () => {
@@ -196,5 +196,5 @@ test("retroThemeExtension installs theme, working indicator, and footer", async 
     getContextUsage: () => ({ tokens: 0, percent: 0, contextWindow: 200000 }),
   });
 
-  expect(calls).toEqual(["theme:retro-terminal", "indicator", "widget:srcode-primary-status", "footer"]);
+  expect(calls).toEqual(["theme:retro-terminal", "indicator", "widget:pico-primary-status", "footer"]);
 });

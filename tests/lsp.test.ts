@@ -1,5 +1,5 @@
 /**
- * srcode LSP extension unit tests.
+ * pico LSP extension unit tests.
  *
  * Tests the workspace edit engine (edits.ts) and diagnostics ledger
  * (diagnostics-ledger.ts) — the two new modules with testable pure logic.
@@ -204,11 +204,11 @@ describe("LSP action risk classification", () => {
 });
 
 describe("LSP config", () => {
-  test("loadConfig reads user config from SRCODE_HOME and parses formatOnWrite", () => {
-    const oldHome = process.env.SRCODE_HOME;
-    const home = mkdtempSync(join(tmpdir(), "srcode-lsp-home-"));
-    const workspace = mkdtempSync(join(tmpdir(), "srcode-lsp-workspace-"));
-    process.env.SRCODE_HOME = home;
+  test("loadConfig reads user config from PICO_HOME and parses formatOnWrite", () => {
+    const oldHome = process.env.PICO_HOME;
+    const home = mkdtempSync(join(tmpdir(), "pico-lsp-home-"));
+    const workspace = mkdtempSync(join(tmpdir(), "pico-lsp-workspace-"));
+    process.env.PICO_HOME = home;
     mkdirSync(home, { recursive: true });
     writeFileSync(join(home, "lsp.json"), JSON.stringify({ formatOnWrite: true, idleTimeoutMs: 1234 }), "utf8");
 
@@ -217,8 +217,8 @@ describe("LSP config", () => {
       expect(config.formatOnWrite).toBe(true);
       expect(config.idleTimeoutMs).toBe(1234);
     } finally {
-      if (oldHome === undefined) delete process.env.SRCODE_HOME;
-      else process.env.SRCODE_HOME = oldHome;
+      if (oldHome === undefined) delete process.env.PICO_HOME;
+      else process.env.PICO_HOME = oldHome;
       rmSync(home, { recursive: true, force: true });
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -242,7 +242,7 @@ describe("LspManager runtime state", () => {
   });
 
   test("typescript-native skips tsc commands without native LSP support", () => {
-    const dir = mkdtempSync(join(tmpdir(), "srcode-lsp-probe-"));
+    const dir = mkdtempSync(join(tmpdir(), "pico-lsp-probe-"));
     const oldTsc = join(dir, "old-tsc");
     const nativeTsc = join(dir, "native-tsc");
 
@@ -283,8 +283,8 @@ describe("LspManager runtime state", () => {
   });
 
   test("syncDocument resolves relative paths from session cwd, not process cwd", () => {
-    const processDir = mkdtempSync(join(tmpdir(), "srcode-lsp-process-"));
-    const sessionDir = mkdtempSync(join(tmpdir(), "srcode-lsp-session-"));
+    const processDir = mkdtempSync(join(tmpdir(), "pico-lsp-process-"));
+    const sessionDir = mkdtempSync(join(tmpdir(), "pico-lsp-session-"));
     const oldCwd = process.cwd();
     writeFileSync(join(processDir, "same.ts"), "const fromProcess = true;\n", "utf8");
     writeFileSync(join(sessionDir, "same.ts"), "const fromSession = true;\n", "utf8");
@@ -323,7 +323,7 @@ describe("LspManager runtime state", () => {
   });
 
   test("syncDocumentForFile uses the server matching the target file type", async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), "srcode-lsp-file-server-"));
+    const sessionDir = mkdtempSync(join(tmpdir(), "pico-lsp-file-server-"));
     writeFileSync(join(sessionDir, "app.ts"), "const app = true;\n", "utf8");
     writeFileSync(join(sessionDir, "script.py"), "print('ok')\n", "utf8");
 
@@ -370,7 +370,7 @@ describe("LspManager runtime state", () => {
   });
 
   test("syncDocument sends didChange when an open file changed on disk", () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), "srcode-lsp-didchange-"));
+    const sessionDir = mkdtempSync(join(tmpdir(), "pico-lsp-didchange-"));
     const filePath = join(sessionDir, "same.ts");
     writeFileSync(filePath, "const before = true;\n", "utf8");
 
@@ -440,7 +440,7 @@ describe("LSP action helpers", () => {
   });
 
   test("resolveSymbolColumn finds the requested occurrence on a 1-based line", () => {
-    const dir = mkdtempSync(join(tmpdir(), "srcode-lsp-action-"));
+    const dir = mkdtempSync(join(tmpdir(), "pico-lsp-action-"));
     const file = join(dir, "sample.ts");
     writeFileSync(file, "const alpha = alpha + beta;\nconst beta = 1;\n", "utf8");
     try {

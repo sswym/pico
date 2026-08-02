@@ -42,7 +42,7 @@ export function createWorktree(
 	// failed — from colliding with `git worktree add` on reuse.
 	const unique = `${index}-${process.pid}-${Date.now()}`;
 	const branchName = `subagent/${agentName}-${unique}`;
-	const worktreeDir = path.join(os.tmpdir(), `srcode-worktree-${agentName}-${unique}`);
+	const worktreeDir = path.join(os.tmpdir(), `pico-worktree-${agentName}-${unique}`);
 
 	execSync(
 		`git worktree add --detach "${worktreeDir}" HEAD`,
@@ -148,10 +148,10 @@ export function commitWorktreeChanges(
 			stdio: "pipe",
 			env: {
 				...process.env,
-				GIT_AUTHOR_NAME: "srcode-subagent",
-				GIT_AUTHOR_EMAIL: "subagent@srcode.local",
-				GIT_COMMITTER_NAME: "srcode-subagent",
-				GIT_COMMITTER_EMAIL: "subagent@srcode.local",
+				GIT_AUTHOR_NAME: "pico-subagent",
+				GIT_AUTHOR_EMAIL: "subagent@pico.local",
+				GIT_COMMITTER_NAME: "pico-subagent",
+				GIT_COMMITTER_EMAIL: "subagent@pico.local",
 			},
 		});
 		return true;

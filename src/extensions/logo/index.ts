@@ -1,6 +1,6 @@
 /**
  * logo extension — replaces pi-coding-agent's built-in startup header with
- * a compact Claude Code-like srcode header + a one-line keybinding strip.
+ * a compact Claude Code-like pico header + a one-line keybinding strip.
  *
  * Why a custom header (not just an extra widget):
  *   pi's default header already renders "pi v0.79.3" + the long hint block.
@@ -70,7 +70,7 @@ function modelIdFromCtx(ctx?: { model?: { id?: string; provider?: string } }): s
  * extension wraps this in a Text component via setHeader().
  *
  * Format:
- *   ✻ srcode v<srcode-version>
+ *   ✻ pico v<pico-version>
  *   / commands · ! bash · F7 todos
  *
  * Colours degrade gracefully — the upstream `theme.fg` is a no-op when the
@@ -80,12 +80,12 @@ export function renderLogoHeader(theme: {
   fg: (color: string, text: string) => string;
   bold: (text: string) => string;
 }, width = 96, ctx?: { model?: { id?: string; provider?: string } }): string {
-  const srcodeVersion = (pkg as { version?: string }).version ?? "0.0.0";
+  const picoVersion = (pkg as { version?: string }).version ?? "0.0.0";
   if (width < 72) {
     const brand =
       theme.fg("accent", "✻ ") +
-      theme.bold(theme.fg("accent", "srcode")) +
-      theme.fg("dim", ` v${srcodeVersion}`);
+      theme.bold(theme.fg("accent", "pico")) +
+      theme.fg("dim", ` v${picoVersion}`);
     const hints = theme.fg("dim", "/ commands") + theme.fg("muted", " · ") + theme.fg("dim", "! bash");
     return `${brand}\n${hints}`;
   }
@@ -116,11 +116,11 @@ export function renderLogoHeader(theme: {
     theme.fg("text", "- status in footer"),
     theme.fg("muted", "─".repeat(Math.max(0, rightWidth - 2))),
     theme.bold(theme.fg("accent", "Recent sessions")),
-    theme.fg("text", "• srcode"),
+    theme.fg("text", "• pico"),
     "",
   ];
   const rowCount = Math.max(leftRows.length, rightRows.length);
-  const title = `─── srcode v${srcodeVersion} `;
+  const title = `─── pico v${picoVersion} `;
   const lines = [theme.fg("border", `╭${title}${"─".repeat(Math.max(0, boxWidth - visibleWidth(title) - 2))}╮`)];
   for (let index = 0; index < rowCount; index++) {
     const left = centerVisible(leftRows[index] ?? "", leftWidth);

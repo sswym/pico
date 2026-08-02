@@ -1,12 +1,12 @@
 /**
- * Subagent configuration — agent overrides loaded from ~/.srcode/subagent.json.
+ * Subagent configuration — agent overrides loaded from ~/.pico/subagent.json.
  *
  * Patterned after hooks/config.ts: missing file is not an error,
  * malformed JSON is logged once and skipped.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { srcodeHome } from "../paths.ts";
+import { picoHome } from "../paths.ts";
 import type { AgentConfig } from "./agents.ts";
 
 export interface AgentOverride {
@@ -29,7 +29,7 @@ function warnOnce(path: string, err: unknown): void {
 	if (warnedPaths.has(path)) return;
 	warnedPaths.add(path);
 	const msg = err instanceof Error ? err.message : String(err);
-	console.warn(`[srcode subagent] ignoring ${path}: ${msg}`);
+	console.warn(`[pico subagent] ignoring ${path}: ${msg}`);
 }
 
 /** Reset the once-per-path warning cache. Test-only. */
@@ -38,7 +38,7 @@ export function __resetWarnedPaths(): void {
 }
 
 export function loadSubagentConfig(): SubagentConfig {
-	const configPath = join(srcodeHome(), "subagent.json");
+	const configPath = join(picoHome(), "subagent.json");
 	if (!existsSync(configPath)) return {};
 	try {
 		const raw = JSON.parse(readFileSync(configPath, "utf8"));

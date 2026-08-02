@@ -1,11 +1,11 @@
 /**
- * srcode hooks — config loader.
+ * pico hooks — config loader.
  *
  * Hook config is JSON, merged from two layers when project hooks are
  * explicitly enabled (later layer appended after the earlier; duplicates
  * collapsed by `event|tool|command`):
- *   1) ~/.srcode/hooks.json (or $SRCODE_HOME/srcode/hooks.json)
- *   2) <cwd>/.srcode/hooks.json (requires SRCODE_ENABLE_PROJECT_HOOKS=1)
+ *   1) ~/.pico/hooks.json (or $PICO_HOME/pico/hooks.json)
+ *   2) <cwd>/.pico/hooks.json (requires PICO_ENABLE_PROJECT_HOOKS=1)
  *
  * Missing files are not an error. Malformed JSON / wrong shape is logged
  * once per path and the layer is skipped — we never throw out of
@@ -13,7 +13,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { srcodeHome } from "../paths.ts";
+import { picoHome } from "../paths.ts";
 import { allowProjectHooks } from "../policy.ts";
 
 export type HookEvent = "PreToolUse" | "PostToolUse" | "PreSessionEnd" | "PostUserMessage";
@@ -49,7 +49,7 @@ function warnOnce(path: string, err: unknown): void {
   if (warnedPaths.has(path)) return;
   warnedPaths.add(path);
   const msg = err instanceof Error ? err.message : String(err);
-  console.warn(`[srcode hooks] ignoring ${path}: ${msg}`);
+  console.warn(`[pico hooks] ignoring ${path}: ${msg}`);
 }
 
 /** Reset the once-per-path warning cache. Test-only. */
@@ -59,8 +59,8 @@ export function __resetWarnedPaths(): void {
 
 export function hookConfigPaths(cwd: string): string[] {
   return [
-    join(srcodeHome(), "hooks.json"),
-    join(resolve(cwd), ".srcode", "hooks.json"),
+    join(picoHome(), "hooks.json"),
+    join(resolve(cwd), ".pico", "hooks.json"),
   ];
 }
 
@@ -110,7 +110,7 @@ function dedupeKey(h: Hook): string {
 
 /**
  * Load and merge hooks for the given working directory. Home layer runs
- * first; cwd layer is appended afterwards when SRCODE_ENABLE_PROJECT_HOOKS=1.
+ * first; cwd layer is appended afterwards when PICO_ENABLE_PROJECT_HOOKS=1.
  * Order is preserved within each
  * layer, and duplicates (same event+tool+command) keep the first
  * occurrence — i.e. home wins over cwd if the cwd layer repeats it.

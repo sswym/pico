@@ -19,18 +19,18 @@ const envStack: Array<{ home: string | undefined; projectMcp: string | undefined
 
 function pushEnv(): void {
   envStack.push({
-    home: process.env.SRCODE_HOME,
-    projectMcp: process.env.SRCODE_ENABLE_PROJECT_MCP,
+    home: process.env.PICO_HOME,
+    projectMcp: process.env.PICO_ENABLE_PROJECT_MCP,
   });
 }
 
 afterEach(() => {
   const prev = envStack.pop();
   if (!prev) return;
-  if (prev.home === undefined) delete process.env.SRCODE_HOME;
-  else process.env.SRCODE_HOME = prev.home;
-  if (prev.projectMcp === undefined) delete process.env.SRCODE_ENABLE_PROJECT_MCP;
-  else process.env.SRCODE_ENABLE_PROJECT_MCP = prev.projectMcp;
+  if (prev.home === undefined) delete process.env.PICO_HOME;
+  else process.env.PICO_HOME = prev.home;
+  if (prev.projectMcp === undefined) delete process.env.PICO_ENABLE_PROJECT_MCP;
+  else process.env.PICO_ENABLE_PROJECT_MCP = prev.projectMcp;
 });
 
 function makeHandle(id: string): McpServerHandle {
@@ -72,22 +72,22 @@ function makeFakePi() {
 
 test("loadMcpConfig skips project config unless explicitly enabled", () => {
   pushEnv();
-  const home = mkdtempSync(join(tmpdir(), "srcode-mcp-home-"));
-  const cwd = mkdtempSync(join(tmpdir(), "srcode-mcp-cwd-"));
-  process.env.SRCODE_HOME = home;
-  delete process.env.SRCODE_ENABLE_PROJECT_MCP;
+  const home = mkdtempSync(join(tmpdir(), "pico-mcp-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pico-mcp-cwd-"));
+  process.env.PICO_HOME = home;
+  delete process.env.PICO_ENABLE_PROJECT_MCP;
   try {
     writeFileSync(join(home, "mcp-servers.json"), JSON.stringify({
       mcpServers: { docs: { command: "home-docs" } },
     }));
-    mkdirSync(join(cwd, ".srcode"), { recursive: true });
-    writeFileSync(join(cwd, ".srcode", "mcp-servers.json"), JSON.stringify({
+    mkdirSync(join(cwd, ".pico"), { recursive: true });
+    writeFileSync(join(cwd, ".pico", "mcp-servers.json"), JSON.stringify({
       mcpServers: { docs: { command: "project-docs" }, local: { command: "local" } },
     }));
 
     expect(loadMcpConfig(cwd)).toEqual({ docs: { command: "home-docs" } });
 
-    process.env.SRCODE_ENABLE_PROJECT_MCP = "1";
+    process.env.PICO_ENABLE_PROJECT_MCP = "1";
     expect(loadMcpConfig(cwd)).toEqual({
       docs: { command: "project-docs" },
       local: { command: "local" },

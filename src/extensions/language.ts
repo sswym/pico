@@ -9,12 +9,12 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import languageTemplate from "../prompts/language-system.md" with { type: "text" };
-import { srcodeSettingsPath } from "./paths.ts";
+import { picoSettingsPath } from "./paths.ts";
 
 const DEFAULT_LANGUAGE = "简体中文";
 
 function getSettingsPath(): string {
-  return srcodeSettingsPath();
+  return picoSettingsPath();
 }
 
 function readSettings(): Record<string, unknown> {

@@ -29,7 +29,7 @@ let dbPath: string;
 let store: MemoryStore;
 
 beforeEach(() => {
-  dbPath = join(tmpdir(), `srcode-mem-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  dbPath = join(tmpdir(), `pico-mem-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
   store = new MemoryStore(dbPath);
 });
 
@@ -299,13 +299,13 @@ test("list with scope filters correctly", () => {
 });
 
 test("memoryExtension captures cwd on session_start before first recall", async () => {
-  const oldEnv = process.env.SRCODE_MEMORY_DB;
-  const tempDb = join(tmpdir(), `srcode-ext-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
-  const cwd = "/tmp/srcode-memory-project";
+  const oldEnv = process.env.PICO_MEMORY_DB;
+  const tempDb = join(tmpdir(), `pico-ext-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const cwd = "/tmp/pico-memory-project";
   const seedStore = new MemoryStore(tempDb);
   seedStore.add("this project uses redux toolkit", { category: "project", scope: "project", cwd });
   seedStore.close();
-  process.env.SRCODE_MEMORY_DB = tempDb;
+  process.env.PICO_MEMORY_DB = tempDb;
 
   const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
   const fakePi: any = {
@@ -333,8 +333,8 @@ test("memoryExtension captures cwd on session_start before first recall", async 
 
     await handlers["session_shutdown"]![0]!({}, { cwd });
   } finally {
-    if (oldEnv === undefined) delete process.env.SRCODE_MEMORY_DB;
-    else process.env.SRCODE_MEMORY_DB = oldEnv;
+    if (oldEnv === undefined) delete process.env.PICO_MEMORY_DB;
+    else process.env.PICO_MEMORY_DB = oldEnv;
     try { rmSync(tempDb); } catch { }
     try { rmSync(`${tempDb}-wal`); } catch { }
     try { rmSync(`${tempDb}-shm`); } catch { }
@@ -342,9 +342,9 @@ test("memoryExtension captures cwd on session_start before first recall", async 
 });
 
 test("memoryExtension refreshes recall on each turn instead of freezing the first query", async () => {
-  const oldEnv = process.env.SRCODE_MEMORY_DB;
-  const tempDb = join(tmpdir(), `srcode-ext-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
-  process.env.SRCODE_MEMORY_DB = tempDb;
+  const oldEnv = process.env.PICO_MEMORY_DB;
+  const tempDb = join(tmpdir(), `pico-ext-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  process.env.PICO_MEMORY_DB = tempDb;
 
   const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
   const fakePi: any = {
@@ -359,31 +359,31 @@ test("memoryExtension refreshes recall on each turn instead of freezing the firs
   try {
     memoryExtension(fakePi);
     await handlers["session_start"]![0]!({}, {
-      cwd: "/tmp/srcode-memory-refresh",
+      cwd: "/tmp/pico-memory-refresh",
       sessionManager: { getSessionId: () => "memory-session" },
     });
 
     const first = await handlers["before_agent_start"]![0]!({
       prompt: "redux toolkit",
       systemPrompt: "BASE",
-    }, { cwd: "/tmp/srcode-memory-refresh" });
+    }, { cwd: "/tmp/pico-memory-refresh" });
     expect(first.systemPrompt).toContain("BASE");
     expect(first.systemPrompt).not.toContain("redux toolkit");
 
     const external = new MemoryStore(tempDb);
-    external.add("this project uses redux toolkit", { category: "project", scope: "project", cwd: "/tmp/srcode-memory-refresh" });
+    external.add("this project uses redux toolkit", { category: "project", scope: "project", cwd: "/tmp/pico-memory-refresh" });
     external.close();
 
     const second = await handlers["before_agent_start"]![0]!({
       prompt: "redux toolkit",
       systemPrompt: "BASE",
-    }, { cwd: "/tmp/srcode-memory-refresh" });
+    }, { cwd: "/tmp/pico-memory-refresh" });
     expect(second.systemPrompt).toContain("this project uses redux toolkit");
 
-    await handlers["session_shutdown"]![0]!({}, { cwd: "/tmp/srcode-memory-refresh" });
+    await handlers["session_shutdown"]![0]!({}, { cwd: "/tmp/pico-memory-refresh" });
   } finally {
-    if (oldEnv === undefined) delete process.env.SRCODE_MEMORY_DB;
-    else process.env.SRCODE_MEMORY_DB = oldEnv;
+    if (oldEnv === undefined) delete process.env.PICO_MEMORY_DB;
+    else process.env.PICO_MEMORY_DB = oldEnv;
     try { rmSync(tempDb); } catch { }
     try { rmSync(`${tempDb}-wal`); } catch { }
     try { rmSync(`${tempDb}-shm`); } catch { }
@@ -635,17 +635,17 @@ function makeFakeMemoryProvider(overrides: Partial<MemoryProvider> = {}): Memory
 }
 
 function withTestManager(fn: (manager: ProviderManager) => void): void {
-  const oldEnv = process.env.SRCODE_MEMORY_DB;
-  const tempDb = join(tmpdir(), `srcode-mgr-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
-  process.env.SRCODE_MEMORY_DB = tempDb;
+  const oldEnv = process.env.PICO_MEMORY_DB;
+  const tempDb = join(tmpdir(), `pico-mgr-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  process.env.PICO_MEMORY_DB = tempDb;
   try {
     const manager = new ProviderManager();
     fn(manager);
   } finally {
     if (oldEnv === undefined) {
-      delete process.env.SRCODE_MEMORY_DB;
+      delete process.env.PICO_MEMORY_DB;
     } else {
-      process.env.SRCODE_MEMORY_DB = oldEnv;
+      process.env.PICO_MEMORY_DB = oldEnv;
     }
     try { rmSync(tempDb); } catch { }
     try { rmSync(`${tempDb}-wal`); } catch { }
@@ -694,16 +694,16 @@ test("ProviderManager.registerExternalProvider rejects reserved tool name", () =
 test("ProviderManager exposes available providers and can save backend selection", () => {
   expect(ProviderManager.availableProviders()).toContain("builtin");
 
-  const oldEnv = process.env.SRCODE_HOME;
-  const home = join(tmpdir(), `srcode-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  process.env.SRCODE_HOME = home;
+  const oldEnv = process.env.PICO_HOME;
+  const home = join(tmpdir(), `pico-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  process.env.PICO_HOME = home;
   try {
     const result = ProviderManager.saveBackend("builtin");
     expect(result.ok).toBe(true);
     expect(existsSync(join(home, "agent", "settings.json"))).toBe(true);
   } finally {
-    if (oldEnv === undefined) delete process.env.SRCODE_HOME;
-    else process.env.SRCODE_HOME = oldEnv;
+    if (oldEnv === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = oldEnv;
     try { rmSync(home, { recursive: true, force: true }); } catch { }
   }
 });
@@ -763,7 +763,7 @@ test("ProviderManager.notifyMemoryToolWrite does not throw when onMemoryWrite th
 });
 
 test("CuratedMemoryStore persists notes and system prompt snapshot independently", () => {
-  const dir = join(tmpdir(), `srcode-curated-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(tmpdir(), `pico-curated-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const curated = new CuratedMemoryStore({ dir });
   curated.loadFromDisk();
 
@@ -786,7 +786,7 @@ test("CuratedMemoryStore persists notes and system prompt snapshot independently
 });
 
 test("memory tool note actions route through curated memory store", () => {
-  const dir = join(tmpdir(), `srcode-curated-tool-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(tmpdir(), `pico-curated-tool-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const curated = new CuratedMemoryStore({ dir });
   curated.loadFromDisk();
   const fakeProvider = makeFakeMemoryProvider();
@@ -844,9 +844,9 @@ test("memory tool passes project scope to related and reason providers", () => {
 });
 
 test("ProviderManager.syncTurn fans out to registered providers", async () => {
-  const oldEnv = process.env.SRCODE_MEMORY_DB;
-  const tempDb = join(tmpdir(), `srcode-mgr-sync-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
-  process.env.SRCODE_MEMORY_DB = tempDb;
+  const oldEnv = process.env.PICO_MEMORY_DB;
+  const tempDb = join(tmpdir(), `pico-mgr-sync-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  process.env.PICO_MEMORY_DB = tempDb;
   try {
     const manager = new ProviderManager();
     const calls: Array<{ user: string; assistant: string; sessionId?: string }> = [];
@@ -860,8 +860,8 @@ test("ProviderManager.syncTurn fans out to registered providers", async () => {
     await manager.flushPending();
     expect(calls).toEqual([{ user: "user turn", assistant: "assistant turn", sessionId: "s1" }]);
   } finally {
-    if (oldEnv === undefined) delete process.env.SRCODE_MEMORY_DB;
-    else process.env.SRCODE_MEMORY_DB = oldEnv;
+    if (oldEnv === undefined) delete process.env.PICO_MEMORY_DB;
+    else process.env.PICO_MEMORY_DB = oldEnv;
     try { rmSync(tempDb); } catch { }
     try { rmSync(`${tempDb}-wal`); } catch { }
     try { rmSync(`${tempDb}-shm`); } catch { }
@@ -891,10 +891,10 @@ test("correction whose content already exists does not penalise the original", (
 async function withCommandDeps(
   fn: (deps: MemoryCommandDeps, sink: { notified: string[]; confirmAnswer: boolean }) => Promise<void>,
 ): Promise<void> {
-  const oldEnv = process.env.SRCODE_MEMORY_DB;
-  const tempDb = join(tmpdir(), `srcode-cmd-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
-  const notesDir = mkdtempSync(join(tmpdir(), "srcode-cmd-notes-"));
-  process.env.SRCODE_MEMORY_DB = tempDb;
+  const oldEnv = process.env.PICO_MEMORY_DB;
+  const tempDb = join(tmpdir(), `pico-cmd-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const notesDir = mkdtempSync(join(tmpdir(), "pico-cmd-notes-"));
+  process.env.PICO_MEMORY_DB = tempDb;
   const sink = { notified: [] as string[], confirmAnswer: true };
   try {
     const manager = new ProviderManager();
@@ -908,8 +908,8 @@ async function withCommandDeps(
       confirm: async () => sink.confirmAnswer,
     }, sink);
   } finally {
-    if (oldEnv === undefined) delete process.env.SRCODE_MEMORY_DB;
-    else process.env.SRCODE_MEMORY_DB = oldEnv;
+    if (oldEnv === undefined) delete process.env.PICO_MEMORY_DB;
+    else process.env.PICO_MEMORY_DB = oldEnv;
     try { rmSync(tempDb); } catch { }
     try { rmSync(`${tempDb}-wal`); } catch { }
     try { rmSync(`${tempDb}-shm`); } catch { }
@@ -1026,22 +1026,22 @@ test("/memory count and status report store state", async () => {
 
 test("/memory notes add, list, replace, and remove round-trip", async () => {
   await withCommandDeps(async (deps) => {
-    expect(await executeMemoryCommand("notes add user works in the srcode repo", deps))
+    expect(await executeMemoryCommand("notes add user works in the pico repo", deps))
       .toBe("Added user note.");
 
     const listed = await executeMemoryCommand("notes", deps);
     expect(listed).toContain("USER.md:");
-    expect(listed).toContain("works in the srcode repo");
+    expect(listed).toContain("works in the pico repo");
     expect(listed).toContain("MEMORY.md:");
     expect(listed).toContain("  (empty)");
 
-    expect(await executeMemoryCommand("notes replace user works in the srcode repo => maintains srcode", deps))
+    expect(await executeMemoryCommand("notes replace user works in the pico repo => maintains pico", deps))
       .toBe("Replaced user note.");
     // Target filtering requires the explicit `list` subcommand; a bare
     // `notes user` parses `user` as the subcommand, not the target.
-    expect(await executeMemoryCommand("notes list user", deps)).toContain("maintains srcode");
+    expect(await executeMemoryCommand("notes list user", deps)).toContain("maintains pico");
 
-    expect(await executeMemoryCommand("notes remove user maintains srcode", deps))
+    expect(await executeMemoryCommand("notes remove user maintains pico", deps))
       .toBe("Removed user note.");
     expect(deps.curated.count("user")).toBe(0);
   });

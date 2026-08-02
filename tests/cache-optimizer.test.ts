@@ -31,7 +31,7 @@ function makeSkill(name: string) {
   return {
     name,
     description: `Detailed description for ${name} that is intentionally long enough to make compression useful.`,
-    filePath: `/home/user/.srcode/skills/${name}/SKILL.md`,
+    filePath: `/home/user/.pico/skills/${name}/SKILL.md`,
     disableModelInvocation: false,
   };
 }
@@ -39,11 +39,11 @@ function makeSkill(name: string) {
 const savedEnv = { ...process.env };
 
 beforeEach(() => {
-  delete process.env.SRCODE_CACHE_OPTIMIZER_DISABLE;
-  delete process.env.SRCODE_CACHE_OPTIMIZER_NO_PROMPT_REWRITE;
-  delete process.env.SRCODE_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION;
-  delete process.env.SRCODE_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY;
-  delete process.env.SRCODE_CACHE_OPTIMIZER_ALLOW_PROXY_LONG_RETENTION;
+  delete process.env.PICO_CACHE_OPTIMIZER_DISABLE;
+  delete process.env.PICO_CACHE_OPTIMIZER_NO_PROMPT_REWRITE;
+  delete process.env.PICO_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION;
+  delete process.env.PICO_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY;
+  delete process.env.PICO_CACHE_OPTIMIZER_ALLOW_PROXY_LONG_RETENTION;
   delete process.env.PI_CACHE_OPTIMIZER_NO_PROMPT_REWRITE;
   delete process.env.PI_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION;
   delete process.env.PI_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY;
@@ -84,7 +84,7 @@ test("compresses verbose skill block into deterministic index", () => {
 
   const result = compressSkillsInSystemPrompt(prompt, makeOpts({ skills }));
 
-  expect(result).toContain("Skills under /home/user/.srcode/skills/<name>/SKILL.md:");
+  expect(result).toContain("Skills under /home/user/.pico/skills/<name>/SKILL.md:");
   expect(result).toContain("alpha, memory, zeta");
   expect(result).not.toContain("<available_skills>");
   expect(result.length).toBeLessThan(prompt.length);

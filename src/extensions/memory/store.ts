@@ -1,5 +1,5 @@
 /**
- * MemoryStore — SQLite-backed long-term memory for srcode.
+ * MemoryStore — SQLite-backed long-term memory for pico.
  *
  * Extended from hermes holographic store with:
  * - Entity extraction and linking (probe/related/reason support)

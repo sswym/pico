@@ -1,5 +1,5 @@
 /**
- * srcode web extension.
+ * pico web extension.
  *
  * Registers two tools:
  *   - webFetch  — fetch a URL, return simplified Markdown (15-min cache).
@@ -109,9 +109,9 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       description:
         "Search the public web. Default provider is Exa MCP (public, no key). " +
         "When TAVILY_API_KEY is available, Exa + Tavily are merged (hybrid mode). " +
-        "Set SRCODE_SEARCH_PROVIDER=exa or =tavily to force a single provider.",
+        "Set PICO_SEARCH_PROVIDER=exa or =tavily to force a single provider.",
       promptSnippet:
-        "webSearch — query the public web (Exa + Tavily hybrid by default; set SRCODE_SEARCH_PROVIDER to override). Returns title/url/snippet triples.",
+        "webSearch — query the public web (Exa + Tavily hybrid by default; set PICO_SEARCH_PROVIDER to override). Returns title/url/snippet triples.",
       parameters: WebSearchParams,
       renderCall: renderWebSearchCall,
       renderResult: renderWebSearchResult,

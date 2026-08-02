@@ -1,5 +1,5 @@
 /**
- * vibe extension — injects srcode's "vibe coding" behavioural guidelines into
+ * vibe extension — injects pico's "vibe coding" behavioural guidelines into
  * the system prompt for every turn.
  *
  * We don't replace the upstream system prompt — we append. Concretely we

@@ -253,7 +253,7 @@ export function renderClaudeLikeFooterLine(
     .filter(Boolean)
     .slice(0, 5);
   const model = ctx.model?.id ?? "no-model";
-  const project = ctx.cwd ? basename(ctx.cwd) : "srcode";
+  const project = ctx.cwd ? basename(ctx.cwd) : "pico";
   const gitText = formatGit(branch, git);
   const thinking = compactThinkingLevel(options.getThinkingLevel?.());
 
@@ -288,7 +288,7 @@ export function renderPrimaryStatusLine(
   options: FooterOptions = {},
 ): string {
   const model = ctx.model?.id ?? "no-model";
-  const project = ctx.cwd ? basename(ctx.cwd) : "srcode";
+  const project = ctx.cwd ? basename(ctx.cwd) : "pico";
   const thinking = compactThinkingLevel(options.getThinkingLevel?.());
   const parts = [
     width < 96 ? compactModel(model) : model,
@@ -338,7 +338,7 @@ export function installClaudeLikeFooter(ctx: ExtensionContext, options: FooterOp
     setFooter?: (factory: FooterFactory | undefined) => void;
     setWidget?: (key: string, content: unknown, options?: { placement?: "aboveEditor" | "belowEditor" }) => void;
   };
-  ui.setWidget?.("srcode-primary-status", createPrimaryStatusWidget(ctx, options), { placement: "aboveEditor" });
+  ui.setWidget?.("pico-primary-status", createPrimaryStatusWidget(ctx, options), { placement: "aboveEditor" });
   ui.setFooter?.(createClaudeLikeFooter(ctx));
 }
 

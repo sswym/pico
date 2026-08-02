@@ -388,7 +388,7 @@ export class FactRetriever {
 
     if (rows.length >= MAX_FACTS) {
       console.warn(
-        `[srcode memory] contradict() compared only the ${MAX_FACTS} most recently updated facts; ` +
+        `[pico memory] contradict() compared only the ${MAX_FACTS} most recently updated facts; ` +
           `older facts were not analysed.`,
       );
     }

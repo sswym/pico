@@ -27,7 +27,7 @@ export function prepareEmbeddedRuntime(isBunBinary: boolean): EmbeddedRuntimeDir
   const allKeys = getEmbeddedKeys("");
   if (allKeys.length === 0) return null;
 
-  const tmpDir = resolve(tmpdir(), `srcode-${randomBytes(6).toString("hex")}`);
+  const tmpDir = resolve(tmpdir(), `pico-${randomBytes(6).toString("hex")}`);
   mkdirSync(tmpDir, { recursive: true });
 
   const cleanup = () => {

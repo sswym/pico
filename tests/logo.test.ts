@@ -17,7 +17,7 @@ const stubTheme = {
   bold: (text: string) => text,
 };
 
-test("LOGO has 5 lines and contains the srcode silhouette", () => {
+test("LOGO has 5 lines and contains the pico silhouette", () => {
   const lines = LOGO.split("\n");
   expect(lines).toHaveLength(5);
   // Pick a couple of unique substrings from the ASCII art so a typo in one
@@ -29,7 +29,7 @@ test("LOGO has 5 lines and contains the srcode silhouette", () => {
 test("renderLogoHeader renders a boxed welcome header", () => {
   const out = renderLogoHeader(stubTheme, 96, { model: { id: "deepseek-v4-flash-free", provider: "zen-openai" } });
   expect(out).not.toContain(LOGO);
-  expect(out).toContain("srcode v");
+  expect(out).toContain("pico v");
   expect(out).toContain("Welcome back!");
   expect(out).toContain("Tips");
   expect(out).toContain("/ for commands");
@@ -45,7 +45,7 @@ test("renderLogoHeader uses a compact header on narrow terminals", () => {
   const out = renderLogoHeader(stubTheme, 48);
   expect(out).not.toContain(LOGO);
   expect(out).not.toContain("Welcome back!");
-  expect(out).toContain("srcode v");
+  expect(out).toContain("pico v");
   expect(out).toContain("/ commands");
 });
 

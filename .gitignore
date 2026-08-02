@@ -40,8 +40,8 @@ src/generated/
 # OMC plugin state
 .omc/
 
-# local srcode LSP override
-.srcode/lsp.json
+# local pico LSP override
+.pico/lsp.json
 
 # Codegraph index
 .codegraph/

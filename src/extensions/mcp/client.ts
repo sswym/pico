@@ -17,7 +17,7 @@ import type {
 } from "./types.ts";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
-const CLIENT_NAME = "srcode";
+const CLIENT_NAME = "pico";
 const CLIENT_VERSION = "0.1.0";
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_DIAGNOSTIC_LINES = 20;

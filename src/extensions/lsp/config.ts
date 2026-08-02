@@ -2,8 +2,8 @@
  * LSP configuration loading, merging, and server routing.
  *
  * Config sources (highest priority first):
- *   1. Project: `.srcode/lsp.json` in workspace root
- *   2. User:    `~/.srcode/lsp.json`
+ *   1. Project: `.pico/lsp.json` in workspace root
+ *   2. User:    `~/.pico/lsp.json`
  *   3. Built-in: defaults.json (bundled)
  *
  * Supports:
@@ -15,7 +15,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname, extname } from "node:path";
 import defaultServers from "./defaults.json" with { type: "json" };
-import { srcodeLspConfigPath } from "../paths.ts";
+import { picoLspConfigPath } from "../paths.ts";
 
 // ── Config types ──────────────────────────────────────────────────────────
 
@@ -102,7 +102,7 @@ export function loadConfig(workspaceRoot: string): LspConfig {
   let formatOnWrite: boolean | undefined;
 
   // Merge user-level config
-  const userConfigPath = srcodeLspConfigPath();
+  const userConfigPath = picoLspConfigPath();
   const userConfig = parseJsonFile(userConfigPath);
   if (userConfig) {
     merged = { ...merged, ...parseServerMap(userConfig) };
@@ -115,7 +115,7 @@ export function loadConfig(workspaceRoot: string): LspConfig {
   }
 
   // Merge project-level config
-  const projectConfigPath = join(workspaceRoot, ".srcode", "lsp.json");
+  const projectConfigPath = join(workspaceRoot, ".pico", "lsp.json");
   const projectConfig = parseJsonFile(projectConfigPath);
   if (projectConfig) {
     // Apply additions/overrides from project config

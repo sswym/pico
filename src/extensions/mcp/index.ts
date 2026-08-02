@@ -1,5 +1,5 @@
 /**
- * srcode MCP extension.
+ * pico MCP extension.
  *
  * Discovers MCP servers from config files and registers their tools as
  * LLM-callable tools with pi's extension system.
@@ -16,8 +16,8 @@
  * Slash command: /mcp — list connected servers and their tools.
  *
  * Config files (JSON, Claude Code compatible):
- *   ~/.srcode/mcp-servers.json      — home-wide
- *   <cwd>/.srcode/mcp-servers.json  — project-specific (overrides home)
+ *   ~/.pico/mcp-servers.json      — home-wide
+ *   <cwd>/.pico/mcp-servers.json  — project-specific (overrides home)
  *
  * Format:
  *   { "mcpServers": { "name": { "command": "npx", "args": [...], "env": {} } } }

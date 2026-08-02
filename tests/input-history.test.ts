@@ -12,15 +12,15 @@ import {
 } from "../src/extensions/input-history/index.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
-const originalHome = process.env.SRCODE_HOME;
+const originalHome = process.env.PICO_HOME;
 
 afterEach(() => {
-  if (originalHome === undefined) delete process.env.SRCODE_HOME;
-  else process.env.SRCODE_HOME = originalHome;
+  if (originalHome === undefined) delete process.env.PICO_HOME;
+  else process.env.PICO_HOME = originalHome;
 });
 
 function makeTempHistoryPath(): { dir: string; path: string } {
-  const dir = mkdtempSync(join(tmpdir(), "srcode-input-history-"));
+  const dir = mkdtempSync(join(tmpdir(), "pico-input-history-"));
   return { dir, path: join(dir, "input-history.jsonl") };
 }
 

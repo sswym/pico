@@ -1,7 +1,7 @@
 /**
  * Runtime accessor for embedded assets.
  *
- * In source mode (`bun run bin/srcode.ts`) this module returns null for every
+ * In source mode (`bun run bin/pico.ts`) this module returns null for every
  * key — the code falls back to reading from disk as before.
  *
  * In compiled-binary mode, `build.ts` generates `src/generated/embedded-assets.ts`

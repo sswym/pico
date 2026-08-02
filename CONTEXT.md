@@ -1,28 +1,28 @@
-# srcode Context
+# pico Context
 
-srcode is a thin wrapper over `@earendil-works/pi-coding-agent`. The upstream
+pico is a thin wrapper over `@earendil-works/pi-coding-agent`. The upstream
 agent owns the core loop, tool runtime, sessions, TUI, model providers, and
-default tools. srcode adds behaviour through ExtensionFactory modules.
+default tools. pico adds behaviour through ExtensionFactory modules.
 
 ## Domain Terms
 
 - ExtensionFactory: a module-level factory that receives `ExtensionAPI` and
   registers tools, commands, or lifecycle event handlers.
-- Extension: one srcode capability package under `src/extensions/`, such as
+- Extension: one pico capability package under `src/extensions/`, such as
   memory, subagent, web, lsp, hooks, mcp, plan, ask, or todo.
 - Lifecycle event: pi event hooks used by extensions, including
   `before_agent_start`, `session_start`, `tool_call`, `tool_result`,
   `turn_end`, `agent_end`, and `session_shutdown`.
 - Tool adapter: the thin layer that maps a pi tool call to an implementation
   module and formats the tool result.
-- Session state: state scoped to one srcode process/session, usually held in
+- Session state: state scoped to one pico process/session, usually held in
   the extension closure unless a module needs explicit state objects for tests.
 - Project scope: data or configuration tied to the current working directory,
   such as project memory facts, project MCP servers, and project LSP config.
 
 ## Architectural Preferences
 
-- Keep srcode as a wrapper. Prefer extending through ExtensionFactory modules
+- Keep pico as a wrapper. Prefer extending through ExtensionFactory modules
   instead of importing across extensions or patching upstream internals.
 - Put behaviour behind testable modules. The pi registration file should be a
   shallow adapter; core routing, parsing, state machines, and formatting should

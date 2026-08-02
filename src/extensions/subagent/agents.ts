@@ -2,10 +2,10 @@
  * Agent discovery and configuration
  *
  * Vendored from @earendil-works/pi-coding-agent's example subagent extension,
- * with one srcode-specific change: agents bundled at
+ * with one pico-specific change: agents bundled at
  * `src/extensions/subagent/agents/` are loaded by default (under the "user"
  * scope) so the four built-in roles work out of the box. User-defined agents
- * in ~/.srcode/agent/agents/ still override by name.
+ * in ~/.pico/agent/agents/ still override by name.
  */
 
 import * as fs from "node:fs";
@@ -53,7 +53,7 @@ const BUILTIN_AGENTS_DIR = resolveBuiltinAgentsDir();
 /**
  * Locate the bundled agents/ directory.
  *
- * In source mode (`bun run bin/srcode.ts`), `import.meta.url` points to this
+ * In source mode (`bun run bin/pico.ts`), `import.meta.url` points to this
  * file, so agents/ is its sibling. In Bun-compiled binaries, `import.meta.url`
  * resolves into `/$bunfs/...`, which is a virtual filesystem that does NOT
  * include .md assets — `fs.readdirSync` on that path returns nothing. The
@@ -302,7 +302,7 @@ function isDirectory(p: string): boolean {
 function findNearestProjectAgentsDir(cwd: string): string | null {
 	let currentDir = cwd;
 	while (true) {
-		const candidate = path.join(currentDir, ".srcode", "agents");
+		const candidate = path.join(currentDir, ".pico", "agents");
 		if (isDirectory(candidate)) return candidate;
 
 		const parentDir = path.dirname(currentDir);
@@ -316,7 +316,7 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
 
 	// Builtins are loaded first under the "user" scope; same-named entries from
-	// ~/.srcode/agent/agents/ replace them via Map.set().
+	// ~/.pico/agent/agents/ replace them via Map.set().
 	// In embedded mode (BUILTIN_AGENTS_DIR === ""), load from the asset map.
 	const builtinAgents = scope === "project" ? [] : BUILTIN_AGENTS_DIR === "" ? loadEmbeddedAgents() : loadAgentsFromDir(BUILTIN_AGENTS_DIR, "user");
 	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
@@ -337,7 +337,7 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 
 	const rawAgents = Array.from(agentMap.values());
 
-	// Apply overrides from ~/.srcode/subagent.json
+	// Apply overrides from ~/.pico/subagent.json
 	const config = loadSubagentConfig();
 	const finalAgents = applyOverrides(rawAgents, config);
 

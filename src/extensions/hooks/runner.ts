@@ -1,5 +1,5 @@
 /**
- * srcode hooks — subprocess runner.
+ * pico hooks — subprocess runner.
  *
  * Each hook runs as `sh -c <command>` via Bun.spawn so we can hard-kill on
  * timeout. Output streams are decoded as utf8 and truncated to 4 KiB each

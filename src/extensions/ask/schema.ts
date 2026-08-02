@@ -17,7 +17,7 @@ export const AskOption = Type.Object({
   label: Type.String({
     minLength: 1,
     description:
-      "Short display text (1-5 words). Concise label for the user to pick. Don't include any 'Other' choice — srcode adds one automatically.",
+      "Short display text (1-5 words). Concise label for the user to pick. Don't include any 'Other' choice — pico adds one automatically.",
   }),
   description: Type.String({
     description:
@@ -46,7 +46,7 @@ export const AskQuestion = Type.Object({
     minItems: 2,
     maxItems: 4,
     description:
-      "2-4 distinct, mutually-exclusive choices (unless multiSelect=true). Don't include 'Other' — srcode appends one.",
+      "2-4 distinct, mutually-exclusive choices (unless multiSelect=true). Don't include 'Other' — pico appends one.",
   }),
   multiSelect: Type.Optional(
     Type.Boolean({

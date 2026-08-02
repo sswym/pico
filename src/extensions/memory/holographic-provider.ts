@@ -22,10 +22,10 @@ import {
 } from "./provider.ts";
 import type { Category, Scope } from "./schema.ts";
 import { HELPFUL_DELTA, UNHELPFUL_DELTA } from "./schema.ts";
-import { srcodeHolographicMemoryPath } from "../paths.ts";
+import { picoHolographicMemoryPath } from "../paths.ts";
 
 function defaultDbPath(): string {
-  return srcodeHolographicMemoryPath();
+  return picoHolographicMemoryPath();
 }
 
 interface StoredFact {

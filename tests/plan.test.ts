@@ -73,15 +73,15 @@ let prevHome: string | undefined;
 beforeEach(() => {
   __resetPlanStateForTests();
   // Redirect plan files to a tmp dir so the tests don't touch the user's
-  // real ~/.srcode/plans/ directory.
-  tmpRoot = mkdtempSync(join(tmpdir(), "srcode-plan-test-"));
-  prevHome = process.env.SRCODE_HOME;
-  process.env.SRCODE_HOME = tmpRoot;
+  // real ~/.pico/plans/ directory.
+  tmpRoot = mkdtempSync(join(tmpdir(), "pico-plan-test-"));
+  prevHome = process.env.PICO_HOME;
+  process.env.PICO_HOME = tmpRoot;
 });
 
 afterEach(() => {
-  if (prevHome === undefined) delete process.env.SRCODE_HOME;
-  else process.env.SRCODE_HOME = prevHome;
+  if (prevHome === undefined) delete process.env.PICO_HOME;
+  else process.env.PICO_HOME = prevHome;
   try {
     rmSync(tmpRoot, { recursive: true, force: true });
   } catch {}
@@ -206,13 +206,13 @@ test("ExitPlanMode in non-UI mode requires explicit unattended opt-in", async ()
 
   expect(result.details.approved).toBe(false);
   expect(result.details.plan).toMatch(/# Plan/);
-  expect(result.content[0].text).toContain("SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL");
+  expect(result.content[0].text).toContain("PICO_ALLOW_UNATTENDED_PLAN_APPROVAL");
   expect(__getPlanStateForTests().planActive).toBe(true);
 });
 
 test("ExitPlanMode in non-UI mode can be explicitly approved by env", async () => {
-  const prev = process.env.SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL;
-  process.env.SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL = "1";
+  const prev = process.env.PICO_ALLOW_UNATTENDED_PLAN_APPROVAL;
+  process.env.PICO_ALLOW_UNATTENDED_PLAN_APPROVAL = "1";
   try {
     const pi = makeFakePi();
     planExtension(pi as any);
@@ -224,8 +224,8 @@ test("ExitPlanMode in non-UI mode can be explicitly approved by env", async () =
     expect(result.details.approved).toBe(true);
     expect(__getPlanStateForTests().planActive).toBe(false);
   } finally {
-    if (prev === undefined) delete process.env.SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL;
-    else process.env.SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL = prev;
+    if (prev === undefined) delete process.env.PICO_ALLOW_UNATTENDED_PLAN_APPROVAL;
+    else process.env.PICO_ALLOW_UNATTENDED_PLAN_APPROVAL = prev;
   }
 });
 

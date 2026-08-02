@@ -1,6 +1,6 @@
-# srcode 用户手册
+# pico 用户手册
 
-> 面向使用者（开发者、项目成员）的功能详解。快速上手请看根目录 `README.md`；对外科普见 `docs/srcode-intro.md`；内部技术复盘见 `docs/internal-tech-review.md`。
+> 面向使用者（开发者、项目成员）的功能详解。快速上手请看根目录 `README.md`；对外科普见 `docs/pico-intro.md`；内部技术复盘见 `docs/internal-tech-review.md`。
 
 ## 目录
 
@@ -27,8 +27,8 @@
 
 记忆系统分为两层：
 
-- **结构化 facts**：默认内置 provider，底层使用单个 SQLite 文件，位于 `~/.srcode/memory.db`（可通过 `$SRCODE_MEMORY_DB` 覆盖；亦可通过 `$SRCODE_HOME` 重定位整个 srcode 数据根目录）。Schema 是对 hermes-agent 全息存储的精简移植——包含 `category`、`tags`、`trust_score` 与 FTS5 镜像，另加实体抽取与 TF-IDF 稀疏向量检索。`holographic` provider 为预留接口（JSON 实现为演示性质，检索能力不完整）。
-- **curated notes**：短小稳定的人工/自动备注，文件位于 `~/.srcode/memories/MEMORY.md` 与 `~/.srcode/memories/USER.md`（字符上限 2200/1375）。会话启动时生成冻结快照注入系统提示词；会话中新增备注会写盘并进入后续会话，但不会改写本轮已经注入的快照。
+- **结构化 facts**：默认内置 provider，底层使用单个 SQLite 文件，位于 `~/.pico/memory.db`（可通过 `$PICO_MEMORY_DB` 覆盖；亦可通过 `$PICO_HOME` 重定位整个 pico 数据根目录）。Schema 是对 hermes-agent 全息存储的精简移植——包含 `category`、`tags`、`trust_score` 与 FTS5 镜像，另加实体抽取与 TF-IDF 稀疏向量检索。`holographic` provider 为预留接口（JSON 实现为演示性质，检索能力不完整）。
+- **curated notes**：短小稳定的人工/自动备注，文件位于 `~/.pico/memories/MEMORY.md` 与 `~/.pico/memories/USER.md`（字符上限 2200/1375）。会话启动时生成冻结快照注入系统提示词；会话中新增备注会写盘并进入后续会话，但不会改写本轮已经注入的快照。
 
 **9 类事实**（按提取优先级排列）：
 
@@ -89,7 +89,7 @@
 /memory off
 ```
 
-`/memory status` 显示当前 backend、数据库路径、provider 与可用工具；`/memory setup <provider>` 将选择写入 `~/.srcode/agent/settings.json`；`/memory off` 恢复内置 backend。
+`/memory status` 显示当前 backend、数据库路径、provider 与可用工具；`/memory setup <provider>` 将选择写入 `~/.pico/agent/settings.json`；`/memory off` 恢复内置 backend。
 
 **自动提取**：每轮对话向系统提示词追加记忆头部与 curated notes 快照；`turn_end` 时对用户消息做**实时纠正检测**并立即存储；会话结束时从用户消息中按模式（偏好/决策/纠正/失败/洞察/约定/工具怪癖）自动提取事实并持久化。
 
@@ -99,9 +99,9 @@
 
 | 变量 | 用途 |
 |---|---|
-| `SRCODE_MEMORY_DB` | SQLite 记忆库路径（仅作用于 builtin 后端） |
-| `SRCODE_HOLOGRAPHIC_MEMORY_PATH` | holographic JSON 库路径（与上者互不影响） |
-| `SRCODE_MEMORY_DENY` | 写入门禁关键词（逗号分隔，命中即拒绝写入） |
+| `PICO_MEMORY_DB` | SQLite 记忆库路径（仅作用于 builtin 后端） |
+| `PICO_HOLOGRAPHIC_MEMORY_PATH` | holographic JSON 库路径（与上者互不影响） |
+| `PICO_MEMORY_DENY` | 写入门禁关键词（逗号分隔，命中即拒绝写入） |
 
 ---
 
@@ -147,12 +147,12 @@ subagent(chain=[
 
 每个子代理在独立的 `pi` 进程中运行（`--mode json` 事件流），拥有自己的上下文窗口。Ctrl+C 会传播以终止子进程。
 
-**agent frontmatter 支持**：`model`、`tools`、`thinking`、`maxExecutionTimeMs`、`maxTokens`、`fallbackModels`、`systemPromptMode`（append/replace）、`inheritProjectContext`、`inheritSkills`、`outputMode`（file-only）、`acceptance`（验收门：`criteria`/`evidence`/`selfRepair`/`maxRepairAttempts`）。用户级覆盖：`~/.srcode/agent/agents/<name>.md`（同名替换）或 `~/.srcode/subagent.json`（部分字段覆盖）。
+**agent frontmatter 支持**：`model`、`tools`、`thinking`、`maxExecutionTimeMs`、`maxTokens`、`fallbackModels`、`systemPromptMode`（append/replace）、`inheritProjectContext`、`inheritSkills`、`outputMode`（file-only）、`acceptance`（验收门：`criteria`/`evidence`/`selfRepair`/`maxRepairAttempts`）。用户级覆盖：`~/.pico/agent/agents/<name>.md`（同名替换）或 `~/.pico/subagent.json`（部分字段覆盖）。
 
-**项目级代理**：若项目根目录下存在 `.srcode/agents/*.md`，且传入 `agentScope: "both"`（或 `"project"`），同名项目代理将覆盖内置角色。项目代理是仓库可控代码（可执行任意验收命令），调用前需要确认：
+**项目级代理**：若项目根目录下存在 `.pico/agents/*.md`，且传入 `agentScope: "both"`（或 `"project"`），同名项目代理将覆盖内置角色。项目代理是仓库可控代码（可执行任意验收命令），调用前需要确认：
 
 - 交互模式：弹确认框（可用 `confirmProjectAgents: false` 跳过）；
-- **非交互模式（CI/`-p`）：默认拒绝**，需设置 `SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS=1` 显式放行。
+- **非交互模式（CI/`-p`）：默认拒绝**，需设置 `PICO_ALLOW_UNATTENDED_PROJECT_AGENTS=1` 显式放行。
 
 **验收门（acceptance gate）**：配置 `acceptance` 的 agent 完成后，在主进程执行 `evidence` 命令校验；失败时若开启 `selfRepair` 会自动返工重试（`maxRepairAttempts` 次）。注意：criteria 与 evidence 按下标顺序配对。
 
@@ -174,31 +174,31 @@ subagent(chain=[
 
 ## 5. 规划模式（`EnterPlanMode` / `ExitPlanMode` 工具 + `/plan` 命令）
 
-规划模式激活期间，srcode 会以"先研究，写出计划，再 ExitPlanMode 请求批准"为由拦截 `bash`/`edit`/`write` 等工具调用（只放行 read/grep/find/ls 与规划工具）。计划文件存放在 `~/.srcode/plans/<sessionId>.md`。`ExitPlanMode` 会展示计划内容并请求用户确认；在非 TUI 模式下默认保持计划模式，除非设置 `safety.allowUnattendedPlanApproval=true`，或临时设置 `SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL=1`。切换/分叉会话时计划模式自动重置。
+规划模式激活期间，pico 会以"先研究，写出计划，再 ExitPlanMode 请求批准"为由拦截 `bash`/`edit`/`write` 等工具调用（只放行 read/grep/find/ls 与规划工具）。计划文件存放在 `~/.pico/plans/<sessionId>.md`。`ExitPlanMode` 会展示计划内容并请求用户确认；在非 TUI 模式下默认保持计划模式，除非设置 `safety.allowUnattendedPlanApproval=true`，或临时设置 `PICO_ALLOW_UNATTENDED_PLAN_APPROVAL=1`。切换/分叉会话时计划模式自动重置。
 
 ---
 
 ## 6. 网页（`webFetch` + `webSearch` 工具）
 
 - `webFetch(url, prompt)` —— 抓取公开 HTTPS URL，将 HTML 转为 Markdown（去除 `<script>/<style>/<nav>/<footer>`），默认拒绝 localhost/内网地址（含 IPv6 ULA、整数/十六进制 IP 写法），手动跟随重定向且每跳复检私网，响应读取上限 1 MiB，输出 8 KiB 上限（UTF-8 边界安全截断），15 分钟 LRU 缓存（50 条），同 URL 并发请求合并为一次网络请求，4xx/5xx 响应不缓存并标记为错误。整体 15 秒超时（含响应体下载）。
-- `webSearch(query, max_results?, allowed_domains?, blocked_domains?)` —— 默认使用 Exa MCP；若存在 `TAVILY_API_KEY`，默认合并 Exa + Tavily 结果并按 URL 去重。设置 `SRCODE_SEARCH_PROVIDER=exa` 或 `=tavily` 强制单一 provider；**强制 tavily 但缺 key、或未知 provider 值，会显式报错**（不会静默换成其他源）。每个请求 15 秒超时。
+- `webSearch(query, max_results?, allowed_domains?, blocked_domains?)` —— 默认使用 Exa MCP；若存在 `TAVILY_API_KEY`，默认合并 Exa + Tavily 结果并按 URL 去重。设置 `PICO_SEARCH_PROVIDER=exa` 或 `=tavily` 强制单一 provider；**强制 tavily 但缺 key、或未知 provider 值，会显式报错**（不会静默换成其他源）。每个请求 15 秒超时。
 
 ---
 
 ## 7. `/init`（生成 AGENTS.md）
 
-多阶段引导式工作流：询问需要设置什么，可选派出 `scout` 子代理做代码库侦察，通过 `askUserQuestion` 填补信息缺口，然后编写极简的 **AGENTS.md**（以及可选的 AGENTS.local.md），并建议技能/钩子。**srcode 永远不会写入 CLAUDE.md**——这是写死在提示词中的硬规则。AGENTS.md 已存在时，`/init` 改为审计模式（提出修改建议，绝不覆盖）。
+多阶段引导式工作流：询问需要设置什么，可选派出 `scout` 子代理做代码库侦察，通过 `askUserQuestion` 填补信息缺口，然后编写极简的 **AGENTS.md**（以及可选的 AGENTS.local.md），并建议技能/钩子。**pico 永远不会写入 CLAUDE.md**——这是写死在提示词中的硬规则。AGENTS.md 已存在时，`/init` 改为审计模式（提出修改建议，绝不覆盖）。
 
 ---
 
 ## 8. 权限与安全边界
 
-基础工具审批、项目可信任状态与交互权限由上游 `@earendil-works/pi-coding-agent` 负责。srcode 额外做了明确阻断与默认关闭：
+基础工具审批、项目可信任状态与交互权限由上游 `@earendil-works/pi-coding-agent` 负责。pico 额外做了明确阻断与默认关闭：
 
 - `lsp` 中的写入或高风险 action（`rename`、`rename_file`、`code_actions apply=true`、`reload`、`request`）在 `tool_call` 阶段被阻断；只读 action（hover、definition、references、diagnostics、symbols、capabilities、status，以及未设置 `apply=true` 的 code_actions）可用。
 - 项目级 shell hooks、项目级 MCP 服务器、非交互计划自动批准、LSP 自动格式化写回、非交互项目代理：**默认全部关闭**，需显式开启。
 
-`/doctor` 可查看当前 cwd、settings 路径、能力边界、安全开关状态与来源。长期配置写入 `~/.srcode/agent/settings.json` 的 `safety` 字段；临时覆盖使用环境变量，**环境变量优先于 settings**：
+`/doctor` 可查看当前 cwd、settings 路径、能力边界、安全开关状态与来源。长期配置写入 `~/.pico/agent/settings.json` 的 `safety` 字段；临时覆盖使用环境变量，**环境变量优先于 settings**：
 
 ```json
 {
@@ -219,19 +219,19 @@ subagent(chain=[
 
 | 开关 | 环境变量（临时覆盖） | 默认 |
 |---|---|---|
-| 项目级 hooks | `SRCODE_ENABLE_PROJECT_HOOKS` | 关 |
-| 项目级 MCP | `SRCODE_ENABLE_PROJECT_MCP` | 关 |
-| 非交互计划自动批准 | `SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL` | 关 |
-| LSP 写后格式化 | `SRCODE_ALLOW_LSP_FORMAT_ON_WRITE` | 关 |
-| 非交互项目代理 | `SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS` | 关（仅 env，无 settings 项） |
+| 项目级 hooks | `PICO_ENABLE_PROJECT_HOOKS` | 关 |
+| 项目级 MCP | `PICO_ENABLE_PROJECT_MCP` | 关 |
+| 非交互计划自动批准 | `PICO_ALLOW_UNATTENDED_PLAN_APPROVAL` | 关 |
+| LSP 写后格式化 | `PICO_ALLOW_LSP_FORMAT_ON_WRITE` | 关 |
+| 非交互项目代理 | `PICO_ALLOW_UNATTENDED_PROJECT_AGENTS` | 关（仅 env，无 settings 项） |
 
-`auxiliary.vision.provider/model` 必须能被模型注册表解析到。使用自定义 provider、代理或本地视觉模型时，需要先在 `~/.srcode/agent/models.json` 中注册该模型，并确保模型声明包含 `"input": ["text", "image"]`，否则会被视为不具备视觉能力。
+`auxiliary.vision.provider/model` 必须能被模型注册表解析到。使用自定义 provider、代理或本地视觉模型时，需要先在 `~/.pico/agent/models.json` 中注册该模型，并确保模型声明包含 `"input": ["text", "image"]`，否则会被视为不具备视觉能力。
 
 ---
 
 ## 9. 钩子系统
 
-基于文件的 Shell 钩子，支持 `PreToolUse` / `PostToolUse` / `PreSessionEnd` / `PostUserMessage` 事件。默认只加载用户级 `~/.srcode/hooks.json`；项目级 `<仓库>/.srcode/hooks.json` 会执行仓库提供的 shell 命令，需设置 `safety.enableProjectHooks=true` 或 `SRCODE_ENABLE_PROJECT_HOOKS=1` 才会加载。占位符：`$FILE`（工具参数）、`$TOOL`（工具名）、`$TURN`（轮次索引）。默认超时 30 秒（最大 120 秒）；`blocking: true` 的 PreToolUse 失败会中止工具调用。
+基于文件的 Shell 钩子，支持 `PreToolUse` / `PostToolUse` / `PreSessionEnd` / `PostUserMessage` 事件。默认只加载用户级 `~/.pico/hooks.json`；项目级 `<仓库>/.pico/hooks.json` 会执行仓库提供的 shell 命令，需设置 `safety.enableProjectHooks=true` 或 `PICO_ENABLE_PROJECT_HOOKS=1` 才会加载。占位符：`$FILE`（工具参数）、`$TOOL`（工具名）、`$TURN`（轮次索引）。默认超时 30 秒（最大 120 秒）；`blocking: true` 的 PreToolUse 失败会中止工具调用。
 
 ```json
 {
@@ -248,7 +248,7 @@ subagent(chain=[
 
 ## 10. Vibe 编码系统提示词
 
-`src/prompts/vibe-system.md` 会被追加到每条系统提示词末尾。四条规则——*先思考再编码、用最少的代码解决问题、手术式修改、目标驱动执行*——从 `~/.claude/CLAUDE.md` 中提炼。目标是让 srcode 先问后猜、不重构相邻代码、并将每行 diff 追溯到明确需求。
+`src/prompts/vibe-system.md` 会被追加到每条系统提示词末尾。四条规则——*先思考再编码、用最少的代码解决问题、手术式修改、目标驱动执行*——从 `~/.claude/CLAUDE.md` 中提炼。目标是让 pico 先问后猜、不重构相邻代码、并将每行 diff 追溯到明确需求。
 
 ---
 
@@ -260,7 +260,7 @@ subagent(chain=[
 - `recap` —— 利用存储的项目记忆总结近期工作
 - `agents-init` —— 对已有 AGENTS.md 做增量编辑（比 `/init` 更轻量）
 
-`~/.srcode/agent/skills/` 中的用户技能按名称覆盖内置技能。
+`~/.pico/agent/skills/` 中的用户技能按名称覆盖内置技能。
 
 ---
 
@@ -284,8 +284,8 @@ subagent(chain=[
 
 | 层级 | 路径 | 说明 |
 |------|------|------|
-| 全局 | `~/.srcode/mcp-servers.json` | 所有项目共享 |
-| 项目 | `<cwd>/.srcode/mcp-servers.json` | 设置 `safety.enableProjectMcp=true` 或 `SRCODE_ENABLE_PROJECT_MCP=1` 后覆盖同名 server |
+| 全局 | `~/.pico/mcp-servers.json` | 所有项目共享 |
+| 项目 | `<cwd>/.pico/mcp-servers.json` | 设置 `safety.enableProjectMcp=true` 或 `PICO_ENABLE_PROJECT_MCP=1` 后覆盖同名 server |
 
 **工具命名规则**：`mcp__<服务器名>__<工具名>`，与权限系统的 `mcp__` 前缀匹配兼容。
 
@@ -340,9 +340,9 @@ lsp(action="symbols", file="src/index.ts")
 
 **45+ 语言支持**：TypeScript、JavaScript、Python、Rust、Go、Java、Kotlin、Scala、Haskell、OCaml、Elixir、Ruby、PHP、C#、Lua、Nix、Zig、Bash、YAML、TOML、SQL、Terraform、Docker、Prisma、GraphQL、Swift、Dart、CSS、HTML、JSON、Vue、Svelte、Astro、Tailwind、Deno、Biome、ESLint 等。
 
-**配置系统**：三层合并——内置 defaults.json → `~/.srcode/lsp.json`（用户级）→ `.srcode/lsp.json`（项目级）。支持 `fileTypes`、`rootMarkers`、`initOptions`、`settings` 配置。本地二进制解析优先检查 `node_modules/.bin/`、`.venv/bin/`、`vendor/bundle/bin/`。
+**配置系统**：三层合并——内置 defaults.json → `~/.pico/lsp.json`（用户级）→ `.pico/lsp.json`（项目级）。支持 `fileTypes`、`rootMarkers`、`initOptions`、`settings` 配置。本地二进制解析优先检查 `node_modules/.bin/`、`.venv/bin/`、`vendor/bundle/bin/`。
 
-**Write/Edit 联动**：编辑代码文件后，LSP 自动同步文件内容、通知服务器重新分析、收集诊断信息并追加到工具结果（500ms 内联等待 + 最长 5s 后台等待）。`.editorconfig` 解析支持自动格式化；自动格式化会二次写文件，因此即使 `formatOnWrite=true`，仍需设置 `safety.allowLspFormatOnWrite=true` 或 `SRCODE_ALLOW_LSP_FORMAT_ON_WRITE=1` 才会写回。
+**Write/Edit 联动**：编辑代码文件后，LSP 自动同步文件内容、通知服务器重新分析、收集诊断信息并追加到工具结果（500ms 内联等待 + 最长 5s 后台等待）。`.editorconfig` 解析支持自动格式化；自动格式化会二次写文件，因此即使 `formatOnWrite=true`，仍需设置 `safety.allowLspFormatOnWrite=true` 或 `PICO_ALLOW_LSP_FORMAT_ON_WRITE=1` 才会写回。
 
 **TUI 状态栏**：服务器启动后，状态栏显示当前活跃的语言服务器名称和版本。
 
@@ -351,9 +351,9 @@ lsp(action="symbols", file="src/index.ts")
 ## 14. 项目结构
 
 ```
-srcode/
+pico/
 ├── bin/
-│   ├── srcode.ts                       # 入口：main(args) + 自动注入 --prompt-template + --skill
+│   ├── pico.ts                       # 入口：main(args) + 自动注入 --prompt-template + --skill
 │   └── env-bootstrap.ts                # 副作用：目录/环境水合（必须最先导入）
 ├── src/
 │   ├── runtime/                        # 参数装配、扩展注册表、嵌入式资源解包、setup 短路
@@ -396,7 +396,7 @@ bun run verify          # tsc --noEmit + 全量 bun test（385 用例 / 26 文�
 bun test tests/<feature>.test.ts
 ```
 
-测试完全离线。约定：hand-rolled fakes（`fakePi`/`FakeUi`）、`__reset*ForTests()` 状态重置钩子、`SRCODE_HOME` 临时目录隔离、直接替换 `globalThis.fetch` 模拟网络。详细约定见根目录 `AGENTS.md`。
+测试完全离线。约定：hand-rolled fakes（`fakePi`/`FakeUi`）、`__reset*ForTests()` 状态重置钩子、`PICO_HOME` 临时目录隔离、直接替换 `globalThis.fetch` 模拟网络。详细约定见根目录 `AGENTS.md`。
 
 ---
 

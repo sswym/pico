@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> srcode — 基于 pi-coding-agent 的 vibe coding agent，通过 ExtensionFactory 插件系统增强。
+> pico — 基于 pi-coding-agent 的 vibe coding agent，通过 ExtensionFactory 插件系统增强。
 
 ## 命令
 
@@ -34,12 +34,12 @@ bun test tests/memory.test.ts  # 运行单个测试文件
 
 ## 架构
 
-srcode 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；srcode 通过 18 个 ExtensionFactory 插件注入功能。
+pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 18 个 ExtensionFactory 插件注入功能。
 
 ### 入口链
 
 ```
-bin/srcode.ts → bin/env-bootstrap.ts（副作用，必须最先导入）→ main(args, { extensionFactories })
+bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）→ main(args, { extensionFactories })
 ```
 
 ### 扩展注册顺序
@@ -68,7 +68,7 @@ tests/             — 与 src/extensions/ 一一对应的测试文件
 - 框架：`bun:test`，无 jest/vitest/mocha
 - **Hand-rolled fakes 优先**：不使用 mock 库，每个测试文件内联定义 `fakePi`、`FakeUi`、`stubTheme` 等
 - **`__reset*ForTests()` 钩子**：生产代码导出 `__resetPlanStateForTests()`、`__resetWarnedPaths()` 等供测试重置状态
-- **环境变量隔离**：`process.env.SRCODE_HOME` 重定向到 `mkdtempSync()` 临时目录
+- **环境变量隔离**：`process.env.PICO_HOME` 重定向到 `mkdtempSync()` 临时目录
 - **网络 mock**：直接替换 `globalThis.fetch`，测试后恢复
 - 文件命名：`tests/<feature>.test.ts`，与 `src/extensions/<feature>/` 对应
 - 大部分用扁平 `test()`，不用 `describe` 分组（`web.test.ts`、`ask.test.ts` 例外）
@@ -97,16 +97,16 @@ function makeFakePi() {
 
 | 变量 | 用途 |
 |------|------|
-| `SRCODE_HOME` | 重定位整个 srcode 数据根目录（默认 `~/.srcode`） |
-| `SRCODE_MEMORY_DB` | 覆盖记忆数据库路径（默认 `~/.srcode/memory.db`） |
-| `SRCODE_SEARCH_PROVIDER` | 设为 `tavily` 切换搜索引擎（默认 Exa MCP） |
+| `PICO_HOME` | 重定位整个 pico 数据根目录（默认 `~/.pico`） |
+| `PICO_MEMORY_DB` | 覆盖记忆数据库路径（默认 `~/.pico/memory.db`） |
+| `PICO_SEARCH_PROVIDER` | 设为 `tavily` 切换搜索引擎（默认 Exa MCP） |
 | `TAVILY_API_KEY` | Tavily 搜索 API 密钥（可选） |
-| `SRCODE_ALLOW_UNATTENDED_PLAN_APPROVAL` | 非交互模式下允许 `ExitPlanMode` 自动批准 |
-| `SRCODE_ALLOW_LSP_FORMAT_ON_WRITE` | 允许 LSP `formatOnWrite` 在 edit/write 后自动二次写文件 |
-| `SRCODE_ENABLE_PROJECT_HOOKS` | 启用 `<repo>/.srcode/hooks.json` 项目级 shell hooks |
-| `SRCODE_ENABLE_PROJECT_MCP` | 启用 `<repo>/.srcode/mcp-servers.json` 项目级 MCP 服务器 |
+| `PICO_ALLOW_UNATTENDED_PLAN_APPROVAL` | 非交互模式下允许 `ExitPlanMode` 自动批准 |
+| `PICO_ALLOW_LSP_FORMAT_ON_WRITE` | 允许 LSP `formatOnWrite` 在 edit/write 后自动二次写文件 |
+| `PICO_ENABLE_PROJECT_HOOKS` | 启用 `<repo>/.pico/hooks.json` 项目级 shell hooks |
+| `PICO_ENABLE_PROJECT_MCP` | 启用 `<repo>/.pico/mcp-servers.json` 项目级 MCP 服务器 |
 
-这些安全开关也可长期写入 `~/.srcode/agent/settings.json` 的 `safety` 字段；环境变量优先于 settings：
+这些安全开关也可长期写入 `~/.pico/agent/settings.json` 的 `safety` 字段；环境变量优先于 settings：
 
 ```json
 {
@@ -121,7 +121,7 @@ function makeFakePi() {
 
 ## 编辑注意事项
 
-- `bin/env-bootstrap.ts` 有副作用（设置路径），必须在 `bin/srcode.ts` 最先导入
+- `bin/env-bootstrap.ts` 有副作用（设置路径），必须在 `bin/pico.ts` 最先导入
 - `src/generated/` 是构建时生成的，不要手动编辑
 - 扩展间通过事件链解耦，不要在扩展间直接 import
 - 修改扩展时检查对应的 `tests/<feature>.test.ts`，可能需要同步更新 `__reset*ForTests()` 钩子

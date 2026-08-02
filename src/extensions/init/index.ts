@@ -1,5 +1,5 @@
 /**
- * srcode init extension.
+ * pico init extension.
  *
  * Registers a single `/init` slash command that handles both cases:
  *   - No AGENTS.md → injects a prompt to parallel-scan the codebase and write one

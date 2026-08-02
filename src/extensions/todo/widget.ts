@@ -11,7 +11,7 @@ import {
   summarizeTodos,
 } from "./display.ts";
 
-export const TODO_WIDGET_KEY = "srcode-todos";
+export const TODO_WIDGET_KEY = "pico-todos";
 export const TODO_STATUS_KEY = "todo";
 export const TODO_SHORTCUT = Key.f7;
 export const TODO_SHORTCUT_HINT = "F7";

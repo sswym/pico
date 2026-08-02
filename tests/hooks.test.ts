@@ -1,5 +1,5 @@
 /**
- * srcode hooks unit tests.
+ * pico hooks unit tests.
  *
  * We exercise the loader (file discovery, merge, dedupe), the runner
  * (success / non-zero / timeout / placeholder substitution), and the
@@ -29,20 +29,20 @@ let originalProjectHooks: string | undefined;
 let homeRoot: string;
 
 beforeEach(() => {
-  workdir = mkdtempSync(join(tmpdir(), "srcode-hooks-"));
-  homeRoot = mkdtempSync(join(tmpdir(), "srcode-hooks-home-"));
-  originalHome = process.env.SRCODE_HOME;
-  originalProjectHooks = process.env.SRCODE_ENABLE_PROJECT_HOOKS;
-  process.env.SRCODE_HOME = homeRoot;
-  delete process.env.SRCODE_ENABLE_PROJECT_HOOKS;
+  workdir = mkdtempSync(join(tmpdir(), "pico-hooks-"));
+  homeRoot = mkdtempSync(join(tmpdir(), "pico-hooks-home-"));
+  originalHome = process.env.PICO_HOME;
+  originalProjectHooks = process.env.PICO_ENABLE_PROJECT_HOOKS;
+  process.env.PICO_HOME = homeRoot;
+  delete process.env.PICO_ENABLE_PROJECT_HOOKS;
   __resetWarnedPaths();
 });
 
 afterEach(() => {
-  if (originalHome === undefined) delete process.env.SRCODE_HOME;
-  else process.env.SRCODE_HOME = originalHome;
-  if (originalProjectHooks === undefined) delete process.env.SRCODE_ENABLE_PROJECT_HOOKS;
-  else process.env.SRCODE_ENABLE_PROJECT_HOOKS = originalProjectHooks;
+  if (originalHome === undefined) delete process.env.PICO_HOME;
+  else process.env.PICO_HOME = originalHome;
+  if (originalProjectHooks === undefined) delete process.env.PICO_ENABLE_PROJECT_HOOKS;
+  else process.env.PICO_ENABLE_PROJECT_HOOKS = originalProjectHooks;
   try { rmSync(workdir, { recursive: true, force: true }); } catch {}
   try { rmSync(homeRoot, { recursive: true, force: true }); } catch {}
 });
@@ -54,7 +54,7 @@ function writeHomeConfig(content: unknown): void {
 }
 
 function writeCwdConfig(content: unknown): void {
-  const dir = join(workdir, ".srcode");
+  const dir = join(workdir, ".pico");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "hooks.json"), JSON.stringify(content));
 }
@@ -62,7 +62,7 @@ function writeCwdConfig(content: unknown): void {
 test("hookConfigPaths returns home then cwd", () => {
   const [home, cwd] = hookConfigPaths(workdir);
   expect(home).toBe(join(homeRoot, "hooks.json"));
-  expect(cwd).toBe(join(workdir, ".srcode", "hooks.json"));
+  expect(cwd).toBe(join(workdir, ".pico", "hooks.json"));
 });
 
 test("loadHooks returns [] when no config files exist", () => {
@@ -86,7 +86,7 @@ test("loadHooks skips cwd layer unless project hooks are enabled", () => {
 });
 
 test("loadHooks merges home and cwd layers when project hooks are enabled", () => {
-  process.env.SRCODE_ENABLE_PROJECT_HOOKS = "1";
+  process.env.PICO_ENABLE_PROJECT_HOOKS = "1";
   writeHomeConfig({
     hooks: [
       { event: "PreToolUse", tool: "edit", command: "echo home-edit" },
@@ -112,7 +112,7 @@ test("loadHooks merges home and cwd layers when project hooks are enabled", () =
 });
 
 test("loadHooks drops entries with bad event/command and ignores unknown fields", () => {
-  process.env.SRCODE_ENABLE_PROJECT_HOOKS = "1";
+  process.env.PICO_ENABLE_PROJECT_HOOKS = "1";
   writeCwdConfig({
     hooks: [
       { event: "PreToolUse", command: "echo ok", timeoutMs: 200_000 }, // capped
@@ -127,8 +127,8 @@ test("loadHooks drops entries with bad event/command and ignores unknown fields"
 });
 
 test("loadHooks tolerates malformed JSON without throwing", () => {
-  process.env.SRCODE_ENABLE_PROJECT_HOOKS = "1";
-  const dir = join(workdir, ".srcode");
+  process.env.PICO_ENABLE_PROJECT_HOOKS = "1";
+  const dir = join(workdir, ".pico");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "hooks.json"), "{not json");
   expect(loadHooks(workdir)).toEqual([]);
@@ -299,7 +299,7 @@ test("PreToolUse hook with blocking=false only warns on failure", async () => {
     input: {},
   })) as { block?: boolean };
   expect(result.block).toBeUndefined();
-  expect(fake.messages.some((m) => m.customType === "srcode.hook.warn")).toBe(true);
+  expect(fake.messages.some((m) => m.customType === "pico.hook.warn")).toBe(true);
 });
 
 test("PostToolUse failure surfaces a warning, never blocks", async () => {
@@ -318,7 +318,7 @@ test("PostToolUse failure surfaces a warning, never blocks", async () => {
     isError: false,
   });
   expect(out).toEqual({});
-  expect(fake.messages.some((m) => m.customType === "srcode.hook.warn")).toBe(true);
+  expect(fake.messages.some((m) => m.customType === "pico.hook.warn")).toBe(true);
 });
 
 test("turn_end fires PostUserMessage hooks with $TURN populated", async () => {

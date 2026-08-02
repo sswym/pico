@@ -5,7 +5,7 @@ import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { buildRuntimeArgs } from "../src/runtime/args.ts";
 import { ExtensionRegistry } from "../src/runtime/extensions.ts";
 
-const entryMetaUrl = pathToFileURL(resolve(import.meta.dir, "..", "bin", "srcode.ts")).href;
+const entryMetaUrl = pathToFileURL(resolve(import.meta.dir, "..", "bin", "pico.ts")).href;
 
 test("buildRuntimeArgs injects bundled prompts and skills in source mode", () => {
   const args = buildRuntimeArgs({
@@ -66,7 +66,7 @@ test("ExtensionRegistry rejects duplicates and unmet ordered dependencies", () =
   expect(() => new ExtensionRegistry([
     { name: "same", factory, phase: "tools" },
     { name: "same", factory, phase: "tools" },
-  ])).toThrow("Duplicate srcode extension registered: same");
+  ])).toThrow("Duplicate pico extension registered: same");
 
   expect(() => new ExtensionRegistry([
     { name: "late", factory, phase: "tools", dependsOn: ["missing"] },

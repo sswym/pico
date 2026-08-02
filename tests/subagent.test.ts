@@ -133,7 +133,7 @@ test("discoverAgents finds the six bundled roles under user scope", () => {
   expect(names.has("researcher")).toBe(true);
 
   // Source must be "user" — bundled agents are loaded under user scope so
-  // they're available without symlinking into ~/.srcode/agent.
+  // they're available without symlinking into ~/.pico/agent.
   for (const a of result.agents) expect(a.source).toBe("user");
 });
 
@@ -461,7 +461,7 @@ test("runJsonProcess parses streamed json lines and captures stderr", async () =
   const proc = new FakeProcess();
   let updates = 0;
   const run = runJsonProcess({
-    command: "srcode",
+    command: "pico",
     args: ["--mode", "json"],
     cwd: "/repo",
     result,
@@ -496,7 +496,7 @@ test("runJsonProcess handles process errors, aborts, and timeouts", async () => 
 
   const errorProc = new FakeProcess();
   const errorRun = runJsonProcess({
-    command: "srcode",
+    command: "pico",
     args: [],
     cwd: "/repo",
     result: createInitialResult(agent, "worker", "run", undefined),
@@ -509,7 +509,7 @@ test("runJsonProcess handles process errors, aborts, and timeouts", async () => 
   controller.abort();
   const abortProc = new FakeProcess();
   const abortRun = runJsonProcess({
-    command: "srcode",
+    command: "pico",
     args: [],
     cwd: "/repo",
     result: createInitialResult(agent, "worker", "run", undefined),
@@ -528,7 +528,7 @@ test("runJsonProcess handles process errors, aborts, and timeouts", async () => 
   let timeoutHandler: (() => void) | undefined;
   const timeoutProc = new FakeProcess();
   const timeoutRun = runJsonProcess({
-    command: "srcode",
+    command: "pico",
     args: [],
     cwd: "/repo",
     result: createInitialResult(agent, "worker", "run", undefined),
@@ -1121,8 +1121,8 @@ test("runGateAfterSuccess returns last repair result when repair attempts are ex
 });
 
 test("non-interactive runs refuse project-local agents without the opt-in env flag", async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "srcode-proj-agents-"));
-  const agentsDir = join(cwd, ".srcode", "agents");
+  const cwd = mkdtempSync(join(tmpdir(), "pico-proj-agents-"));
+  const agentsDir = join(cwd, ".pico", "agents");
   mkdirSync(agentsDir, { recursive: true });
   writeFileSync(
     join(agentsDir, "proj.md"),
@@ -1135,8 +1135,8 @@ test("non-interactive runs refuse project-local agents without the opt-in env fl
     ].join("\n"),
     "utf-8",
   );
-  const oldFlag = process.env.SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS;
-  delete process.env.SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS;
+  const oldFlag = process.env.PICO_ALLOW_UNATTENDED_PROJECT_AGENTS;
+  delete process.env.PICO_ALLOW_UNATTENDED_PROJECT_AGENTS;
   try {
     const result = await runSubagentRequest(
       { agent: "proj", task: "do it", agentScope: "both" },
@@ -1151,10 +1151,10 @@ test("non-interactive runs refuse project-local agents without the opt-in env fl
     );
     expect(result.content[0]?.type).toBe("text");
     expect((result.content[0] as { text: string }).text).toContain("Canceled");
-    expect((result.content[0] as { text: string }).text).toContain("SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS");
+    expect((result.content[0] as { text: string }).text).toContain("PICO_ALLOW_UNATTENDED_PROJECT_AGENTS");
   } finally {
-    if (oldFlag === undefined) delete process.env.SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS;
-    else process.env.SRCODE_ALLOW_UNATTENDED_PROJECT_AGENTS = oldFlag;
+    if (oldFlag === undefined) delete process.env.PICO_ALLOW_UNATTENDED_PROJECT_AGENTS;
+    else process.env.PICO_ALLOW_UNATTENDED_PROJECT_AGENTS = oldFlag;
     rmSync(cwd, { recursive: true, force: true });
   }
 });

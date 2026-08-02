@@ -1,8 +1,8 @@
 /**
- * BuiltinMemoryProvider — the default srcode memory backend.
+ * BuiltinMemoryProvider — the default pico memory backend.
  *
  * Wraps MemoryStore (SQLite + FTS5 + TF-IDF) and FactRetriever into the
- * MemoryProvider interface. This is the only provider shipped with srcode;
+ * MemoryProvider interface. This is the only provider shipped with pico;
  * external providers (honcho, mem0, hindsight, etc.) can be added by
  * implementing the MemoryProvider interface.
  */
@@ -22,7 +22,7 @@ import {
 
 /** Keywords that must never be persisted to memory (comma-separated env). */
 function denyKeywords(): string[] {
-  const raw = process.env.SRCODE_MEMORY_DENY ?? "";
+  const raw = process.env.PICO_MEMORY_DENY ?? "";
   return raw
     .split(",")
     .map((s) => s.trim().toLowerCase())
@@ -118,7 +118,7 @@ export class BuiltinMemoryProvider implements MemoryProvider {
   }
 
   /**
-   * Write gate: refuses to persist content matching SRCODE_MEMORY_DENY
+   * Write gate: refuses to persist content matching PICO_MEMORY_DENY
    * keywords. External providers can override this for richer policy.
    * Returns void (allow) when no deny list is configured.
    */

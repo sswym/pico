@@ -12,18 +12,18 @@ import {
 } from "../src/extensions/vision/analyze.ts";
 
 const savedEnv = {
-  home: process.env.SRCODE_HOME,
-  provider: process.env.SRCODE_VISION_PROVIDER,
-  model: process.env.SRCODE_VISION_MODEL,
+  home: process.env.PICO_HOME,
+  provider: process.env.PICO_VISION_PROVIDER,
+  model: process.env.PICO_VISION_MODEL,
 };
 
 afterEach(() => {
-  if (savedEnv.home === undefined) delete process.env.SRCODE_HOME;
-  else process.env.SRCODE_HOME = savedEnv.home;
-  if (savedEnv.provider === undefined) delete process.env.SRCODE_VISION_PROVIDER;
-  else process.env.SRCODE_VISION_PROVIDER = savedEnv.provider;
-  if (savedEnv.model === undefined) delete process.env.SRCODE_VISION_MODEL;
-  else process.env.SRCODE_VISION_MODEL = savedEnv.model;
+  if (savedEnv.home === undefined) delete process.env.PICO_HOME;
+  else process.env.PICO_HOME = savedEnv.home;
+  if (savedEnv.provider === undefined) delete process.env.PICO_VISION_PROVIDER;
+  else process.env.PICO_VISION_PROVIDER = savedEnv.provider;
+  if (savedEnv.model === undefined) delete process.env.PICO_VISION_MODEL;
+  else process.env.PICO_VISION_MODEL = savedEnv.model;
   __resetVisionCacheForTests();
 });
 
@@ -80,8 +80,8 @@ function makeCtx(opts?: { currentInput?: Array<"text" | "image"> }) {
 }
 
 function configureVisionHome(): string {
-  const home = mkdtempSync(join(tmpdir(), "srcode-vision-home-"));
-  process.env.SRCODE_HOME = home;
+  const home = mkdtempSync(join(tmpdir(), "pico-vision-home-"));
+  process.env.PICO_HOME = home;
   mkdirSync(join(home, "agent"), { recursive: true });
   writeFileSync(join(home, "agent", "settings.json"), JSON.stringify({
     auxiliary: {
@@ -98,8 +98,8 @@ test("readVisionConfig reads settings and env overrides", () => {
   const home = configureVisionHome();
   try {
     expect(readVisionConfig()).toEqual({ provider: "openai", model: "gpt-vision" });
-    process.env.SRCODE_VISION_PROVIDER = "google";
-    process.env.SRCODE_VISION_MODEL = "gemini";
+    process.env.PICO_VISION_PROVIDER = "google";
+    process.env.PICO_VISION_MODEL = "gemini";
     expect(readVisionConfig()).toEqual({ provider: "google", model: "gemini" });
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -113,7 +113,7 @@ test("modelSupportsVision checks image input capability", () => {
 });
 
 test("loadImageFromInput accepts data URLs and local paths", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "srcode-vision-image-"));
+  const dir = mkdtempSync(join(tmpdir(), "pico-vision-image-"));
   try {
     const path = join(dir, "sample.png");
     writeFileSync(path, Buffer.from("png-bytes"));

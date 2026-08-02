@@ -88,7 +88,7 @@ function createFakePi() {
 }
 
 test("/init handler sends GENERATE_PROMPT when AGENTS.md does not exist", async () => {
-  const tmpDir = mkdtempSync(join(tmpdir(), "srcode-init-test-"));
+  const tmpDir = mkdtempSync(join(tmpdir(), "pico-init-test-"));
   const { fakePi, getHandler, getLastMessage } = createFakePi();
 
   await initExtension(fakePi);
@@ -100,7 +100,7 @@ test("/init handler sends GENERATE_PROMPT when AGENTS.md does not exist", async 
 });
 
 test("/init handler sends audit instructions when AGENTS.md exists", async () => {
-  const tmpDir = mkdtempSync(join(tmpdir(), "srcode-init-test-"));
+  const tmpDir = mkdtempSync(join(tmpdir(), "pico-init-test-"));
   writeFileSync(join(tmpDir, "AGENTS.md"), "# Existing AGENTS.md\n\nSome content");
   const { fakePi, getHandler, getLastMessage } = createFakePi();
 

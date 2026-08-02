@@ -1,4 +1,4 @@
-# srcode intentionally ships no formatter (see AGENTS.md — no ESLint/Prettier/biome).
+# pico intentionally ships no formatter (see AGENTS.md — no ESLint/Prettier/biome).
 # This file only records the indentation each area already uses, so editors stop
 # introducing drift in new files. It reformats nothing on its own.
 

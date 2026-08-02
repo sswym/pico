@@ -1,6 +1,6 @@
 /**
  * Minimal LSP protocol types — zero dependencies, directly models the spec.
- * Only the subset needed by srcode's LSP extension is included.
+ * Only the subset needed by pico's LSP extension is included.
  */
 
 // ── JSON-RPC base ─────────────────────────────────────────────────────────

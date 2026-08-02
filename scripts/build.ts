@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * build.ts — Compile srcode into a standalone binary with all assets.
+ * build.ts — Compile pico into a standalone binary with all assets.
  *
  * Usage:
  *   bun run scripts/build.ts                          # default: linux-x64
@@ -9,8 +9,8 @@
  *
  * Output layout (e.g., build/):
  *   build/
- *   ├── srcode                  # compiled binary (srcode.exe on Windows)
- *   └── package.json            # generated package.json (sets APP_NAME=srcode)
+ *   ├── pico                  # compiled binary (pico.exe on Windows)
+ *   └── package.json            # generated package.json (sets APP_NAME=pico)
  *
  * All runtime assets (agents, prompts, skills, themes, export-html templates,
  * images) are embedded directly into the binary via src/generated/embedded-assets.ts.
@@ -121,7 +121,7 @@ function generateEmbeddedAssets() {
 
   const entries: Array<{ key: string; value: string; binary?: boolean }> = [];
 
-  // 1. srcode agents
+  // 1. pico agents
   const agentsDir = resolve(ROOT, "src", "prompts", "agents");
   if (existsSync(agentsDir)) {
     for (const f of readdirSync(agentsDir, { withFileTypes: true })) {
@@ -132,7 +132,7 @@ function generateEmbeddedAssets() {
     }
   }
 
-  // 2. srcode prompts (all .md files in src/prompts/)
+  // 2. pico prompts (all .md files in src/prompts/)
   const promptsDir = resolve(ROOT, "src", "prompts");
   if (existsSync(promptsDir)) {
     for (const f of readdirSync(promptsDir, { withFileTypes: true })) {
@@ -143,7 +143,7 @@ function generateEmbeddedAssets() {
     }
   }
 
-  // 3. srcode skills (recursive — preserves subdirectory structure)
+  // 3. pico skills (recursive — preserves subdirectory structure)
   const skillsDir = resolve(ROOT, "src", "skills");
   if (existsSync(skillsDir)) {
     for (const abs of collectFiles(skillsDir)) {
@@ -224,11 +224,11 @@ async function main() {
   const { target, outDir } = parseArgs();
 
   const isWin = target.includes("windows");
-  const binaryName = isWin ? "srcode.exe" : "srcode";
+  const binaryName = isWin ? "pico.exe" : "pico";
   const binaryPath = join(outDir, binaryName);
-  const entrypoint = resolve(ROOT, "bin", "srcode.ts");
+  const entrypoint = resolve(ROOT, "bin", "pico.ts");
 
-  console.log(`\n  Building srcode binary\n`);
+  console.log(`\n  Building pico binary\n`);
   console.log(`  Target:    ${target}`);
   console.log(`  Output:    ${outDir}`);
   console.log(`  Entry:     ${entrypoint}`);
@@ -280,14 +280,14 @@ async function main() {
   console.log(`\n  ── Generating pi package.json ──`);
 
   if (existsSync(PI_PKG)) {
-    // Generate a custom package.json so pi's config.js reads APP_NAME="srcode"
+    // Generate a custom package.json so pi's config.js reads APP_NAME="pico"
     // instead of the upstream default "pi". This makes process.title, share URL
-    // and internal references all use "srcode" in the compiled binary.
+    // and internal references all use "pico" in the compiled binary.
     const piPkg = JSON.parse(readFileSync(PI_PKG, "utf-8"));
     const customPkg = {
-      name: "srcode",
+      name: "pico",
       version: piPkg.version,
-      piConfig: { name: "srcode", configDir: ".srcode" },
+      piConfig: { name: "pico", configDir: ".pico" },
     };
     writeFileSync(join(outDir, "package.json"), JSON.stringify(customPkg, null, 2) + "\n");
     console.log(`  ✓  custom package.json (${formatSize(getFileSize(join(outDir, "package.json")))})`);

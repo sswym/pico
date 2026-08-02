@@ -3,17 +3,17 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildSetupSummary, configureCodeGraphMcp, configureRtkIntegration, parseSetupArgs, resetSetupConfig, runSection, runSetupCommand, writeCustomProvider, type SetupLanguage, type SetupPrompter, type SetupShell } from "../src/setup/index.ts";
-import { srcodeLspConfigPath, srcodeMcpConfigPath, srcodeModelsPath, srcodeSettingsPath } from "../src/extensions/paths.ts";
+import { picoLspConfigPath, picoMcpConfigPath, picoModelsPath, picoSettingsPath } from "../src/extensions/paths.ts";
 
 const savedEnv = {
-  home: process.env.SRCODE_HOME,
+  home: process.env.PICO_HOME,
   openai: process.env.OPENAI_API_KEY,
   tavily: process.env.TAVILY_API_KEY,
 };
 
 afterEach(() => {
-  if (savedEnv.home === undefined) delete process.env.SRCODE_HOME;
-  else process.env.SRCODE_HOME = savedEnv.home;
+  if (savedEnv.home === undefined) delete process.env.PICO_HOME;
+  else process.env.PICO_HOME = savedEnv.home;
   if (savedEnv.openai === undefined) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = savedEnv.openai;
   if (savedEnv.tavily === undefined) delete process.env.TAVILY_API_KEY;
@@ -21,8 +21,8 @@ afterEach(() => {
 });
 
 function useTempHome(): string {
-  const home = mkdtempSync(join(tmpdir(), "srcode-setup-home-"));
-  process.env.SRCODE_HOME = home;
+  const home = mkdtempSync(join(tmpdir(), "pico-setup-home-"));
+  process.env.PICO_HOME = home;
   return home;
 }
 
@@ -81,7 +81,7 @@ test("non-interactive setup writes safe defaults and imports configured env", as
     }, output.io as any);
 
     expect(code).toBe(0);
-    const settings = readJson(srcodeSettingsPath());
+    const settings = readJson(picoSettingsPath());
     expect(settings.language).toBe("简体中文");
     expect(settings.safety).toMatchObject({
       enableProjectHooks: false,
@@ -91,7 +91,7 @@ test("non-interactive setup writes safe defaults and imports configured env", as
     });
     expect(settings.env.OPENAI_API_KEY).toBe("sk-test");
     expect(settings.env.TAVILY_API_KEY).toBe("tv-test");
-    expect(output.output).toContain("srcode setup complete");
+    expect(output.output).toContain("pico setup complete");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -101,7 +101,7 @@ test("writeCustomProvider updates models.json and preserves existing providers",
   const home = useTempHome();
   try {
     mkdirSync(join(home, "agent"), { recursive: true });
-    writeFileSync(srcodeModelsPath(), JSON.stringify({
+    writeFileSync(picoModelsPath(), JSON.stringify({
       providers: {
         old: { baseUrl: "http://old", api: "openai-completions", apiKey: "old", models: [{ id: "m" }] },
       },
@@ -115,7 +115,7 @@ test("writeCustomProvider updates models.json and preserves existing providers",
       model: "qwen2.5-coder:7b",
     });
 
-    const models = readJson(srcodeModelsPath());
+    const models = readJson(picoModelsPath());
     expect(models.providers.old.models[0].id).toBe("m");
     expect(models.providers.local).toMatchObject({
       baseUrl: "http://localhost:11434/v1",
@@ -136,7 +136,7 @@ test("resetSetupConfig removes only setup-managed settings", () => {
   const home = useTempHome();
   try {
     mkdirSync(join(home, "agent"), { recursive: true });
-    writeFileSync(srcodeSettingsPath(), JSON.stringify({
+    writeFileSync(picoSettingsPath(), JSON.stringify({
       defaultProvider: "openai",
       defaultModel: "gpt-5.5",
       language: "English",
@@ -153,7 +153,7 @@ test("resetSetupConfig removes only setup-managed settings", () => {
 
     resetSetupConfig();
 
-    const settings = readJson(srcodeSettingsPath());
+    const settings = readJson(picoSettingsPath());
     expect(settings.defaultProvider).toBeUndefined();
     expect(settings.defaultModel).toBeUndefined();
     expect(settings.language).toBeUndefined();
@@ -168,12 +168,12 @@ test("resetSetupConfig removes only setup-managed settings", () => {
   }
 });
 
-test("configureCodeGraphMcp writes srcode user MCP server", () => {
+test("configureCodeGraphMcp writes pico user MCP server", () => {
   const home = useTempHome();
   try {
     configureCodeGraphMcp({ telemetry: "0" });
 
-    const config = readJson(srcodeMcpConfigPath());
+    const config = readJson(picoMcpConfigPath());
     expect(config.mcpServers.codegraph).toEqual({
       command: "codegraph",
       args: ["serve", "--mcp"],
@@ -189,7 +189,7 @@ test("configureRtkIntegration writes integration settings", () => {
   try {
     configureRtkIntegration({ enabled: true, mode: "spawnHook", command: "rtk" });
 
-    const settings = readJson(srcodeSettingsPath());
+    const settings = readJson(picoSettingsPath());
     expect(settings.integrations.rtk).toEqual({
       enabled: true,
       mode: "spawnHook",
@@ -207,16 +207,16 @@ test("setup summary includes managed config files and memory backend", () => {
   const home = useTempHome();
   try {
     mkdirSync(join(home, "agent"), { recursive: true });
-    writeFileSync(srcodeLspConfigPath(), JSON.stringify({ formatOnWrite: true }));
+    writeFileSync(picoLspConfigPath(), JSON.stringify({ formatOnWrite: true }));
     writeFileSync(join(home, "hooks.json"), JSON.stringify({ hooks: [] }));
-    writeFileSync(srcodeMcpConfigPath(), JSON.stringify({ mcpServers: {} }));
+    writeFileSync(picoMcpConfigPath(), JSON.stringify({ mcpServers: {} }));
 
     const summary = buildSetupSummary({ memory: { backend: "builtin" } }, {}, "en");
 
     expect(summary).toContain("memory: builtin");
-    expect(summary).toContain(`LSP config: ${srcodeLspConfigPath()}`);
+    expect(summary).toContain(`LSP config: ${picoLspConfigPath()}`);
     expect(summary).toContain(`hooks config: ${join(home, "hooks.json")}`);
-    expect(summary).toContain(`MCP config: ${srcodeMcpConfigPath()}`);
+    expect(summary).toContain(`MCP config: ${picoMcpConfigPath()}`);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -285,7 +285,7 @@ function scriptedPrompter(script: PromptScript = {}, language: SetupLanguage = "
   return { prompter, asked };
 }
 
-/** Run one section against a temp SRCODE_HOME and hand back what it wrote. */
+/** Run one section against a temp PICO_HOME and hand back what it wrote. */
 async function withSection(
   section: Parameters<typeof runSection>[0],
   script: PromptScript,
@@ -307,7 +307,7 @@ async function withSection(
     seed?.(home);
     await runSection(section, prompter, collector.io as any, shell);
     fn({
-      settings: () => readJson(srcodeSettingsPath()),
+      settings: () => readJson(picoSettingsPath()),
       asked,
       output: collector.output,
       home,
@@ -357,7 +357,7 @@ test("safety section offers existing values as the defaults and keeps them", asy
       });
     },
     () => {
-      writeFileSync(srcodeSettingsPath(), JSON.stringify({
+      writeFileSync(picoSettingsPath(), JSON.stringify({
         safety: {
           enableProjectHooks: true,
           enableProjectMcp: false,
@@ -400,7 +400,7 @@ test("safety section preserves unrelated settings", async () => {
       expect(s.safety.enableProjectHooks).toBe(true);
     },
     () => {
-      writeFileSync(srcodeSettingsPath(), JSON.stringify({
+      writeFileSync(picoSettingsPath(), JSON.stringify({
         defaultProvider: "anthropic",
         language: "English",
       }));
@@ -428,7 +428,7 @@ test("memory section stores the chosen backend and deny list", async () => {
     { choice: [1], optionalValue: ["secret,token"] },
     ({ settings, asked }) => {
       expect(settings().memory.backend).toBe("holographic");
-      expect(settings().env.SRCODE_MEMORY_DENY).toBe("secret,token");
+      expect(settings().env.PICO_MEMORY_DENY).toBe("secret,token");
       expect(asked.choice[0]!.choices).toEqual(["builtin", "holographic"]);
     },
   );
@@ -442,7 +442,7 @@ test("memory section defaults to the builtin backend", async () => {
 
 test("lsp section stores formatOnWrite and a valid idle timeout", async () => {
   await withSection("lsp", { yesNo: [true], text: ["30000"] }, ({ home }) => {
-    const config = readJson(srcodeLspConfigPath());
+    const config = readJson(picoLspConfigPath());
     expect(config.formatOnWrite).toBe(true);
     expect(config.idleTimeoutMs).toBe(30000);
     expect(home).toBeTruthy();
@@ -451,7 +451,7 @@ test("lsp section stores formatOnWrite and a valid idle timeout", async () => {
 
 test("lsp section ignores a non-numeric idle timeout", async () => {
   await withSection("lsp", { yesNo: [false], text: ["not-a-number"] }, () => {
-    const config = readJson(srcodeLspConfigPath());
+    const config = readJson(picoLspConfigPath());
     expect(config.formatOnWrite).toBe(false);
     expect(config.idleTimeoutMs).toBeUndefined();
   });
@@ -459,7 +459,7 @@ test("lsp section ignores a non-numeric idle timeout", async () => {
 
 test("lsp section rejects a non-positive idle timeout", async () => {
   await withSection("lsp", { yesNo: [false], text: ["0"] }, () => {
-    expect(readJson(srcodeLspConfigPath()).idleTimeoutMs).toBeUndefined();
+    expect(readJson(picoLspConfigPath()).idleTimeoutMs).toBeUndefined();
   });
 });
 
@@ -510,7 +510,7 @@ test("mcp section writes a server and splits its args", async () => {
     { yesNo: [true, true], text: ["ctx7", "npx", "-y  @upstash/context7-mcp"] },
     ({ settings }) => {
       expect(settings().safety.enableProjectMcp).toBe(true);
-      const servers = readJson(srcodeMcpConfigPath()).mcpServers;
+      const servers = readJson(picoMcpConfigPath()).mcpServers;
       expect(servers.ctx7).toEqual({
         command: "npx",
         args: ["-y", "@upstash/context7-mcp"],
@@ -524,7 +524,7 @@ test("mcp section omits args when none are given", async () => {
     "mcp",
     { yesNo: [false, true], text: ["bare", "some-command", "   "] },
     () => {
-      expect(readJson(srcodeMcpConfigPath()).mcpServers.bare).toEqual({ command: "some-command" });
+      expect(readJson(picoMcpConfigPath()).mcpServers.bare).toEqual({ command: "some-command" });
     },
   );
 });
@@ -592,7 +592,7 @@ test("model section writes nothing when the skip entry is chosen", async () => {
   // Index 5 is past the 4 known providers and the custom entry => skip.
   await withSection("model", { choice: [5] }, () => {
     // Skipping must not create a settings file at all.
-    expect(existsSync(srcodeSettingsPath())).toBe(false);
+    expect(existsSync(picoSettingsPath())).toBe(false);
   });
 });
 
@@ -603,7 +603,7 @@ test("tools section stores the search provider and vision config", async () => {
     { choice: [2], yesNo: [true], text: ["openai", "gpt-4o-mini"], optionalSecret: ["tv-key"] },
     ({ settings }) => {
       const s = settings();
-      expect(s.env.SRCODE_SEARCH_PROVIDER).toBe("tavily");
+      expect(s.env.PICO_SEARCH_PROVIDER).toBe("tavily");
       expect(s.env.TAVILY_API_KEY).toBe("tv-key");
       expect(s.auxiliary.vision).toMatchObject({ provider: "openai", model: "gpt-4o-mini" });
     },
@@ -612,7 +612,7 @@ test("tools section stores the search provider and vision config", async () => {
 
 test("tools section clears the search provider on the default choice", async () => {
   await withSection("tools", { choice: [0], yesNo: [false] }, ({ settings }) => {
-    expect(settings().env?.SRCODE_SEARCH_PROVIDER).toBeUndefined();
+    expect(settings().env?.PICO_SEARCH_PROVIDER).toBeUndefined();
     expect(settings().auxiliary).toBeUndefined();
   });
 });
@@ -746,7 +746,7 @@ test("integrations section registers the codegraph MCP server with telemetry off
     // enable, telemetryOff=true, mcp=true
     { yesNo: [true, true, true] },
     () => {
-      const server = readJson(srcodeMcpConfigPath()).mcpServers.codegraph;
+      const server = readJson(picoMcpConfigPath()).mcpServers.codegraph;
       expect(server).toMatchObject({ command: "codegraph", args: ["serve", "--mcp"] });
       expect(server.env.CODEGRAPH_TELEMETRY).toBe("0");
     },
@@ -762,7 +762,7 @@ test("integrations section leaves telemetry unset when the user keeps it on", as
     // enable, telemetryOff=false, mcp=true
     { yesNo: [true, false, true] },
     () => {
-      const server = readJson(srcodeMcpConfigPath()).mcpServers.codegraph;
+      const server = readJson(picoMcpConfigPath()).mcpServers.codegraph;
       expect(server.env?.CODEGRAPH_TELEMETRY).toBeUndefined();
     },
     undefined,
@@ -873,7 +873,7 @@ test("integrations section offers stored values as defaults", async () => {
       expect(asked.choice[0]!.defaultIndex).toBe(1);
     },
     () => {
-      writeFileSync(srcodeSettingsPath(), JSON.stringify({
+      writeFileSync(picoSettingsPath(), JSON.stringify({
         integrations: {
           codegraph: { enabled: true },
           rtk: { enabled: true, mode: "instructionsOnly", command: "rtk" },
@@ -893,7 +893,7 @@ test("integrations section preserves an existing custom rtk command", async () =
       expect(settings().integrations.rtk.command).toBe("/opt/bin/rtk");
     },
     () => {
-      writeFileSync(srcodeSettingsPath(), JSON.stringify({
+      writeFileSync(picoSettingsPath(), JSON.stringify({
         integrations: { rtk: { command: "/opt/bin/rtk" } },
       }));
     },

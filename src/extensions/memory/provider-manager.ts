@@ -23,7 +23,7 @@ import type { Scope } from "./schema.ts";
 import { BuiltinMemoryProvider } from "./builtin-provider.ts";
 import { HolographicMemoryProvider } from "./holographic-provider.ts";
 import { WriteQueue } from "./provider.ts";
-import { srcodeMemoryDbPath, srcodeSettingsPath } from "../paths.ts";
+import { picoMemoryDbPath, picoSettingsPath } from "../paths.ts";
 
 export interface MemorySettings {
   /** Backend identifier: "builtin" | provider name. Default "builtin". */
@@ -53,7 +53,7 @@ registerMemoryProviderFactory("holographic", () => new HolographicMemoryProvider
 
 function readMemorySettings(): MemorySettings {
   try {
-    const raw = JSON.parse(readFileSync(srcodeSettingsPath(), "utf-8"));
+    const raw = JSON.parse(readFileSync(picoSettingsPath(), "utf-8"));
     if (raw && typeof raw === "object" && "memory" in raw) {
       const mem = (raw as Record<string, unknown>).memory;
       if (mem && typeof mem === "object") return mem as MemorySettings;
@@ -66,7 +66,7 @@ function readMemorySettings(): MemorySettings {
 
 function readSettingsFile(): Record<string, unknown> {
   try {
-    const raw = JSON.parse(readFileSync(srcodeSettingsPath(), "utf-8"));
+    const raw = JSON.parse(readFileSync(picoSettingsPath(), "utf-8"));
     return raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
   } catch {
     return {};
@@ -74,13 +74,13 @@ function readSettingsFile(): Record<string, unknown> {
 }
 
 function writeSettingsFile(settings: Record<string, unknown>): void {
-  const path = srcodeSettingsPath();
+  const path = picoSettingsPath();
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
 }
 
 export function resolveDbPath(): string {
-  return srcodeMemoryDbPath();
+  return picoMemoryDbPath();
 }
 
 const FENCE_TAG_RE = /<\/?\s*memory-context\s*>/gi;

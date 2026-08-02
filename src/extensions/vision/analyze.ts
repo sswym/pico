@@ -54,8 +54,8 @@ function stringValue(value: unknown): string | undefined {
 }
 
 export function readVisionConfig(): VisionConfig | null {
-  const envProvider = stringValue(process.env.SRCODE_VISION_PROVIDER);
-  const envModel = stringValue(process.env.SRCODE_VISION_MODEL);
+  const envProvider = stringValue(process.env.PICO_VISION_PROVIDER);
+  const envModel = stringValue(process.env.PICO_VISION_MODEL);
   if (envProvider && envModel) return { provider: envProvider, model: envModel };
 
   const auxiliary = readSettingsObject("auxiliary");
@@ -204,7 +204,7 @@ export async function analyzeImageWithVisionModel(
   const config = readVisionConfig();
   if (!config) {
     throw new Error(
-      "No auxiliary vision model configured. Set auxiliary.vision.provider/model in ~/.srcode/agent/settings.json or SRCODE_VISION_PROVIDER/SRCODE_VISION_MODEL.",
+      "No auxiliary vision model configured. Set auxiliary.vision.provider/model in ~/.pico/agent/settings.json or PICO_VISION_PROVIDER/PICO_VISION_MODEL.",
     );
   }
 

@@ -35,7 +35,7 @@ export function publishExtensionEvent<K extends keyof ExtensionEvents>(
     } catch (err) {
       // One misbehaving subscriber must not break the rest of the chain
       // (e.g. subagent completion events feeding memory delegation).
-      console.warn(`[srcode events] handler for '${eventName}' threw:`, err);
+      console.warn(`[pico events] handler for '${eventName}' threw:`, err);
     }
   }
 }
