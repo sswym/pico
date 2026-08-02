@@ -30,8 +30,7 @@ import { srcodeHome } from "../paths.ts";
 import { allowUnattendedPlanApproval } from "../policy.ts";
 import { PLAN_MODE_BLOCK } from "./prompt.ts";
 
-// Tools that mutate the world. Blocked while plan mode is active.
-const WRITE_TOOLS = new Set(["bash", "edit", "write", "NotebookEdit"]);
+const PLAN_ALLOWED_TOOLS = new Set(["read", "grep", "find", "ls", "EnterPlanMode", "SubmitPlan", "ExitPlanMode"]);
 
 const SESSION_FALLBACK = "default";
 
@@ -88,6 +87,9 @@ async function readPlanFile(path: string): Promise<string> {
 }
 
 const EmptyParams = Type.Object({});
+const SubmitPlanParams = Type.Object({
+  content: Type.String({ description: "Complete plan text to save for user approval." }),
+});
 
 export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // ---- EnterPlanMode ----------------------------------------------------
@@ -96,9 +98,9 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       name: "EnterPlanMode",
       label: "EnterPlanMode",
       description:
-        "Enter plan mode. While in plan mode, only read/grep/find/ls are usable; bash/edit/write are blocked. Write your plan to the plan file path returned by this call, then call ExitPlanMode for user approval.",
+        "Enter plan mode. While in plan mode, only read/grep/find/ls and plan tools are usable. Call SubmitPlan with your complete plan, then call ExitPlanMode for user approval.",
       promptSnippet:
-        "EnterPlanMode — switch to read-only research; bash/edit/write are blocked until ExitPlanMode is approved.",
+        "EnterPlanMode — switch to read-only research; submit the plan with SubmitPlan before ExitPlanMode.",
       parameters: EmptyParams,
       renderCall(args, theme, context) {
         return renderToolCallText("EnterPlanMode", args, theme, context);
@@ -112,10 +114,47 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         await ensurePlanFile(planFile);
         const text =
           `Plan mode enabled. Plan file: ${planFile}\n` +
-          `Use read/grep/find/ls only. Write the plan to that file, then call ExitPlanMode.`;
+          `Use read/grep/find/ls only. Call SubmitPlan with the complete plan, then call ExitPlanMode.`;
         return {
           content: [{ type: "text" as const, text }],
           details: { planActive: true, planFile },
+        };
+      },
+    }),
+  );
+
+  // ---- SubmitPlan ------------------------------------------------------
+  pi.registerTool(
+    defineTool({
+      name: "SubmitPlan",
+      label: "SubmitPlan",
+      description:
+        "Save the complete plan while plan mode is active. This is the only write-like action allowed before ExitPlanMode approval.",
+      promptSnippet:
+        "SubmitPlan — save the complete plan for ExitPlanMode approval while plan mode is active.",
+      parameters: SubmitPlanParams,
+      renderCall(args, theme, context) {
+        return renderToolCallText("SubmitPlan", args, theme, context);
+      },
+      renderResult(result, options, theme, context) {
+        return renderToolResultText(result, options, theme, context);
+      },
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        if (!planActive) {
+          return {
+            content: [{ type: "text" as const, text: "Plan mode is not active." }],
+            details: { planActive: false },
+            isError: true,
+          };
+        }
+        const path = planFile ?? resolvePlanFile(ctx);
+        planFile = path;
+        await ensurePlanFile(path);
+        const content = params.content.trimEnd();
+        await Bun.write(path, content.length > 0 ? `${content}\n` : "");
+        return {
+          content: [{ type: "text" as const, text: `Plan saved to ${path}. Call ExitPlanMode when ready for approval.` }],
+          details: { planActive: true, planFile: path },
         };
       },
     }),
@@ -193,19 +232,19 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.on("before_agent_start", (event) => {
     if (!planActive) return;
     const base = event.systemPrompt ?? "";
-    const trailer = planFile ? `\n\nWrite/append your plan to: ${planFile}` : "";
+    const trailer = planFile ? `\n\nSubmitPlan will save the plan for review at: ${planFile}` : "";
     return { systemPrompt: `${base}\n\n${PLAN_MODE_BLOCK}${trailer}` };
   });
 
-  // ---- block writes while plan mode is active ---------------------------
+  // ---- block non-plan, non-read tools while plan mode is active ---------
   pi.on("tool_call", (event) => {
     if (!planActive) return;
-    if (!WRITE_TOOLS.has(event.toolName)) return;
+    if (PLAN_ALLOWED_TOOLS.has(event.toolName)) return;
     const target = planFile ?? "(plan file not yet initialised)";
     return {
       block: true,
       reason:
-        `In plan mode. Use read/grep/find/ls to research, then write your plan to ${target}. ` +
+        `In plan mode. Use read/grep/find/ls to research, then call SubmitPlan to save the plan to ${target}. ` +
         `Call ExitPlanMode for user approval before any writes.`,
     };
   });

@@ -132,7 +132,7 @@ export async function checkAcceptanceGate(
 
 	// Criteria without a matching evidence entry are considered failed.
 	const failedCriteria = (acceptance.criteria ?? []).filter((_, i) =>
-		evidenceResults[i] && !evidenceResults[i].passed,
+		!evidenceResults[i] || !evidenceResults[i].passed,
 	);
 
 	return {

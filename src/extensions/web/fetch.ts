@@ -220,6 +220,7 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
   const fetcher = opts.fetcher ?? globalThis.fetch;
   const timeout = withTimeoutSignal(opts.signal, FETCH_TIMEOUT_MS);
   let response!: Response;
+  let finalUrl = upgraded;
   try {
     // Follow redirects manually so every hop is re-validated against the
     // private-network guard. `redirect: "follow"` would let a public URL
@@ -233,6 +234,7 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
         signal: timeout.signal,
         redirect: "manual",
       });
+      finalUrl = currentUrl;
       if (response.status < 300 || response.status >= 400) break;
       const location = response.headers.get("location");
       if (!location) break;
@@ -257,7 +259,7 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
   const { out, truncated } = truncateBytes(markdown, FETCH_MAX_OUTPUT_BYTES);
 
   const page: FetchedPage = {
-    url: upgraded,
+    url: finalUrl,
     status: response.status,
     statusText: response.statusText,
     contentType,

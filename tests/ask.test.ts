@@ -203,6 +203,65 @@ describe("askExtension execute()", () => {
     });
   });
 
+  test("single question shows header, description, and preview in select UI", async () => {
+    const tool = await loadAskTool();
+    const optionText = "balanced · Slower but safer · preview\nRun targeted tests before broad verify.";
+    const { ctx, calls } = makeUi({ selectQueue: [optionText] });
+    const res = await tool.execute(
+      "id",
+      {
+        questions: [
+          {
+            question: "Approach?",
+            header: "Plan",
+            options: [
+              { label: "balanced", description: "Slower but safer", preview: "Run targeted tests before broad verify." },
+              { label: "fast", description: "Skip extra checks" },
+            ],
+          },
+        ],
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    expect(res.isError).toBeUndefined();
+    expect(calls[0]!.title).toBe("[Plan] Approach?");
+    expect(calls[0]!.options).toContain(optionText);
+    expect(parseDetails(res).answers["Approach?"]).toEqual({
+      picks: ["balanced"],
+      preview: "Run targeted tests before broad verify.",
+    });
+  });
+
+  test("reserved option labels are rejected before prompting", async () => {
+    const tool = await loadAskTool();
+    const { ctx, calls } = makeUi({});
+    const res = await tool.execute(
+      "id",
+      {
+        questions: [
+          {
+            question: "Runtime?",
+            header: "Runtime",
+            options: [
+              { label: "Other", description: "Real option" },
+              { label: "bun", description: "" },
+            ],
+          },
+        ],
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    expect(res.isError).toBe(true);
+    expect(parseDetails(res).error).toContain("reserved option label");
+    expect(calls).toHaveLength(0);
+  });
+
   test("user picks Other → input collected as notes", async () => {
     const tool = await loadAskTool();
     const { ctx, calls } = makeUi({ selectQueue: ["Other"], inputQueue: ["deno"] });

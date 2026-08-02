@@ -38,6 +38,7 @@ void Type;
 
 const DONE_SENTINEL = "(done — submit)";
 const PREVIEW_SUFFIX = " · preview";
+const RESERVED_LABELS = new Set([OTHER_LABEL, DONE_SENTINEL]);
 
 interface QuestionAnswer {
   picks: string[];
@@ -65,8 +66,17 @@ function jsonResult(payload: unknown) {
   };
 }
 
+function questionTitle(question: AskQuestionInput): string {
+  return question.header ? `[${question.header}] ${question.question}` : question.question;
+}
+
 function decorateLabel(opt: AskOptionInput): string {
-  return opt.preview ? `${opt.label}${PREVIEW_SUFFIX}` : opt.label;
+  const parts = [opt.label];
+  const description = opt.description.trim();
+  if (description) parts.push(description);
+  let label = parts.join(" · ");
+  if (opt.preview) label = `${label}${PREVIEW_SUFFIX}\n${opt.preview}`;
+  return label;
 }
 
 function findOptionByDecoratedLabel(
@@ -76,16 +86,34 @@ function findOptionByDecoratedLabel(
   return options.find((o) => decorateLabel(o) === decorated);
 }
 
+function validateQuestionLabels(question: AskQuestionInput): string | null {
+  const displayLabels = new Set<string>();
+  for (const opt of question.options) {
+    if (RESERVED_LABELS.has(opt.label)) {
+      return `Question "${question.question}" uses reserved option label "${opt.label}".`;
+    }
+    const display = decorateLabel(opt);
+    if (RESERVED_LABELS.has(display)) {
+      return `Question "${question.question}" has an option that conflicts with an internal control label.`;
+    }
+    if (displayLabels.has(display)) {
+      return `Question "${question.question}" has duplicate displayed option "${display}".`;
+    }
+    displayLabels.add(display);
+  }
+  return null;
+}
+
 async function askSingle(
   ctx: ExtensionContext,
   question: AskQuestionInput,
 ): Promise<QuestionAnswer | null> {
   const labels = [...question.options.map(decorateLabel), OTHER_LABEL];
-  const choice = await ctx.ui.select(question.question, labels);
+  const choice = await ctx.ui.select(questionTitle(question), labels);
   if (choice === undefined) return null;
 
   if (choice === OTHER_LABEL) {
-    const notes = await ctx.ui.input(question.question, "Type your answer…");
+    const notes = await ctx.ui.input(questionTitle(question), "Type your answer…");
     if (notes === undefined) return null;
     return { picks: [OTHER_LABEL], notes };
   }
@@ -106,26 +134,28 @@ async function askMulti(
   let otherNotes: string | undefined;
 
   while (remaining.size > 0) {
-    const labels = [...Array.from(remaining), OTHER_LABEL, DONE_SENTINEL];
+    const remainingOptions = question.options.filter((o) => remaining.has(o.label));
+    const labels = [...remainingOptions.map(decorateLabel), OTHER_LABEL, DONE_SENTINEL];
     const title =
       picked.length === 0
-        ? question.question
-        : `${question.question} (already picked: ${picked.join(", ")})`;
+        ? questionTitle(question)
+        : `${questionTitle(question)} (already picked: ${picked.join(", ")})`;
     const choice = await ctx.ui.select(title, labels);
     if (choice === undefined) return null;
     if (choice === DONE_SENTINEL) break;
 
     if (choice === OTHER_LABEL) {
-      const notes = await ctx.ui.input(question.question, "Type additional answer…");
+      const notes = await ctx.ui.input(questionTitle(question), "Type additional answer…");
       if (notes === undefined) return null;
       if (!picked.includes(OTHER_LABEL)) picked.push(OTHER_LABEL);
       otherNotes = otherNotes ? `${otherNotes}\n${notes}` : notes;
       continue;
     }
 
-    if (remaining.has(choice)) {
-      picked.push(choice);
-      remaining.delete(choice);
+    const opt = findOptionByDecoratedLabel(remainingOptions, choice);
+    if (opt && remaining.has(opt.label)) {
+      picked.push(opt.label);
+      remaining.delete(opt.label);
     }
   }
 
@@ -160,6 +190,10 @@ export const askExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           return errorResult(
             `Question "${offending}" combines preview options with multiSelect. preview is single-select only.`,
           );
+        }
+        for (const question of params.questions) {
+          const labelError = validateQuestionLabels(question);
+          if (labelError) return errorResult(labelError);
         }
 
         const answers: AskAnswers = {};

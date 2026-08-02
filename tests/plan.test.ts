@@ -4,7 +4,7 @@
  * Cover the state machine that runs in `src/extensions/plan/index.ts`:
  *   - default state: planActive=false, tool_call doesn't block
  *   - EnterPlanMode flips planActive=true and seeds the plan file
- *   - while active, write tools (bash/edit/write/NotebookEdit) are blocked
+ *   - while active, non-read/plan tools are blocked
  *     with a reason that mentions plan mode
  *   - read-only tools (read/grep/find/ls) are NOT blocked
  *   - ExitPlanMode in non-UI mode stays in plan mode unless explicitly opted in
@@ -118,13 +118,13 @@ test("EnterPlanMode flips planActive=true, seeds plan file, returns its path", a
   expect(content).toContain("# Plan");
 });
 
-test("while plan mode is active, bash/edit/write/NotebookEdit are blocked", async () => {
+test("while plan mode is active, non-read and non-plan tools are blocked", async () => {
   const pi = makeFakePi();
   planExtension(pi as any);
   await pi.tools.get("EnterPlanMode")!.execute("c", {}, undefined, undefined, makeCtx());
   const handler = pi.handlers["tool_call"]![0]!;
 
-  for (const toolName of ["bash", "edit", "write", "NotebookEdit"]) {
+  for (const toolName of ["bash", "edit", "write", "NotebookEdit", "memory", "subagent", "webSearch"]) {
     const result = await handler(
       { type: "tool_call", toolCallId: "t", toolName, input: {} },
       makeCtx(),
@@ -135,19 +135,63 @@ test("while plan mode is active, bash/edit/write/NotebookEdit are blocked", asyn
   }
 });
 
-test("read/grep/find/ls are NOT blocked while plan mode is active", async () => {
+test("read/grep/find/ls and plan tools are NOT blocked while plan mode is active", async () => {
   const pi = makeFakePi();
   planExtension(pi as any);
   await pi.tools.get("EnterPlanMode")!.execute("c", {}, undefined, undefined, makeCtx());
   const handler = pi.handlers["tool_call"]![0]!;
 
-  for (const toolName of ["read", "grep", "find", "ls"]) {
+  for (const toolName of ["read", "grep", "find", "ls", "SubmitPlan", "ExitPlanMode"]) {
     const result = await handler(
       { type: "tool_call", toolCallId: "t", toolName, input: {} },
       makeCtx(),
     );
     expect(result).toBeUndefined();
   }
+});
+
+test("SubmitPlan saves plan content for ExitPlanMode approval", async () => {
+  const pi = makeFakePi();
+  planExtension(pi as any);
+  const ctx = makeCtx({
+    sessionId: "submit-test",
+    hasUI: true,
+    confirm: async (_title, msg) => msg.includes("1. Inspect\n2. Verify"),
+  });
+
+  await pi.tools.get("EnterPlanMode")!.execute("c1", {}, undefined, undefined, ctx);
+  const submit = await pi.tools.get("SubmitPlan")!.execute(
+    "c2",
+    { content: "1. Inspect\n2. Verify" },
+    undefined,
+    undefined,
+    ctx,
+  );
+  const expectedPath = join(tmpRoot, "plans", "submit-test.md");
+
+  expect(submit.details.planFile).toBe(expectedPath);
+  expect(await Bun.file(expectedPath).text()).toBe("1. Inspect\n2. Verify\n");
+
+  const exit = await pi.tools.get("ExitPlanMode")!.execute("c3", {}, undefined, undefined, ctx);
+  expect(exit.details.approved).toBe(true);
+  expect(exit.details.plan).toContain("1. Inspect");
+  expect(__getPlanStateForTests().planActive).toBe(false);
+});
+
+test("SubmitPlan fails outside plan mode", async () => {
+  const pi = makeFakePi();
+  planExtension(pi as any);
+
+  const result = await pi.tools.get("SubmitPlan")!.execute(
+    "c",
+    { content: "1. nope" },
+    undefined,
+    undefined,
+    makeCtx(),
+  );
+
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("not active");
 });
 
 test("ExitPlanMode in non-UI mode requires explicit unattended opt-in", async () => {
@@ -221,6 +265,7 @@ test("before_agent_start appends the PLAN_MODE_BLOCK while active and not while 
   expect(active).toBeDefined();
   expect(active.systemPrompt).toContain("BASE");
   expect(active.systemPrompt).toMatch(/计划模式已激活/);
+  expect(active.systemPrompt).toContain("SubmitPlan");
   expect(active.systemPrompt).toContain("inj.md");
 });
 

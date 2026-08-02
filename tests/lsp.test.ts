@@ -33,6 +33,7 @@ import {
   loadConfig,
   setIdleTimeout,
   syncDocument,
+  syncDocumentForFile,
   stopServer,
 } from "../src/extensions/lsp/manager.ts";
 import type { TextEdit } from "../src/extensions/lsp/types.ts";
@@ -317,6 +318,91 @@ describe("LspManager runtime state", () => {
     } finally {
       process.chdir(oldCwd);
       rmSync(processDir, { recursive: true, force: true });
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  test("syncDocumentForFile uses the server matching the target file type", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "srcode-lsp-file-server-"));
+    writeFileSync(join(sessionDir, "app.ts"), "const app = true;\n", "utf8");
+    writeFileSync(join(sessionDir, "script.py"), "print('ok')\n", "utf8");
+
+    const opened: Array<{ server: string; filePath: string; text: string; languageId: string }> = [];
+    const state = createLspManager();
+    state.config = {
+      servers: {
+        tsserver: { command: "typescript-language-server", args: [], fileTypes: [".ts"], rootMarkers: [] },
+        pyright: { command: "pyright-langserver", args: [], fileTypes: [".py"], rootMarkers: [] },
+      },
+    };
+    state.configured = true;
+    for (const [name, fileTypes] of [["tsserver", [".ts"]], ["pyright", [".py"]]] as const) {
+      state.servers.set(name, {
+        name,
+        config: { fileTypes, isLinter: false },
+        client: {
+          ready: true,
+          ensureOpen: (filePath: string, text: string, languageId: string) => {
+            opened.push({ server: name, filePath, text, languageId });
+            return `file://${filePath}`;
+          },
+          didChange: () => {},
+        },
+        openDocuments: new Map(),
+        lastActivity: Date.now(),
+      } as any);
+    }
+
+    try {
+      const doc = await syncDocumentForFile(state, sessionDir, "script.py");
+      expect(doc?.serverName).toBe("pyright");
+      expect(opened).toEqual([
+        {
+          server: "pyright",
+          filePath: join(sessionDir, "script.py"),
+          text: "print('ok')\n",
+          languageId: "python",
+        },
+      ]);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  test("syncDocument sends didChange when an open file changed on disk", () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "srcode-lsp-didchange-"));
+    const filePath = join(sessionDir, "same.ts");
+    writeFileSync(filePath, "const before = true;\n", "utf8");
+
+    const changes: Array<{ uri: string; version: number; text: string }> = [];
+    const state = createLspManager();
+    const client = {
+      ready: true,
+      ensureOpen: (path: string) => `file://${path}`,
+      didChange: (uri: string, version: number, text: string) => {
+        changes.push({ uri, version, text });
+      },
+    };
+    state.servers.set("tsserver", {
+      name: "tsserver",
+      config: { fileTypes: [".ts"], isLinter: false },
+      client,
+      openDocuments: new Map(),
+      lastActivity: Date.now(),
+    } as any);
+
+    try {
+      const uri = syncDocument(state, sessionDir, "same.ts");
+      expect(uri).toBe(`file://${filePath}`);
+
+      writeFileSync(filePath, "const after = true;\n", "utf8");
+      const sameUri = syncDocument(state, sessionDir, "same.ts");
+
+      expect(sameUri).toBe(uri);
+      expect(changes).toEqual([
+        { uri: `file://${filePath}`, version: 2, text: "const after = true;\n" },
+      ]);
+    } finally {
       rmSync(sessionDir, { recursive: true, force: true });
     }
   });

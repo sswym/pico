@@ -728,16 +728,25 @@ test("ProviderManager.notifyMemoryToolWrite invokes onMemoryWrite with metadata"
 
 test("ProviderManager.notifyMemoryToolWrite does not throw when onMemoryWrite throws", () => {
   withTestManager((manager) => {
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
     const fake = makeFakeMemoryProvider({
       onMemoryWrite: () => {
         throw new Error("boom");
       },
     });
-    manager.registerExternalProvider(fake);
-    // Should not throw
-    manager.notifyMemoryToolWrite({ action: "remove", factId: 42 });
-    // Implicit pass if we reach here
-    expect(true).toBe(true);
+    try {
+      manager.registerExternalProvider(fake);
+      // Should not throw
+      manager.notifyMemoryToolWrite({ action: "remove", factId: 42 });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]![0]).toBe("[memory] External provider onMemoryWrite failed:");
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 });
 
@@ -791,6 +800,35 @@ test("memory tool note actions route through curated memory store", () => {
   );
   expect(JSON.parse(remove.content[0]!.text).success).toBe(true);
   expect(curated.list("user").user).toHaveLength(0);
+});
+
+test("memory tool passes project scope to related and reason providers", () => {
+  const manager = new ProviderManager();
+  const calls: Array<{ method: string; opts: unknown }> = [];
+  const fakeProvider = makeFakeMemoryProvider({
+    related: (_entity, opts) => {
+      calls.push({ method: "related", opts });
+      return [];
+    },
+    reason: (_entities, opts) => {
+      calls.push({ method: "reason", opts });
+      return [];
+    },
+  });
+
+  executeMemoryToolAction(
+    { action: "related", entity: "Alice", scope: "project" },
+    { provider: fakeProvider, manager, currentCwd: "/repo" },
+  );
+  executeMemoryToolAction(
+    { action: "reason", entities: ["Alice", "Billing"], scope: "project" },
+    { provider: fakeProvider, manager, currentCwd: "/repo" },
+  );
+
+  expect(calls).toEqual([
+    { method: "related", opts: { category: undefined, minTrust: undefined, limit: undefined, scope: "project", cwd: "/repo" } },
+    { method: "reason", opts: { category: undefined, minTrust: undefined, limit: undefined, scope: "project", cwd: "/repo" } },
+  ]);
 });
 
 test("ProviderManager.syncTurn fans out to registered providers", async () => {

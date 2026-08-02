@@ -22,8 +22,8 @@ import type { Location, Position, WorkspaceSymbol } from "./types.ts";
 import {
   createLspManager,
   ensureServer,
+  syncDocumentForFile,
   stopServer,
-  syncDocument,
   getActiveClients,
   formatHoverResult,
   formatLocations,
@@ -96,12 +96,13 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
    * Try to start an LSP server. If the binary is missing (ENOENT),
    * prompt the user to auto-install and retry once.
    */
-  async function ensureServerWithInstall(
+  async function withMissingServerInstall<T>(
     workspaceRoot: string,
     ctx: ExtensionContext,
-  ) {
+    start: () => Promise<T | null>,
+  ): Promise<T | null> {
     try {
-      return await ensureServer(state, workspaceRoot);
+      return await start();
     } catch (err) {
       if (!(err instanceof LspError) || err.errorCode !== COMMAND_NOT_FOUND) throw err;
       const fullCmd = err.message.match(/"(.+?)"/)?.[1];
@@ -122,8 +123,23 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         return null;
       }
       ctx.ui.notify(`Installed ${cmd}. Starting language server…`, "info");
-      return await ensureServer(state, workspaceRoot);
+      return await start();
     }
+  }
+
+  async function ensureServerWithInstall(
+    workspaceRoot: string,
+    ctx: ExtensionContext,
+  ) {
+    return await withMissingServerInstall(workspaceRoot, ctx, () => ensureServer(state, workspaceRoot));
+  }
+
+  async function syncDocumentWithInstall(
+    workspaceRoot: string,
+    filePath: string,
+    ctx: ExtensionContext,
+  ) {
+    return await withMissingServerInstall(workspaceRoot, ctx, () => syncDocumentForFile(state, workspaceRoot, filePath));
   }
 
   pi.registerTool(
@@ -159,25 +175,36 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           return executeStatusAction(state, ctx.cwd);
         }
 
-        // ── Actions that need a running server ──────────────────────────
-        const client = await ensureServerWithInstall(ctx.cwd, ctx);
-        if (!client) return fail("No language server available for this project.");
-        ctx.ui.setStatus("lsp", `LSP: ${client.serverName} ${client.displayVersion}`.trim());
+        let projectClient: Awaited<ReturnType<typeof ensureServerWithInstall>> | null = null;
+        const getProjectClient = async () => {
+          if (!projectClient) {
+            projectClient = await ensureServerWithInstall(ctx.cwd, ctx);
+            if (projectClient) {
+              ctx.ui.setStatus("lsp", `LSP: ${projectClient.serverName} ${projectClient.displayVersion}`.trim());
+            }
+          }
+          return projectClient;
+        };
 
         if (action === "capabilities") {
+          const client = await getProjectClient();
+          if (!client) return fail("No language server available for this project.");
           return executeCapabilitiesAction(client);
         }
 
         // ── File-level actions ──────────────────────────────────────────
         if (action === "diagnostics") {
           if (!params.file || params.file === "*") {
+            const client = await getProjectClient();
+            if (!client) return fail("No language server available for this project.");
             return executeWorkspaceDiagnosticsAction(state);
           }
-          const uri = syncDocument(state, ctx.cwd, params.file);
-          if (!uri) return fail(`Cannot open file: ${params.file}`);
+          const doc = await syncDocumentWithInstall(ctx.cwd, params.file, ctx);
+          if (!doc) return fail(`Cannot open file: ${params.file}`);
+          ctx.ui.setStatus("lsp", `LSP: ${doc.serverName}`.trim());
           try {
             await new Promise<void>((resolve) => { setTimeout(() => resolve(), 500); });
-            const diags = client.getDiagnostics(uri);
+            const diags = doc.client.getDiagnostics(doc.uri);
             return ok(formatDiagnosticsForFile(params.file, diags));
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -187,6 +214,8 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
         if (action === "symbols") {
           if (!params.file && params.query) {
+            const client = await getProjectClient();
+            if (!client) return fail("No language server available for this project.");
 
             const tryWorkspaceSymbol = async (): Promise<WorkspaceSymbol[] | null> => {
               for (let attempt = 0; attempt < 2; attempt++) {
@@ -212,10 +241,11 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             }
           }
           if (!params.file) return fail("Provide a file path for document symbols, or a query for workspace search.");
-          const uri = syncDocument(state, ctx.cwd, params.file);
-          if (!uri) return fail(`Cannot open file: ${params.file}`);
+          const doc = await syncDocumentWithInstall(ctx.cwd, params.file, ctx);
+          if (!doc) return fail(`Cannot open file: ${params.file}`);
+          ctx.ui.setStatus("lsp", `LSP: ${doc.serverName}`.trim());
           try {
-            const result = await client.textDocumentDocumentSymbol(uri);
+            const result = await doc.client.textDocumentDocumentSymbol(doc.uri);
             return formatDocumentSymbolsResult(params.file, result);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -237,37 +267,38 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         }
         if (character === undefined) return fail(`${action} requires 'character' parameter (or 'symbol' for auto-resolve).`);
 
-        const uri = syncDocument(state, ctx.cwd, params.file);
-        if (!uri) return fail(`Cannot open file: ${params.file}`);
+        const doc = await syncDocumentWithInstall(ctx.cwd, params.file, ctx);
+        if (!doc) return fail(`Cannot open file: ${params.file}`);
+        ctx.ui.setStatus("lsp", `LSP: ${doc.serverName}`.trim());
         const pos = positionToLsp(params.line, character);
 
         try {
           switch (action) {
             case "hover": {
-              const hover = await client.textDocumentHover(uri, pos);
+              const hover = await doc.client.textDocumentHover(doc.uri, pos);
               return ok(formatHoverResult(hover));
             }
             case "definition": {
-              const result = await client.textDocumentDefinition(uri, pos);
+              const result = await doc.client.textDocumentDefinition(doc.uri, pos);
               return ok(formatLocations(normalizeLocations(result), "definitions"));
             }
             case "type_definition": {
-              const result = await client.textDocumentTypeDefinition(uri, pos);
+              const result = await doc.client.textDocumentTypeDefinition(doc.uri, pos);
               return ok(formatLocations(normalizeLocations(result), "type definitions"));
             }
             case "implementation": {
-              const result = await client.textDocumentImplementation(uri, pos);
+              const result = await doc.client.textDocumentImplementation(doc.uri, pos);
               return ok(formatLocations(normalizeLocations(result), "implementations"));
             }
             case "references": {
-              const result = await client.textDocumentReferences(uri, pos);
+              const result = await doc.client.textDocumentReferences(doc.uri, pos);
               return ok(formatLocations(result, "references"));
             }
             case "code_actions": {
-              const diags = client.getDiagnostics(uri);
+              const diags = doc.client.getDiagnostics(doc.uri);
               const lineDiags = diags.filter((d) => d.range.start.line === pos.line);
               const context = { diagnostics: lineDiags, only: params.query ? [params.query] : undefined };
-              const actions = await client.textDocumentCodeAction(uri, { start: pos, end: pos }, context);
+              const actions = await doc.client.textDocumentCodeAction(doc.uri, { start: pos, end: pos }, context);
               if (!actions || actions.length === 0) return ok("No code actions available at this position.");
               const lines: string[] = [];
               for (let i = 0; i < actions.length; i++) {
@@ -283,7 +314,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           }
         } catch (err) {
           const msg = err instanceof LspError ? err.message : err instanceof Error ? err.message : String(err);
-          return fail(`LSP ${action} failed: ${msg}`, { serverName: client.serverName, action, success: false });
+          return fail(`LSP ${action} failed: ${msg}`, { serverName: doc.client.serverName, action, success: false });
         }
       },
     }),
@@ -324,14 +355,10 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     const ext = filePath.includes(".") ? filePath.slice(filePath.lastIndexOf(".")).toLowerCase() : "";
     if (!CODE_EXTENSIONS.has(ext)) return;
 
-    const client = state.servers.size > 0
-      ? Array.from(state.servers.values()).find((s) => s.client.ready)?.client
-      : null;
-    if (!client) return;
-
     try {
-      const uri = syncDocument(state, ctx.cwd, filePath);
-      if (!uri) return;
+      const doc = await syncDocumentWithInstall(ctx.cwd, filePath, ctx);
+      if (!doc) return;
+      const { client, uri } = doc;
       const absFilePath = resolveSessionFilePath(ctx.cwd, filePath);
 
       if (state.config?.formatOnWrite === true && allowLspFormatOnWrite()) {
@@ -343,7 +370,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             const formatted = applyTextEditsToString(currentContent, edits);
             if (formatted !== currentContent) {
               writeFileSync(absFilePath, formatted, "utf8");
-              syncDocument(state, ctx.cwd, filePath);
+              await syncDocumentWithInstall(ctx.cwd, filePath, ctx);
             }
           }
         } catch {

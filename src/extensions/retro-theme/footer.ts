@@ -45,8 +45,8 @@ type FooterOptions = {
 const GIT_CACHE_TTL_MS = 1200;
 const DOT = " · ";
 const PIPE = " | ";
-let cachedGitStatus: GitCache | null = null;
-let pendingGitStatus: Promise<void> | null = null;
+const cachedGitStatusByCwd = new Map<string, GitCache>();
+const pendingGitStatusByCwd = new Map<string, Promise<void>>();
 
 function clampPercent(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -136,19 +136,22 @@ function emptyGitStatus(): GitStatus {
 
 function getCachedGitStatus(cwd: string, requestRender?: () => void): GitStatus {
   const now = Date.now();
-  if (cachedGitStatus && now - cachedGitStatus.timestamp < GIT_CACHE_TTL_MS) {
-    return cachedGitStatus;
+  const cached = cachedGitStatusByCwd.get(cwd);
+  if (cached && now - cached.timestamp < GIT_CACHE_TTL_MS) {
+    return cached;
   }
 
-  if (!pendingGitStatus) {
-    pendingGitStatus = runGitStatus(cwd).then((result) => {
-      cachedGitStatus = { ...(result ?? emptyGitStatus()), timestamp: Date.now() };
-      pendingGitStatus = null;
+  if (!pendingGitStatusByCwd.has(cwd)) {
+    const pending = runGitStatus(cwd).then((result) => {
+      const next = { ...(result ?? emptyGitStatus()), timestamp: Date.now() };
+      cachedGitStatusByCwd.set(cwd, next);
+      pendingGitStatusByCwd.delete(cwd);
       requestRender?.();
     });
+    pendingGitStatusByCwd.set(cwd, pending);
   }
 
-  return cachedGitStatus ?? emptyGitStatus();
+  return cached ?? emptyGitStatus();
 }
 
 function cleanStatus(status: string): string {
@@ -340,8 +343,8 @@ export function installClaudeLikeFooter(ctx: ExtensionContext, options: FooterOp
 }
 
 export function __resetFooterStateForTests(): void {
-  cachedGitStatus = null;
-  pendingGitStatus = null;
+  cachedGitStatusByCwd.clear();
+  pendingGitStatusByCwd.clear();
 }
 
 export const __test = { compactStatus, compactThinkingLevel, formatGit, parseGitStatus };

@@ -147,6 +147,30 @@ describe("fetchAndConvert", () => {
     expect(seenUrl.startsWith("https://")).toBe(true);
   });
 
+  test("returns the final URL after following redirects", async () => {
+    const seenUrls: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      seenUrls.push(url);
+      if (url === "https://example.test/start") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "/final" },
+        });
+      }
+      return new Response("<p>done</p>", {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "text/html" },
+      });
+    }) as unknown as typeof fetch;
+
+    const page = await fetchAndConvert("https://example.test/start");
+
+    expect(seenUrls).toEqual(["https://example.test/start", "https://example.test/final"]);
+    expect(page.url).toBe("https://example.test/final");
+    expect(page.markdown).toContain("done");
+  });
+
   test("rejects localhost and private network targets by default", async () => {
     let calls = 0;
     globalThis.fetch = (async () => {
@@ -538,6 +562,20 @@ describe("webSearch end-to-end (mocked)", () => {
     expect(urls).toContain("https://exa.test/b");
     expect(urls).toContain("https://tavily.test/a");
     expect(urls).toContain("https://shared.test/dup");
+  });
+
+  test("Hybrid path reports an error when both providers fail", async () => {
+    globalThis.fetch = (async (url: string) => {
+      return new Response(url === "https://api.tavily.com/search" ? "bad tavily" : "bad exa", {
+        status: 500,
+        statusText: "Nope",
+      });
+    }) as unknown as typeof fetch;
+
+    await expect(webSearch(
+      { query: "hello" },
+      { env: { tavilyKey: "k" } },
+    )).rejects.toThrow(/Hybrid search failed/);
   });
 });
 

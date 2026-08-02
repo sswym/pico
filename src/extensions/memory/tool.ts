@@ -151,20 +151,26 @@ export function executeMemoryToolAction(
         const target = params.entity ?? params.query;
         if (!target) return errorResult("'entity' is required for related");
         const cat = asCategory(params.category);
+        const scope = parseScope(params.scope);
         const results = provider.related(target, {
           category: cat,
           minTrust: params.min_trust,
           limit: params.limit,
+          scope,
+          cwd: cwdForScope(scope, currentCwd),
         });
         return jsonResult({ count: results.length, results });
       }
       case "reason": {
         if (!params.entities || params.entities.length === 0) return errorResult("'entities' list is required for reason");
         const cat = asCategory(params.category);
+        const scope = parseScope(params.scope);
         const results = provider.reason(params.entities, {
           category: cat,
           minTrust: params.min_trust,
           limit: params.limit,
+          scope,
+          cwd: cwdForScope(scope, currentCwd),
         });
         return jsonResult({ count: results.length, results });
       }

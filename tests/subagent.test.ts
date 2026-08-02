@@ -11,6 +11,7 @@ import { mapWithConcurrencyLimit } from "../src/extensions/subagent/concurrency.
 import { isProviderFailure, runWithFallbackModels } from "../src/extensions/subagent/fallback.ts";
 import {
   buildRepairTask,
+  checkAcceptanceGate,
   markGateFailed,
   runGateAfterSuccess,
   summarizeGateFailure,
@@ -886,6 +887,20 @@ test("runGateAfterSuccess marks failure when self-repair is disabled", async () 
   expect(final).toBe(result);
   expect(final.stopReason).toBe("gate_failed");
   expect(final.errorMessage).toContain("Acceptance gate failed.");
+});
+
+test("checkAcceptanceGate fails criteria without matching evidence", async () => {
+  const result = await checkAcceptanceGate(
+    {
+      criteria: ["tests pass", "types pass"],
+      evidence: [{ command: "true" }],
+    },
+    process.cwd(),
+  );
+
+  expect(result.passed).toBe(false);
+  expect(result.failedCriteria).toEqual(["types pass"]);
+  expect(result.evidenceResults).toHaveLength(1);
 });
 
 test("runGateAfterSuccess repairs until gate passes", async () => {

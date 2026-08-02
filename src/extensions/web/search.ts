@@ -211,10 +211,18 @@ async function hybridSearch(
   tavilyKey: string,
   opts: SearchOptions,
 ): Promise<SearchResult[]> {
-  const [exaResults, tavilyResults] = await Promise.all([
-    exaSearch(query, max, opts).catch(() => [] as SearchResult[]),
-    tavilySearch(query, max, tavilyKey, opts).catch(() => [] as SearchResult[]),
+  const [exaResult, tavilyResult] = await Promise.allSettled([
+    exaSearch(query, max, opts),
+    tavilySearch(query, max, tavilyKey, opts),
   ]);
+  const exaResults = exaResult.status === "fulfilled" ? exaResult.value : [];
+  const tavilyResults = tavilyResult.status === "fulfilled" ? tavilyResult.value : [];
+  if (exaResult.status === "rejected" && tavilyResult.status === "rejected") {
+    const messages = [exaResult.reason, tavilyResult.reason]
+      .map((err) => err instanceof Error ? err.message : String(err))
+      .join("; ");
+    throw new Error(`Hybrid search failed: ${messages}`);
+  }
 
   // Merge with URL dedup, preserving interleaved ordering.
   const seen = new Set<string>();

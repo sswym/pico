@@ -8,7 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, extname } from "node:path";
 import type { LspServerConfig, LspConfig } from "./config.ts";
-import { loadConfig, getServersForFile, detectServers, resolveCommand } from "./config.ts";
+import { loadConfig, getPrimaryServerForFile, getServersForFile, detectServers, resolveCommand } from "./config.ts";
 import { LspClient, locationToDisplay, lspPositionToDisplay, LspError, COMMAND_NOT_FOUND } from "./client.ts";
 
 // ── Runtime state ───────────────────────────────────────────────────────────
@@ -253,8 +253,14 @@ interface ManagedServer {
   config: LspServerConfig;
   client: LspClient;
   initializing: Promise<void> | null;
-  openDocuments: Map<string, { uri: string; languageId: string }>;
+  openDocuments: Map<string, { uri: string; languageId: string; version: number; text: string }>;
   lastActivity: number;
+}
+
+export interface SyncedDocument {
+  uri: string;
+  client: LspClient;
+  serverName: string;
 }
 
 export interface LspManagerState {
@@ -451,6 +457,24 @@ export async function ensureNamedServer(
   return newManaged.client.ready ? newManaged.client : null;
 }
 
+/** Start or reuse the primary server for a specific file path. */
+export async function ensureServerForFile(
+  state: LspManagerState,
+  workspaceRoot: string,
+  filePath: string,
+): Promise<LspClient | null> {
+  if (!state.config) {
+    state.config = loadConfig(workspaceRoot);
+    state.configured = true;
+    setIdleTimeout(state, state.config.idleTimeoutMs);
+  }
+
+  const absPath = filePath.startsWith("/") ? filePath : join(workspaceRoot, filePath);
+  const primary = getPrimaryServerForFile(state.config, absPath);
+  if (!primary) return null;
+  return await ensureNamedServer(state, primary[0], workspaceRoot);
+}
+
 /** Shut down all managed servers. */
 export async function stopServer(state: LspManagerState): Promise<void> {
   stopIdleChecker(state);
@@ -538,10 +562,36 @@ export function syncDocument(
   return null;
 }
 
-function syncDocumentToServer(managed: ManagedServer, absPath: string): string | null {
-  const existing = managed.openDocuments.get(absPath);
-  if (existing) return existing.uri;
+/**
+ * Ensure the primary server for a file is running, synchronize current disk
+ * contents to that exact server, and return the matching client with the URI.
+ */
+export async function syncDocumentForFile(
+  state: LspManagerState,
+  workspaceRoot: string,
+  filePath: string,
+): Promise<SyncedDocument | null> {
+  if (!state.config) {
+    state.config = loadConfig(workspaceRoot);
+    state.configured = true;
+    setIdleTimeout(state, state.config.idleTimeoutMs);
+  }
 
+  const absPath = filePath.startsWith("/") ? filePath : join(workspaceRoot, filePath);
+  const primary = getPrimaryServerForFile(state.config, absPath);
+  if (!primary) return null;
+
+  await ensureNamedServer(state, primary[0], workspaceRoot);
+  const managed = state.servers.get(primary[0]);
+  if (!managed?.client.ready) return null;
+
+  const uri = syncDocumentToServer(managed, absPath);
+  if (!uri) return null;
+  managed.lastActivity = Date.now();
+  return { uri, client: managed.client, serverName: managed.name };
+}
+
+function syncDocumentToServer(managed: ManagedServer, absPath: string): string | null {
   let text: string;
   try {
     text = readFileSync(absPath, "utf8");
@@ -549,9 +599,21 @@ function syncDocumentToServer(managed: ManagedServer, absPath: string): string |
     return null;
   }
 
+  const existing = managed.openDocuments.get(absPath);
+  if (existing) {
+    if (existing.text !== text) {
+      existing.version++;
+      existing.text = text;
+      managed.client.didChange(existing.uri, existing.version, text);
+    }
+    managed.lastActivity = Date.now();
+    return existing.uri;
+  }
+
   const langId = guessLanguageId(absPath);
   const uri = managed.client.ensureOpen(absPath, text, langId);
-  managed.openDocuments.set(absPath, { uri, languageId: langId });
+  managed.openDocuments.set(absPath, { uri, languageId: langId, version: 1, text });
+  managed.lastActivity = Date.now();
   return uri;
 }
 
@@ -594,8 +656,8 @@ function prewarmProject(managed: ManagedServer, workspaceRoot: string): void {
           try {
             const text = readFileSync(absPath, "utf8");
             const langId = ext.slice(1);
-            managed.client.ensureOpen(absPath, text, langId);
-            managed.openDocuments.set(absPath, { uri: `file://${absPath}`, languageId: langId });
+            const uri = managed.client.ensureOpen(absPath, text, langId);
+            managed.openDocuments.set(absPath, { uri, languageId: langId, version: 1, text });
             return true;
           } catch {}
         }
