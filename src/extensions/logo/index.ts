@@ -133,21 +133,35 @@ export function renderLogoHeader(theme: {
 
 export const logoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   let currentCtx: { model?: { id?: string; provider?: string } } | undefined;
+  let headerTui: { requestRender?: (force?: boolean) => void } | undefined;
   const install = (ctx: { ui: { setHeader: (factory: any) => void } }) => {
     ctx.ui.setHeader((tui: unknown, theme: any) => {
+      headerTui = tui as { requestRender?: (force?: boolean) => void };
       // The header lives inside pi's headerContainer, which already adds
       // surrounding Spacers. Wrap in our own Container so we can tweak
-      // spacing if needed without touching pi's layout.
-      const container = new Container();
-      const width = (tui as { terminal?: { columns?: number } } | undefined)?.terminal?.columns ?? 80;
-      container.addChild(new Text(renderLogoHeader(theme, width, currentCtx), 1, 0));
-      container.addChild(new Spacer(1));
-      return container;
+      // spacing if needed without touching pi's layout. Rebuild the Text on
+      // every render so currentCtx (e.g. after a model switch) is reflected.
+      return {
+        render(width: number): string[] {
+          const container = new Container();
+          const effectiveWidth =
+            (tui as { terminal?: { columns?: number } } | undefined)?.terminal?.columns ?? width;
+          container.addChild(new Text(renderLogoHeader(theme, effectiveWidth, currentCtx), 1, 0));
+          container.addChild(new Spacer(1));
+          return container.render(effectiveWidth);
+        },
+        invalidate(): void {},
+      };
     });
   };
 
   pi.on("session_start", (_event, ctx) => {
     currentCtx = ctx;
     install(ctx);
+  });
+
+  pi.on("model_select", (event) => {
+    currentCtx = { ...currentCtx, model: { id: event.model.id, provider: event.model.provider } };
+    headerTui?.requestRender?.();
   });
 };

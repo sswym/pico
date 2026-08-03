@@ -193,7 +193,7 @@ export function ensureTodoWidget(ctx: ExtensionContext, readTodos: TodoReader): 
         if (!state.visible) return [];
         const todos = readTodos(session);
         return buildTodoWidgetLines(todos, theme).map((line) =>
-          truncateToWidth(line, Math.max(20, width - 2), "…"),
+          truncateToWidth(line, Math.max(1, width - 2), "…"),
         );
       },
       // No handleInput: pi only routes keys to the focused editor, so any
@@ -242,4 +242,14 @@ export function unregisterTodoWidget(ctx: ExtensionContext): void {
   const state = getState(session);
   state.registered = false;
   clearTodoWidget(ctx);
+}
+
+/**
+ * Drop the session's widget state (openIds/openContent/collapse flags) so the
+ * next session_start rebuilds it fresh. Called after unregisterTodoWidget on
+ * session switch/fork, where the old session's transient state must not leak
+ * into the new session. getState lazily recreates the entry on next use.
+ */
+export function removeTodoWidgetState(session: string): void {
+  states.delete(session);
 }

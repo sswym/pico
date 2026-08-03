@@ -1,9 +1,13 @@
 import { expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   __resetFooterStateForTests,
   __test,
   createClaudeLikeFooter,
+  createPrimaryStatusWidget,
   renderExtensionStatusLine,
   renderClaudeLikeFooterLine,
   renderPrimaryStatusLine,
@@ -87,7 +91,7 @@ test("renderExtensionStatusLine keeps footer extension statuses focused", () => 
   expect(line).toContain("DS cache 21/22");
 });
 
-test("renderClaudeLikeFooterLine shows an empty context bar when usage is unavailable", () => {
+test("renderClaudeLikeFooterLine shows placeholders when usage is unavailable", () => {
   const line = renderClaudeLikeFooterLine(100, fakeCtx({
     getContextUsage: () => ({ percent: null, contextWindow: 200000 }),
   }), plainTheme as any, {
@@ -95,7 +99,21 @@ test("renderClaudeLikeFooterLine shows an empty context bar when usage is unavai
     getExtensionStatuses: () => [],
   });
 
-  expect(line).toContain("◫ 0/200k (0.0%)");
+  // tokens/percent null means the usage is unknown (e.g. right after
+  // compaction) — render "?" instead of pretending it is zero.
+  expect(line).toContain("◫ ?/200k (?%)");
+});
+
+test("renderClaudeLikeFooterLine shows ? for explicit null tokens and percent", () => {
+  const line = renderClaudeLikeFooterLine(100, fakeCtx({
+    getContextUsage: () => ({ tokens: null, percent: null, contextWindow: 200000 }),
+  }), plainTheme as any, {
+    getGitBranch: () => "main",
+    getExtensionStatuses: () => [],
+  });
+
+  expect(line).toContain("◫ ?/200k (?%)");
+  expect(line).not.toContain("0/200k");
 });
 
 test("renderClaudeLikeFooterLine keeps narrow output within width", () => {
@@ -162,6 +180,91 @@ test("createClaudeLikeFooter subscribes to branch changes and renders one line",
   expect(footer.render(80)).toHaveLength(1);
   branchHandler?.();
   expect(renderRequested).toBe(true);
+});
+
+test("onBranchChange drops the cached and pending git status for the cwd", () => {
+  __resetFooterStateForTests();
+  let branchHandler: (() => void) | undefined;
+  const cwd = "/tmp/fake-project";
+  __test.cachedGitStatusByCwd.set(cwd, {
+    branch: "stale",
+    staged: 0,
+    unstaged: 0,
+    untracked: 0,
+    timestamp: Date.now(),
+  });
+  __test.pendingGitStatusByCwd.set(cwd, Promise.resolve());
+
+  const footer = createClaudeLikeFooter(fakeCtx({ cwd }))(
+    { requestRender: () => {} },
+    plainTheme as any,
+    {
+      getGitBranch: () => "main",
+      getExtensionStatuses: () => [],
+      onBranchChange: (handler) => {
+        branchHandler = handler;
+        return () => {};
+      },
+    },
+  );
+  expect(footer.render(80)).toHaveLength(1);
+
+  expect(__test.cachedGitStatusByCwd.has(cwd)).toBe(true);
+  expect(__test.pendingGitStatusByCwd.has(cwd)).toBe(true);
+  branchHandler?.();
+  expect(__test.cachedGitStatusByCwd.has(cwd)).toBe(false);
+  expect(__test.pendingGitStatusByCwd.has(cwd)).toBe(false);
+});
+
+test("branch change invalidates the cached git status so the next render refetches", async () => {
+  __resetFooterStateForTests();
+  const dir = mkdtempSync(join(tmpdir(), "pico-footer-"));
+  try {
+    const git = (args: string[]) => {
+      const result = Bun.spawnSync(["git", ...args], { cwd: dir });
+      if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed`);
+    };
+    git(["init", "-q", "-b", "main"]);
+    git(["config", "user.email", "test@example.com"]);
+    git(["config", "user.name", "test"]);
+    writeFileSync(join(dir, "a.txt"), "x");
+    git(["add", "."]);
+    git(["commit", "-qm", "init"]);
+
+    const ctx = fakeCtx({ cwd: dir });
+    const widget = createPrimaryStatusWidget(ctx)(
+      { requestRender: () => {} },
+      plainTheme as any,
+      {} as any,
+    );
+
+    widget.render(120);
+    await __test.pendingGitStatusByCwd.get(dir);
+    expect(__test.cachedGitStatusByCwd.get(dir)?.branch).toBe("main");
+
+    // External checkout — pi never sees it, so the footer's onBranchChange
+    // callback is the only signal. It must drop the stale cache entry.
+    git(["switch", "-q", "-c", "feature"]);
+    let branchHandler: (() => void) | undefined;
+    createClaudeLikeFooter(ctx)({ requestRender: () => {} }, plainTheme as any, {
+      getGitBranch: () => undefined,
+      getExtensionStatuses: () => [],
+      onBranchChange: (handler) => {
+        branchHandler = handler;
+        return () => {};
+      },
+    });
+    branchHandler?.();
+    expect(__test.cachedGitStatusByCwd.has(dir)).toBe(false);
+
+    // Next render refetches and sees the new branch.
+    widget.render(120);
+    await __test.pendingGitStatusByCwd.get(dir);
+    expect(__test.cachedGitStatusByCwd.get(dir)?.branch).toBe("feature");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    __resetFooterStateForTests();
+  }
 });
 
 test("retroThemeExtension installs theme, working indicator, and footer", async () => {

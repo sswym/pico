@@ -20,6 +20,7 @@ import {
   clearTodoWidget,
   ensureTodoWidget,
   registerTodoShortcut,
+  removeTodoWidgetState,
   syncTodoWidget,
   unregisterTodoWidget,
 } from "./widget.ts";
@@ -134,14 +135,19 @@ export const todoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   });
 
   // Switching/forking sessions clears only the active session's transient list.
+  // The widget state (openIds/openContent) is keyed by session and must not
+  // survive either — otherwise the old session's collapse state leaks into the
+  // rebuilt widget.
   pi.on("session_before_switch", (_event, ctx) => {
     store.reset(sessionKey(ctx));
     unregisterTodoWidget(ctx);
+    removeTodoWidgetState(sessionKey(ctx));
     return {};
   });
   pi.on("session_before_fork", (_event, ctx) => {
     store.reset(sessionKey(ctx));
     unregisterTodoWidget(ctx);
+    removeTodoWidgetState(sessionKey(ctx));
     return {};
   });
 

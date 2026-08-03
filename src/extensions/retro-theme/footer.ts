@@ -55,15 +55,19 @@ function clampPercent(value: number): number {
 
 function contextBar(ctx: FooterContext): string {
   const usage = ctx.getContextUsage?.();
-  const percent = clampPercent(usage?.percent ?? 0);
-  const tokens = typeof usage?.tokens === "number" ? usage.tokens : 0;
   const window = typeof usage?.contextWindow === "number" ? usage.contextWindow : 0;
   if (window > 0) {
-    const precisePercent = typeof usage?.percent === "number" && Number.isFinite(usage.percent)
-      ? usage.percent
-      : 0;
-    return `${formatTokens(tokens)}/${formatTokens(window)} (${precisePercent.toFixed(1)}%)`;
+    // tokens/percent are null when the usage is unknown (e.g. right after
+    // compaction) — show "?" instead of pretending it is zero.
+    const tokens = typeof usage?.tokens === "number" && Number.isFinite(usage.tokens)
+      ? formatTokens(usage.tokens)
+      : "?";
+    const percent = typeof usage?.percent === "number" && Number.isFinite(usage.percent)
+      ? usage.percent.toFixed(1)
+      : "?";
+    return `${tokens}/${formatTokens(window)} (${percent}%)`;
   }
+  const percent = clampPercent(usage?.percent ?? 0);
   return `${percent}%`;
 }
 
@@ -142,13 +146,18 @@ function getCachedGitStatus(cwd: string, requestRender?: () => void): GitStatus 
   }
 
   if (!pendingGitStatusByCwd.has(cwd)) {
-    const pending = runGitStatus(cwd).then((result) => {
+    let tracked: Promise<void>;
+    tracked = runGitStatus(cwd).then((result) => {
+      // A branch-change invalidation may have dropped this request (or a
+      // newer one replaced it) while git was running — don't let a stale
+      // result repopulate the cache.
+      if (pendingGitStatusByCwd.get(cwd) !== tracked) return;
       const next = { ...(result ?? emptyGitStatus()), timestamp: Date.now() };
       cachedGitStatusByCwd.set(cwd, next);
       pendingGitStatusByCwd.delete(cwd);
       requestRender?.();
     });
-    pendingGitStatusByCwd.set(cwd, pending);
+    pendingGitStatusByCwd.set(cwd, tracked);
   }
 
   return cached ?? emptyGitStatus();
@@ -320,7 +329,15 @@ export function createPrimaryStatusWidget(ctx: FooterContextWithCwd, options: Fo
 
 export function createClaudeLikeFooter(ctx: FooterContextWithCwd): FooterFactory {
   return (tui, theme, footerData) => {
-    const unsubscribe = footerData.onBranchChange?.(() => tui.requestRender?.());
+    const cwd = ctx.cwd ?? process.cwd();
+    const unsubscribe = footerData.onBranchChange?.(() => {
+      // An external `git checkout` never reaches pi — drop the cached branch
+      // (and any in-flight request) for this cwd so the next render refetches
+      // instead of serving the pre-checkout branch for the rest of the TTL.
+      cachedGitStatusByCwd.delete(cwd);
+      pendingGitStatusByCwd.delete(cwd);
+      tui.requestRender?.();
+    });
     return {
       render(width: number): string[] {
         return [renderExtensionStatusLine(width, theme, footerData)];
@@ -347,4 +364,11 @@ export function __resetFooterStateForTests(): void {
   pendingGitStatusByCwd.clear();
 }
 
-export const __test = { compactStatus, compactThinkingLevel, formatGit, parseGitStatus };
+export const __test = {
+  compactStatus,
+  compactThinkingLevel,
+  formatGit,
+  parseGitStatus,
+  cachedGitStatusByCwd,
+  pendingGitStatusByCwd,
+};

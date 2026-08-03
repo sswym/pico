@@ -49,7 +49,7 @@ test("renderLogoHeader uses a compact header on narrow terminals", () => {
   expect(out).toContain("/ commands");
 });
 
-test("logoExtension only subscribes to session_start", () => {
+test("logoExtension only subscribes to session_start and model_select", () => {
   const events: string[] = [];
   const tools: string[] = [];
   const commands: string[] = [];
@@ -61,7 +61,7 @@ test("logoExtension only subscribes to session_start", () => {
     sendUserMessage: () => {},
   };
   logoExtension(fakePi);
-  expect(events).toEqual(["session_start"]);
+  expect(events).toEqual(["session_start", "model_select"]);
   expect(tools).toEqual([]);
   expect(commands).toEqual([]);
 });
@@ -95,4 +95,56 @@ test("session_start handler installs a header factory that renders the logo", ()
   expect(joined).toContain("Welcome back!");
   expect(joined).toContain("Tips");
   expect(joined).toContain("deepseek-v4-flash-free");
+});
+
+test("model_select updates the header model and triggers a re-render", () => {
+  let sessionHandler: ((event: any, ctx?: any) => void) | undefined;
+  let modelSelectHandler: ((event: any) => void) | undefined;
+  const fakePi: any = {
+    on: (name: string, handler: (event: any) => void) => {
+      if (name === "session_start") sessionHandler = handler;
+      if (name === "model_select") modelSelectHandler = handler;
+    },
+    registerTool: () => {},
+    registerCommand: () => {},
+    sendMessage: () => {},
+    sendUserMessage: () => {},
+  };
+  logoExtension(fakePi);
+
+  let capturedFactory: any = null;
+  const fakeUi = {
+    setHeader: (factory: any) => {
+      capturedFactory = factory;
+    },
+  };
+  sessionHandler?.(
+    { type: "session_start", reason: "startup" },
+    { ui: fakeUi, model: { id: "old-model", provider: "old-provider" } },
+  );
+  expect(typeof capturedFactory).toBe("function");
+
+  let rendersRequested = 0;
+  const tui = {
+    requestRender: () => {
+      rendersRequested++;
+    },
+    terminal: { columns: 80 },
+  };
+  const component = capturedFactory(tui, stubTheme);
+  expect(component.render(80).join("\n")).toContain("old-model");
+
+  modelSelectHandler?.({
+    type: "model_select",
+    model: { id: "new-model", provider: "new-provider" },
+    previousModel: { id: "old-model", provider: "old-provider" },
+    source: "set",
+  });
+  expect(rendersRequested).toBeGreaterThan(0);
+
+  // The header rebuilds from the updated model on the next render.
+  const fresh = component.render(80).join("\n");
+  expect(fresh).toContain("new-model");
+  expect(fresh).toContain("new-provider");
+  expect(fresh).not.toContain("old-model");
 });

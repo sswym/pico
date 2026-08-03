@@ -80,7 +80,12 @@ export function summarizeToolCall(toolName: string, args: unknown): string {
   }
 
   if (toolName === "visionAnalyze") {
-    const image = shortString(getObjectValue(args, "image") ?? getObjectValue(args, "image_url"), 72);
+    // Schema fields are image_path / image_base64 / image_url — a local path
+    // is the most useful summary, base64 the noisiest, so prefer in that order.
+    const image = shortString(
+      getObjectValue(args, "image_path") ?? getObjectValue(args, "image_base64") ?? getObjectValue(args, "image_url"),
+      72,
+    );
     return image;
   }
 
@@ -122,13 +127,13 @@ export function renderToolCallText(
     text.setText(title);
     return text;
   }
-  const { preview, hiddenLines } = previewText(
+  const { preview, hiddenLines, truncatedLine } = previewText(
     serialized,
     options?.collapsedLines ?? DEFAULT_COLLAPSED_LINES,
     options?.collapsedLineLength ?? DEFAULT_COLLAPSED_LINE_LENGTH,
   );
   const output =
-    hiddenLines > 0
+    hiddenLines > 0 || truncatedLine
       ? `${title}\n\n${theme.fg("toolOutput", preview)}\n${renderExpandHint(theme)}`
       : `${title}\n\n${theme.fg("toolOutput", preview)}`;
   text.setText(output);

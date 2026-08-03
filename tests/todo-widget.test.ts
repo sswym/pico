@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { todoExtension } from "../src/extensions/todo/index.ts";
 import {
   buildTodoWidgetLines,
   collapseTodoWidget,
+  removeTodoWidgetState,
   resetTodoWidgetStateForTests,
   summarizeTodos,
   todoStatusText,
@@ -217,6 +219,76 @@ test("todo widget stays collapsed for updates and reopens for new work", async (
     ],
   }, undefined, undefined, ctx);
   expect(component.render(80).join("\n")).toContain("run tests active");
+});
+
+test("todo widget truncates lines to the widget width on narrow terminals", async () => {
+  resetTodoWidgetStateForTests();
+  const fakePi = makeFakePi();
+  todoExtension(fakePi as any);
+  const toolDef = fakePi.tools.get("todoWrite");
+
+  const widgets: Array<[string, any]> = [];
+  const ctx = {
+    hasUI: true,
+    cwd: process.cwd(),
+    sessionManager: { getSessionId: () => "s1" },
+    ui: {
+      setStatus: () => {},
+      setWidget: (key: string, value: unknown) => widgets.push([key, value]),
+    },
+  };
+
+  await toolDef.execute("call-1", {
+    todos: [todo("a very long todo line that must be clipped down to the terminal width", "in_progress", "1")],
+  }, undefined, undefined, ctx);
+  const component = widgets[0]![1]({}, plainTheme);
+
+  const lines = component.render(10);
+  expect(lines.length).toBeGreaterThan(0);
+  for (const line of lines) {
+    expect(visibleWidth(line)).toBeLessThanOrEqual(10);
+  }
+});
+
+test("removeTodoWidgetState rebuilds a fresh state without old openIds", async () => {
+  resetTodoWidgetStateForTests();
+  const fakePi = makeFakePi();
+  todoExtension(fakePi as any);
+  const toolDef = fakePi.tools.get("todoWrite");
+
+  const widgets: Array<[string, any]> = [];
+  const ctx = {
+    hasUI: true,
+    cwd: process.cwd(),
+    sessionManager: { getSessionId: () => "s1" },
+    ui: {
+      setStatus: () => {},
+      setWidget: (key: string, value: unknown) => widgets.push([key, value]),
+    },
+  };
+
+  await toolDef.execute("call-1", {
+    todos: [todo("ship widget", "in_progress", "1")],
+  }, undefined, undefined, ctx);
+  expect(widgets).toHaveLength(1);
+  const component = widgets[0]![1]({}, plainTheme);
+  expect(component.render(80).join("\n")).toContain("ship widget active");
+
+  // Collapse the panel: the same todos must NOT reopen it afterwards.
+  collapseTodoWidget(ctx as any);
+  expect(component.render(80)).toEqual([]);
+
+  // Simulate session switch/fork: widget state for the old session is dropped.
+  removeTodoWidgetState("s1");
+
+  // Same todos, same session: the rebuilt state has no openIds residue, so
+  // the work is treated as new and the panel re-registers and opens.
+  await toolDef.execute("call-2", {
+    todos: [todo("ship widget", "in_progress", "1")],
+  }, undefined, undefined, ctx);
+  expect(widgets).toHaveLength(2);
+  const freshComponent = widgets[1]![1]({}, plainTheme);
+  expect(freshComponent.render(80).join("\n")).toContain("ship widget active");
 });
 
 test("todo widget stays collapsed when the model re-issues fresh ids for the same tasks", async () => {
