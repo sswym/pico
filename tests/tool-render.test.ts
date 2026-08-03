@@ -112,3 +112,39 @@ test("summarizeToolCall renders high-signal summaries", () => {
     }),
   ).toBe("2 items · 1 active");
 });
+
+test("summarizeToolCall uses visionAnalyze schema fields in priority order", () => {
+  // image_path wins over the other fields.
+  const byPath = summarizeToolCall("visionAnalyze", {
+    image_path: "/tmp/a.png",
+    image_base64: "iVBORw0KGgoAAAANSUhEUg==",
+    image_url: "https://example.com/a.png",
+  });
+  expect(byPath).toBe("/tmp/a.png");
+
+  // image_base64 is the fallback and gets truncated to a short prefix.
+  const base64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+  const byBase64 = summarizeToolCall("visionAnalyze", { image_base64: base64 });
+  expect(byBase64.length).toBeLessThan(base64.length);
+  expect(byBase64).toContain(base64.slice(0, 20));
+
+  // image_url is last.
+  const byUrl = summarizeToolCall("visionAnalyze", { image_url: "https://example.com/a.png" });
+  expect(byUrl).toBe("https://example.com/a.png");
+});
+
+test("renderToolCallText shows an expand hint when a single line is truncated", () => {
+  const call = renderToolCallText(
+    "memory",
+    { query: "a very long query that definitely exceeds the collapsed line length limit" },
+    plainTheme,
+    {},
+    { collapsedLines: 3, collapsedLineLength: 20 },
+  );
+  const text = renderedText(call);
+  // The serialized JSON body is a single over-long line: hiddenLines is 0 but
+  // the line was truncated, so the expand hint must still be shown.
+  expect(text).toContain("a very…");
+  expect(text).toMatch(/to expand/i);
+});

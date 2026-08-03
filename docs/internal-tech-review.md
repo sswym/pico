@@ -298,31 +298,97 @@ flowchart TD
 - 现象：写透传在 `tool_result` 处理器内最多等待 25.5s（500ms + 25s 轮询窗口）。
 - 方案：上限收敛至 5s；ledger 清理路径打通（诊断清空时也调 reduce）。
 
+### 4.6 第二轮整改（2026-08-03 全项目只读审查，3 高 / 15 中 / 21 低，全部附回归测试）
+
+**坑 19：LSP 写透传原地改事件而非返回（高）**
+- 现象：`tool_result` handler 内 `event.content = [...]` 追加格式/诊断文本，但上游 `emitToolResult` 先浅拷贝事件、只认 handler **返回值**（runner.js `modified` 仅在返回值携带字段时置位）——写后诊断/格式化提示对 agent 完全不可见，且无任何报错。
+- 方案：handler 收集追加项后以返回值返回完整 `{ content: [...] }`；同时入口检查 `event.isError`，失败写不再触发 formatOnWrite（避免把失败写替换成"格式化旧内容"的写盘）。回归：lsp.test.ts 契约用例 + 假服务器集成测试。
+
+**坑 20：MCP reconnect 后全部工具永久失效（高）**
+- 现象：execute 闭包捕获首次注册的 handle，reconnect（cwd 变化/session 重启）后 `registeredTools` 阻止再注册，新 handle ≠ 旧 handle 恒成立，所有 `mcp__` 工具抛 "no longer active"。
+- 方案：per-tool 可变 holder（`toolRefHolders`），execute 每次读 holder 当前 ref；connect 代际计数防竞态。回归：mcp.test.ts reconnect + 竞态用例。
+
+**坑 21：setup 写配置 0644 且非原子（高）**
+- 现象：向导 `writeJson` 无 mode（0644），settings.json env stanza / models.json apiKey 世界可读；直接写盘崩溃留截断文件。
+- 方案：tmp+rename 原子写 + `{ mode: 0o600 }`。回归：setup.test.ts 权限断言。
+
+**坑 22：SIGKILL 升级依赖 `proc.killed`（中）**
+- 现象：subagent process.ts 与 LSP client.ts 的 "5s/2s 后 SIGKILL" 升级均以 `if (!proc.killed)` 为门，而 Node 在首次 `kill()` 调用后立即置 `killed=true`——升级永不执行：忽略 SIGTERM 的子代理令工具调用无限挂起，LSP 僵死服务器常驻。
+- 方案：定时器触发时无条件 `kill("SIGKILL")`（close/exit 会清定时器，触发即证明进程仍存活）；LSP shutdown 请求同时限 2s。回归：subagent.test.ts kills 断言。
+
+**坑 23：waitForDiagnostics 缓存短路丢新诊断（中）**
+- 现象：缓存已有非空诊断时立即返回，同一文件第二次写后服务端 publish 的新诊断无人读取。
+- 方案：waitForDiagnostics 不再读缓存（只等 didSave 后新 publish），didSave 时使缓存失效。回归：lsp.test.ts 假服务器两次 didSave 分别拿到 error-1/error-2。
+
+**坑 24：ensureNamedServer 初始化失败进程泄漏（中）**
+- 现象：ensureServer 失败路径显式 `client.shutdown()` reap，ensureNamedServer 只删状态条目——spawn 成功但握手失败的服务器进程泄漏。
+- 方案：两路径对齐，catch 补 shutdown。回归：lsp.test.ts 启动即退服务器用例。
+
+**坑 25：contradict scope 修复不完整（中）**
+- 现象：上轮坑 12 只修了 retriever 层；builtin provider 的 `contradict()` 签名仍丢弃 scope/cwd，`memory(action=contradict, scope=project)` 静默退化为全局-only 结果。
+- 方案：provider 接口与 builtin 透传 scope/cwd/threshold；`/memory contradict` 支持 `--scope`。回归：memory.test.ts 项目/全局隔离用例。
+
+**坑 26：hooks 占位符吞大写环境变量（中）**
+- 现象：`$[A-Z][A-Z0-9_]*` 未命中 vars 的 token 一律替换为空串——`rm -rf $HOME/tmp` 变成 `rm -rf /tmp`。
+- 方案：未知 token 原样保留交 shell 展开（$FILE 等已知键仍替换）。回归：hooks.test.ts 断言保留。
+
+**坑 27：hooks 超时只杀直接子进程（中）**
+- 现象：SIGKILL 只发给 sh，孙进程（npm/node 子进程）成孤儿并持有管道写端，reader 永不 EOF。
+- 方案：`Bun.spawn` 加 `detached: true`（独立进程组），超时 `process.kill(-pid, "SIGKILL")` 杀整组。回归：hooks.test.ts 孙进程存活检查。
+
+**坑 28：vision image_url 无私网防护（中）**
+- 现象：visionAnalyze 的 URL 拉取无 SSRF 防护（webFetch 有完整防护），本地/云元数据地址可被拉取并经视觉模型间接外泄。
+- 方案：复用 web/fetch.ts 的 `isPrivateHost`（导出）。回归：vision.test.ts 拒绝 127.0.0.1/localhost/169.254.169.254。
+
+**坑 29：worktree 分支名拼接 agent 名（中）**
+- 现象：agent 名（LLM 输入）直接进 `execSync` 双引号串且创建前不校验存在性——含 shell 元字符的名字可注入命令。
+- 方案：`sanitizeAgentNameForWorktree` 白名单清洗。回归：subagent.test.ts 清洗用例。
+
+**坑 30：MCP connect 无代际保护（中）**
+- 现象：两次 session_start 落在首次 connect 异步窗口内时，旧代循环仍 push 旧 handle，旧进程无人关闭。
+- 方案：connectGeneration 计数，过期代关闭自身 handle 后 return。回归：mcp.test.ts 竞态用例（deferred initialize）。
+
+**坑 31：curated 条目破坏定界符 + add 绕过 drift（中）**
+- 现象：note_add 不经 clampEntry，含字面 `\n§\n` 的条目损坏文件格式并使 drift 守卫永久拒绝后续写入；`add()` 以 skipDrift 重载会静默折叠用户手写格式。
+- 方案：add 统一 clampEntry + 与 replace/remove 相同的 drift 检查。回归：memory.test.ts clamp/drift 用例。
+
+**坑 32：工具返回值 isError 是死字段（中）**
+- 现象：agent-loop 只在 execute() **抛异常**时置 isError（`executePreparedToolCall` 恒定 `{ result, isError: false }`），vision/web/mcp/ask/subagent/plan/lsp 以 `isError: true` 返回的错误渲染为成功样式。
+- 方案：错误路径统一改 `throw`（上游 catch 生成 error result，模型文本不变，TUI/导出正确标红）。回归：ask/plan/lsp/mcp/subagent/vision/web 测试全部改 rejects 断言。
+
+**坑 33：vision 多图部分失败丢弃成功结果（低）**
+- 现象：input 事件多图共用一个 try，任一图失败即丢全部已成功分析。
+- 方案：逐图 try/catch，失败单独成条目。回归：vision.test.ts（input handler）。
+
+**坑 34：LSP 低危批量（低）**
+- diagnostics 缓存 didClose 不清理（陈旧工作区诊断）；applyWorkspaceEdit create/delete 语义与 LSP 规范相反（死代码，防未来调用）；Dockerfile 无扩展名无法路由（extOf 返回裸文件名）；`indent_size = tab` → NaN → tabSize:null；rootMarkers glob 永不命中（新增通配扫描）；安装后重试 COMMAND_NOT_FOUND 裸异常；ledger 相对/绝对路径键不一致（统一 resolve）；无订阅的 EventEmitter 收到 "error" 通知抛异常（删除）；已退出服务器 stdin EPIPE 无监听（挂空监听 + exit 置 null）。
+
+**坑 35：其余低危批量（低）**
+- retrieval.ts 实体别名 LIKE 未转义（store.ts 已修，retriever 遗漏）；`/memory related/reason` 不支持 `--scope`；holographic 后端在 `/memory status` 标注 demo；rtk SKIP 前缀漏长驻命令变体（tail --follow 等）；PICO_HOME 相对路径/~ 未规范化；cache-optimizer sessionManager 访问无保护；input-history 整文件读改写并发丢条目（改追加语义）；setup 孤立 ESC 无超时窗口、splitArgs 无引号处理；PreSessionEnd 串行等待（并行 + 30s 总预算）；embedded-runtime 信号监听抢先 exit（删除，交宿主）。
+
 ---
 
 ## 5. 当前版本现状与已知局限
 
 ### 5.1 现状
 
-- 功能面完整：19 扩展、385 用例全绿、`bun run verify`（tsc + 全量测试）通过；
-- 上轮整改覆盖 3 高 / 18 中 / 22 低问题，全部附回归测试；
-- 安全默认值：项目 hooks/MCP 默认关、非交互项目代理默认拒、LSP 写动作默认阻断、计划自动批准默认关。
+- 功能面完整：19 扩展、415 用例全绿、`bun run verify`（tsc + 全量测试）通过；
+- 第二轮整改（2026-08-03）覆盖 3 高 / 15 中 / 21 低问题，全部附回归测试；
+- 安全默认值：项目 hooks/MCP 默认关、非交互项目代理默认拒、LSP 写动作默认阻断、计划自动批准默认关；
+- 工具错误语义对齐上游：失败一律 throw（agent loop 仅以异常判定 isError）。
 
 ### 5.2 已知局限（客观记录）
 
 | # | 局限 | 影响 | 状态 |
 |---|---|---|---|
-| L1 | **holographic provider 为 demo stub**：JSON 全量读写、related/reason/contradict 空实现、无并发写保护 | 选它做后端等于降级 | 已知，文档标注 |
+| L1 | **holographic provider 为 demo stub**：JSON 全量读写、related/reason/contradict 空实现、无并发写保护 | 选它做后端等于降级 | 已知，`/memory status` 已标注 |
 | L2 | 记忆检索无真语义：TF-IDF + 固定同义词表，跨语言/深度改写召回有限 | 召回率上限 | 待评估 embedding 方案 |
 | L3 | `acceptance.criteria` 与 `evidence` **按下标隐式配对** | 配置错位时门禁误判 | 待改命名配对 |
-| L4 | pi 无工具注销 API：MCP 重连旧工具名残留（已注册侧去重，旧闭包靠 activeTools 校验兜底） | 工具列表无法刷新 | 受上游约束 |
+| L4 | pi 无工具注销 API：MCP 工具名进程内不可刷新 | 工具列表无法刷新（已用 holder 修复闭包失效） | 受上游约束 |
 | L5 | LSP 诊断等待为轮询窗口（500ms/5s），非事件驱动 | 延迟/偶发取空 | 待改 publishDiagnostics 事件驱动 |
 | L6 | 子代理 stderr 无界累积；`sessionMessages` 会话内无界增长 | 长会话内存 | 待加截断/上限 |
 | L7 | 私网防护仅 hostname 字符串级，`*.nip.io`/DNS rebinding 可绕过 | SSRF 边界缺口（本地代理影响有限） | 待 DNS 解析复检 |
 | L8 | worktree 合并按任务序串行，冲突仅报错不自动处理 | 冲突时需人工 | 已知 |
-| L9 | setup 菜单 ESC 缓冲无超时窗口（仅对恰为 `\x1b` 的 chunk 等待） | 极端分帧仍可能误判 | 已知 |
-| L10 | 文档漂移：AGENTS.md 记 18 个扩展，实际 19 个 | 新人误导 | 待同步 |
-| L11 | vision/retro-theme/events 无独立测试文件 | 回归覆盖缺口 | 待补 |
 | L12 | 记忆库无归档/衰减策略（facts 无限增长，contradict 仅分析最近 500 条） | 库膨胀 | 待迭代 |
 
 ### 5.3 待优化项与迭代规划（建议排序）
@@ -330,8 +396,7 @@ flowchart TD
 1. **事件驱动 LSP 诊断**（L5）——消除固定等待，收益最直接；
 2. **记忆归档与衰减**（L12）——老事实降权/合并，控制库增长；
 3. **acceptance 命名配对**（L3）——避免隐式下标契约；
-4. **测试补强**（L11）——vision/retro-theme/events 单测；
-5. **子代理输出上限**（L6）——stderr 截断、sessionMessages 封顶；
+4. **子代理输出上限**（L6）——stderr 截断、sessionMessages 封顶；
 6. 评估 embedding 检索（L2）与 DNS 级 SSRF 防护（L7）为远期项。
 
 ---
