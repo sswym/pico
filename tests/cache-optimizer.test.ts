@@ -152,6 +152,29 @@ test("preserves existing prompt_cache_key and official OpenAI retention", () => 
   expect(result).toBeUndefined();
 });
 
+test("provider hook tolerates missing or throwing sessionManager", () => {
+  const pi = makeFakePi();
+  cacheOptimizerExtension(pi as any);
+  const hook = pi.handlers.before_provider_request![0]!;
+  const model = {
+    provider: "proxy",
+    api: "openai-completions",
+    baseUrl: "https://proxy.example.test/v1",
+  };
+
+  // No sessionManager at all: must not throw and must not inject a key.
+  const noManager = hook({ payload: { messages: [] } }, { model }) as Record<string, unknown> | undefined;
+  expect(noManager?.prompt_cache_key).toBeUndefined();
+
+  // Throwing sessionManager: must be swallowed, not propagate.
+  expect(() =>
+    hook({ payload: { messages: [] } }, {
+      model,
+      sessionManager: { getSessionId: () => { throw new Error("no session"); } },
+    }),
+  ).not.toThrow();
+});
+
 test("extension registers prompt and provider hooks", () => {
   const pi = makeFakePi();
   cacheOptimizerExtension(pi as any);

@@ -259,14 +259,51 @@ test("MCP tools from a previous cwd stop using closed handles after reconnect", 
   expect(closed).toContain("one");
   expect(pi.tools.has("mcp__two__new")).toBe(true);
 
-  const oldResult = await oldTool.execute("tc-old", {});
-  expect(oldResult.isError).toBe(true);
-  expect(oldResult.content[0].text).toMatch(/no longer active/i);
+  // Tool failures are expressed by throwing (the agent loop derives isError
+  // from thrown exceptions), and the stale tool must NOT reach the closed
+  // handle.
+  await expect(oldTool.execute("tc-old", {})).rejects.toThrow(/not active/i);
   expect(calls).toEqual([]);
 
   const newResult = await pi.tools.get("mcp__two__new").execute("tc-new", {});
   expect(newResult.isError).toBe(false);
   expect(calls).toEqual([{ handle: "two", toolName: "new" }]);
+});
+
+test("connect closes a superseded handle when a newer connect starts mid-initialization", async () => {
+  const pi = makeFakePi();
+  const closed: string[] = [];
+  let releaseInit: (() => void) | undefined;
+  const initGate = new Promise<void>((resolve) => { releaseInit = resolve; });
+  const extension = createMcpExtension({
+    load: (cwd): Record<string, McpServerConfig> => {
+      if (cwd.endsWith("one")) return { one: { command: "one" } };
+      return { two: { command: "two" } };
+    },
+    spawn: (id) => makeHandle(id),
+    initialize: async (handle) => {
+      if (handle.id === "one") await initGate;
+      return { protocolVersion: "test", capabilities: {}, serverInfo: { name: handle.id, version: "1.0.0" } };
+    },
+    listTools: async (handle) => [{ name: "t", inputSchema: { type: "object", properties: {} } }],
+    callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    close: (handle) => {
+      closed.push(handle.id);
+    },
+  });
+
+  extension(pi as any);
+  // First connect stalls inside initialize(); the second connect starts
+  // before it settles.
+  const first = pi.handlers["session_start"]![0]!({}, { cwd: "/repo/one" });
+  await pi.handlers["session_start"]![0]!({}, { cwd: "/repo/two" });
+  releaseInit!();
+  await first;
+
+  // The superseded generation must close its own handle instead of leaking it.
+  expect(closed).toContain("one");
+  expect(closed).not.toContain("two");
+  expect(pi.tools.has("mcp__two__t")).toBe(true);
 });
 
 // ─── Real-subprocess integration: requests must actually reach the server ──

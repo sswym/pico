@@ -44,7 +44,10 @@ function parseEditorConfig(filePath: string): EditorConfigSection[] {
 
       switch (key) {
         case "indent_size":
-          current.indentSize = parseInt(value, 10);
+          // editorconfig allows `indent_size = tab`; leave it undefined so
+          // resolution falls back to tab_width (parseInt("tab") would be NaN
+          // and serialize as a null tabSize in the formatting request).
+          current.indentSize = value === "tab" ? undefined : parseInt(value, 10);
           break;
         case "indent_style":
           if (value === "tab" || value === "space") current.indentStyle = value;

@@ -457,6 +457,9 @@ export async function ensureNamedServer(
       console.error(`[lsp] Failed to start ${name}:`, msg);
       recordInitFailure(state, name, msg);
       state.servers.delete(name);
+      // Reap the spawned process — mirrors ensureServer, otherwise a server
+      // that started its binary but failed initialization leaks.
+      newManaged.client.shutdown().catch(() => {});
     } finally {
       newManaged.initializing = null;
     }

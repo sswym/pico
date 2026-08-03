@@ -123,7 +123,19 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         return null;
       }
       ctx.ui.notify(`Installed ${cmd}. Starting language server…`, "info");
-      return await start();
+      try {
+        return await start();
+      } catch (retryErr) {
+        // The freshly installed binary may still be off PATH (e.g. npm
+        // global dir not exported) — surface that as a tool failure, not a
+        // bare exception escaping the execute path.
+        if (!(retryErr instanceof LspError) || retryErr.errorCode !== COMMAND_NOT_FOUND) throw retryErr;
+        ctx.ui.notify(
+          `Installed ${cmd} but the binary is still not on PATH. Add it and retry.`,
+          "error",
+        );
+        return null;
+      }
     }
   }
 
@@ -345,6 +357,10 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
   pi.on("tool_result", async (event, ctx) => {
     if (event.toolName !== "write" && event.toolName !== "edit") return;
+    // Failed writes must not trigger format-on-write (it would rewrite the
+    // stale on-disk content) or produce diagnostics for content that was
+    // never written.
+    if (event.isError) return;
 
     const input = event.input;
     const filePath = typeof input === "object" && input !== null && "path" in input
@@ -354,6 +370,11 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
     const ext = filePath.includes(".") ? filePath.slice(filePath.lastIndexOf(".")).toLowerCase() : "";
     if (!CODE_EXTENSIONS.has(ext)) return;
+
+    // Upstream emitToolResult only applies the handler's RETURN value (it
+    // shallow-copies the event before invoking handlers), so appends must be
+    // returned, never applied in place.
+    const additions: Array<{ type: "text"; text: string }> = [];
 
     try {
       const doc = await syncDocumentWithInstall(ctx.cwd, filePath, ctx);
@@ -374,16 +395,13 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             }
           }
         } catch {
-          event.content = [
-            ...event.content,
-            { type: "text", text: "\n[LSP] formatOnWrite failed; diagnostics still ran." },
-          ];
+          additions.push({ type: "text", text: "\n[LSP] formatOnWrite failed; diagnostics still ran." });
         }
       } else if (state.config?.formatOnWrite === true) {
-        event.content = [
-          ...event.content,
-          { type: "text", text: "\n[LSP] formatOnWrite configured but skipped; set PICO_ALLOW_LSP_FORMAT_ON_WRITE=1 to allow automatic file rewrites." },
-        ];
+        additions.push({
+          type: "text",
+          text: "\n[LSP] formatOnWrite configured but skipped; set PICO_ALLOW_LSP_FORMAT_ON_WRITE=1 to allow automatic file rewrites.",
+        });
       }
 
       client.didSave(uri);
@@ -399,16 +417,19 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
       const diagText = formatDiagnosticsForFile(filePath, finalDiags ?? []);
       const messages = diagText.split("\n").filter(Boolean);
-      const freshMessages = ledger.reduce(filePath, messages);
+      // Key the ledger by the resolved path: the model may pass the same
+      // file as relative or absolute across writes, and a mismatched key
+      // would re-report every diagnostic.
+      const freshMessages = ledger.reduce(absFilePath, messages);
       if (freshMessages.length > 0) {
-        event.content = [
-          ...event.content,
-          { type: "text", text: `\n[LSP] ${freshMessages.join("\n")}` },
-        ];
+        additions.push({ type: "text", text: `\n[LSP] ${freshMessages.join("\n")}` });
       }
     } catch {
       // Silently ignore writethrough failures
     }
+
+    if (additions.length === 0) return;
+    return { content: [...event.content, ...additions] };
   });
 
   // ── Startup warmup ──────────────────────────────────────────────────────

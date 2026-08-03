@@ -131,6 +131,18 @@ test("loadImageFromInput accepts data URLs and local paths", async () => {
   }
 });
 
+test("loadImageFromInput refuses private-network image URLs", async () => {
+  await expect(
+    loadImageFromInput({ image_url: "http://127.0.0.1:8080/img.png" }, "/repo"),
+  ).rejects.toThrow(/private network/i);
+  await expect(
+    loadImageFromInput({ image_url: "http://169.254.169.254/latest/meta-data/" }, "/repo"),
+  ).rejects.toThrow(/private network/i);
+  await expect(
+    loadImageFromInput({ image_url: "http://localhost/img.png" }, "/repo"),
+  ).rejects.toThrow(/private network/i);
+});
+
 test("visionAnalyze tool calls configured vision model", async () => {
   const home = configureVisionHome();
   const calls: any[] = [];

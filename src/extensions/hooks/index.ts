@@ -160,17 +160,26 @@ export function createHooksExtension(deps: {
       const matching = hooks().filter((h) => h.event === "PreSessionEnd");
       if (matching.length === 0) return;
 
-      for (const hook of matching) {
-        const res = await run(hook, {});
-        if (res.timedOut || res.exitCode !== 0) {
-          // Session is going away — sendMessage may not deliver anywhere
-          // useful, so just log to stderr.
-          const why = res.timedOut ? "timeout" : `exit ${res.exitCode}`;
-          try {
-            console.warn(`[pico hooks] PreSessionEnd hook \`${hook.command}\` ${why}`);
-          } catch {}
-        }
-      }
+      // Run in parallel with a total budget: serial execution could stall
+      // session teardown for the SUM of all hook timeouts.
+      const budgetMs = 30_000;
+      const work = Promise.allSettled(
+        matching.map(async (hook) => {
+          const res = await run(hook, {});
+          if (res.timedOut || res.exitCode !== 0) {
+            // Session is going away — sendMessage may not deliver anywhere
+            // useful, so just log to stderr.
+            const why = res.timedOut ? "timeout" : `exit ${res.exitCode}`;
+            try {
+              console.warn(`[pico hooks] PreSessionEnd hook \`${hook.command}\` ${why}`);
+            } catch {}
+          }
+        }),
+      );
+      const budget = setTimeout(() => {}, budgetMs);
+      budget.unref?.();
+      await Promise.race([work, new Promise<void>((resolve) => setTimeout(resolve, budgetMs))]);
+      clearTimeout(budget);
     });
   };
 }

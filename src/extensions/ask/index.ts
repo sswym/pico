@@ -50,13 +50,11 @@ interface AskAnswers {
   [question: string]: { picks: string[]; notes?: string; preview?: string };
 }
 
-function errorResult(message: string) {
-  const payload = { error: message };
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
-    details: payload,
-    isError: true,
-  };
+function errorResult(message: string): never {
+  // Throwing is the only way the agent loop learns a tool call failed — a
+  // returned isError flag is dropped upstream and the failure would render
+  // as a success.
+  throw new Error(message);
 }
 
 function jsonResult(payload: unknown) {

@@ -8,7 +8,8 @@
  * `vars` carries the placeholder values. Values are shell-quoted according
  * to their surrounding quote context before the command is passed to `sh -c`.
  * The placeholder keys are uppercase ($FILE, $TOOL, $TURN, etc.); unknown
- * ones collapse to the empty string.
+ * ones are left untouched so the shell expands real environment variables
+ * ($HOME, $PATH, ...) instead of silently collapsing them to empty strings.
  */
 import type { Hook } from "./config.ts";
 
@@ -28,7 +29,7 @@ const PLACEHOLDER_RE = /\$([A-Z][A-Z0-9_]*)/g;
 export function substitute(template: string, vars: HookVars): string {
   return template.replace(PLACEHOLDER_RE, (match, name: string, offset: number) => {
     const v = vars[name];
-    if (v === undefined) return "";
+    if (v === undefined) return match;
     return quoteForShellContext(String(v), quoteContextAt(template, offset + match.length));
   });
 }
@@ -90,14 +91,23 @@ export async function runHook(hook: Hook, vars: HookVars): Promise<HookRunResult
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
+      // Leader of its own process group so a timeout can kill sh AND its
+      // children — otherwise grandchildren (npm/node subprocesses) survive
+      // and keep the stdout pipe open forever.
+      detached: true,
     });
     const child = proc;
     timer = setTimeout(() => {
       timedOut = true;
       try {
-        child.kill("SIGKILL");
+        process.kill(-child.pid, "SIGKILL");
       } catch {
-        // already exited
+        // Process group already gone — fall back to the direct child.
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // already exited
+        }
       }
     }, timeoutMs);
 

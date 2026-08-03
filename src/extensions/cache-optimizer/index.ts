@@ -296,7 +296,13 @@ function clampPromptCacheKey(key: string | undefined): string | undefined {
 }
 
 function getSessionPromptCacheKey(ctx: ExtensionContext): string | undefined {
-  return clampPromptCacheKey(ctx.sessionManager.getSessionId());
+  // sessionManager may be absent or throw on some hosts; the cache key is an
+  // optimization, so a missing one must never break the provider request.
+  try {
+    return clampPromptCacheKey(ctx.sessionManager.getSessionId());
+  } catch {
+    return undefined;
+  }
 }
 
 function hasEffectivePromptCacheKey(record: UnknownRecord): boolean {

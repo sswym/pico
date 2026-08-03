@@ -131,11 +131,14 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 			if (reason === "abort") wasAborted = true;
 			else timedOut = true;
 			proc.kill("SIGTERM");
-			// Escalate to SIGKILL if the child ignores SIGTERM. Tracked so it can
-			// be cleared once the process exits — otherwise this timer keeps the
-			// event loop alive for up to 5s after an otherwise clean exit.
+			// Escalate to SIGKILL if the child ignores SIGTERM. `proc.killed`
+			// flips true on the first kill() call, so it cannot gate the
+			// escalation; the timer is cleared on close, so firing it means the
+			// process is still alive. Tracked so it can be cleared once the
+			// process exits — otherwise this timer keeps the event loop alive
+			// for up to 5s after an otherwise clean exit.
 			killTimer = setTimer(() => {
-				if (!proc.killed) proc.kill("SIGKILL");
+				proc.kill("SIGKILL");
 			}, 5000);
 		};
 

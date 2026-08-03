@@ -125,11 +125,18 @@ export class CuratedMemoryStore {
   }
 
   add(target: CuratedTarget, content: string): CuratedWriteResult {
-    const clean = content.trim();
+    // clampEntry mirrors autoExtract: entries are joined by a delimiter, so
+    // an entry containing the literal delimiter (or embedded newlines) would
+    // corrupt the file format and trip the drift guard on every later write.
+    const clean = clampEntry(content);
     const preflight = this.preflight(target, clean);
     if (preflight) return preflight;
 
-    this.reloadLive(target, { skipDrift: true });
+    // Same drift handling as replace/remove: silently re-parsing a
+    // hand-formatted file would drop the user's formatting.
+    const drift = this.reloadLive(target);
+    if (drift) return this.driftResult(target, drift);
+
     const entries = this.entriesFor(target);
     if (entries.includes(clean)) return this.result(target, true, "Entry already exists.");
 

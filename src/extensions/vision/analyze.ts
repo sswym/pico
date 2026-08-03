@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { completeSimple, type Api, type ImageContent, type Model, type TextContent } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readSettingsObject } from "../settings.ts";
+import { isPrivateHost } from "../web/fetch.ts";
 
 const DEFAULT_PROMPT =
   "Describe everything visible in this image in thorough detail. Include any text, code, UI, data, objects, layout, colors, and notable visual information.";
@@ -101,6 +102,12 @@ async function imageFromUrl(url: string, deps: VisionAnalyzeDeps, signal?: Abort
   const parsed = new URL(url);
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new Error("image_url must use http or https");
+  }
+  // Mirror webFetch's private-network guard: a URL pointing at loopback or
+  // cloud metadata must not be fetched (the fetched content is forwarded to
+  // the vision provider and could leak through the analysis text).
+  if (isPrivateHost(parsed.hostname)) {
+    throw new Error("Refusing to fetch image from localhost or private network address");
   }
 
   const response = await deps.fetchImpl(url, { signal });

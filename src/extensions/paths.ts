@@ -9,7 +9,7 @@
  * state, memory, plans, hooks, and sessions are co-located under one roof.
  */
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 /**
  * Resolve the pico home directory.
@@ -20,7 +20,9 @@ import { join } from "node:path";
  */
 export function picoHome(): string {
   const override = process.env.PICO_HOME;
-  if (override && override.length > 0) return override;
+  // Expand a leading ~ and resolve relative overrides against the cwd so the
+  // returned path is always absolute.
+  if (override && override.length > 0) return resolve(override.replace(/^~(?=\/|$)/, homedir()));
   return join(homedir(), ".pico");
 }
 

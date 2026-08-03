@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import {
   picoAgentHome,
   picoHolographicMemoryPath,
@@ -44,6 +45,19 @@ test("PICO_MEMORY_DB overrides memory database path only", () => {
 
   expect(picoMemoryDbPath()).toBe("/tmp/memory.db");
   expect(picoSettingsPath()).toBe(join("/tmp/pico-custom-home", "agent", "settings.json"));
+});
+
+test("picoHome expands ~ and resolves relative PICO_HOME", () => {
+  process.env.PICO_HOME = "~/custom";
+  expect(picoHome()).toBe(join(homedir(), "custom"));
+
+  process.env.PICO_HOME = "relative/pico";
+  expect(picoHome()).toBe(resolve("relative/pico"));
+});
+
+test("empty PICO_HOME falls back to the default home", () => {
+  process.env.PICO_HOME = "";
+  expect(picoHome()).toBe(join(homedir(), ".pico"));
 });
 
 test("PICO_MEMORY_DB never overrides the holographic (JSON) memory path", () => {

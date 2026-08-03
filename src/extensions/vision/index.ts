@@ -54,11 +54,9 @@ export function createVisionExtension(deps: VisionAnalyzeDeps = defaultVisionDep
             };
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            return {
-              content: [{ type: "text" as const, text: `visionAnalyze failed: ${message}` }],
-              details: { error: message },
-              isError: true,
-            };
+            // Throw so the failure is marked as an error upstream (a returned
+            // isError flag is dropped by the agent loop).
+            throw new Error(`visionAnalyze failed: ${message}`);
           }
         },
       }),
@@ -89,28 +87,23 @@ export function createVisionExtension(deps: VisionAnalyzeDeps = defaultVisionDep
       if (modelSupportsVision(ctx.model)) return { action: "continue" as const };
       if (!readVisionConfig()) return { action: "continue" as const };
 
-      try {
-        const results = [];
-        for (const image of event.images) {
+      // Per-image try/catch: one failing image must not discard the analyses
+      // that already succeeded — keep them and append a failure note.
+      const results: Array<{ analysis: string; model: string; provider: string }> = [];
+      const failures: string[] = [];
+      for (const image of event.images) {
+        try {
           results.push(await analyzeImageWithVisionModel(ctx, image, event.text, deps));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          failures.push(`[image analysis failed: ${message}]`);
         }
-
-        const note = formatVisionNote(results);
-        const text = event.text.trim().length > 0
-          ? `${event.text}\n\n${note}`
-          : note;
-        return { action: "transform" as const, text, images: [] };
-      } catch (error) {
-        // Vision failures must never break the user message path — fall
-        // through with the original text and surface the problem.
-        const message = error instanceof Error ? error.message : String(error);
-        const note = `\n\n[image analysis failed: ${message}]`;
-        return {
-          action: "transform" as const,
-          text: event.text.trim().length > 0 ? `${event.text}${note}` : note,
-          images: [],
-        };
       }
+
+      const note = formatVisionNote(results);
+      const failureNote = failures.join("\n");
+      const parts = [event.text.trim(), note, failureNote].filter((p) => p.length > 0);
+      return { action: "transform" as const, text: parts.join("\n\n"), images: [] };
     });
   };
 }

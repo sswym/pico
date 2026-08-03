@@ -30,12 +30,14 @@ import {
   __getUnsupportedServerCommandReasonForTests,
   __recordInitFailureForTests,
   createLspManager,
+  ensureNamedServer,
   loadConfig,
   setIdleTimeout,
   syncDocument,
   syncDocumentForFile,
   stopServer,
 } from "../src/extensions/lsp/manager.ts";
+import { LspClient } from "../src/extensions/lsp/client.ts";
 import type { TextEdit } from "../src/extensions/lsp/types.ts";
 
 describe("applyTextEditsToString", () => {
@@ -190,7 +192,7 @@ describe("LSP action risk classification", () => {
     };
     lspExtension(fakePi);
 
-    const result = await registered.execute(
+    const run = registered.execute(
       "tc1",
       { action: "rename", file: "a.ts", line: 1, character: 0, newName: "b" },
       undefined,
@@ -198,8 +200,9 @@ describe("LSP action risk classification", () => {
       { cwd: process.cwd(), ui: { notify: () => {}, confirm: async () => false, setStatus: () => {} } },
     );
 
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toMatch(/read-only/i);
+    // Tool failures are expressed by throwing (the agent loop derives isError
+    // from thrown exceptions, not returned objects).
+    await expect(run).rejects.toThrow(/read-only/i);
   });
 });
 
@@ -502,21 +505,19 @@ describe("LSP executor helpers", () => {
     expect(result.content[0].text).not.toContain("ignored");
   });
 
-  test("executeRequestAction validates query and formats success or failure", async () => {
-    const missing: any = await executeRequestAction({ rawRequest: async () => ({}) }, undefined, null);
-    expect(missing.isError).toBe(true);
-    expect(missing.content[0].text).toContain("requires 'query'");
+  test("executeRequestAction validates query and formats success or throws on failure", async () => {
+    const missing: Promise<any> = executeRequestAction({ rawRequest: async () => ({}) }, undefined, null);
+    await expect(missing).rejects.toThrow("requires 'query'");
 
     const okResult: any = await executeRequestAction({ rawRequest: async (_method, payload) => ({ payload }) }, "x/y", { a: 1 });
     expect(okResult.content[0].text).toContain('"a": 1');
 
-    const failed: any = await executeRequestAction({
+    const failed: Promise<any> = executeRequestAction({
       rawRequest: async () => {
         throw new Error("boom");
       },
     }, "x/y", null);
-    expect(failed.isError).toBe(true);
-    expect(failed.content[0].text).toBe("LSP request failed: boom");
+    await expect(failed).rejects.toThrow("LSP request failed: boom");
   });
 
   test("executeWorkspaceDiagnosticsAction formats diagnostics from active clients", () => {
@@ -582,5 +583,132 @@ describe("LSP executor helpers", () => {
 
     const none: any = formatDocumentSymbolsResult("a.ts", []);
     expect(none.content[0].text).toBe("No symbols found in a.ts.");
+  });
+});
+
+// ── Writethrough contract + diagnostics freshness ─────────────────────────
+
+/**
+ * Minimal LSP server over stdio: answers initialize, publishes one new
+ * diagnostic per didSave (message "error-<n>"), and exits on shutdown/exit.
+ */
+const FAKE_LSP_SERVER = `
+let buf = Buffer.alloc(0);
+let pubCount = 0;
+let saveUri = "";
+function send(msg) {
+  const body = Buffer.from(JSON.stringify(msg));
+  process.stdout.write(Buffer.concat([Buffer.from("Content-Length: " + body.length + "\\r\\n\\r\\n"), body]));
+}
+function pump() {
+  while (true) {
+    const headEnd = buf.indexOf("\\r\\n\\r\\n");
+    if (headEnd === -1) break;
+    const head = buf.slice(0, headEnd).toString("utf8");
+    const m = /Content-Length: (\\d+)/.exec(head);
+    if (!m) { buf = buf.slice(headEnd + 4); continue; }
+    const len = Number(m[1]);
+    if (buf.length < headEnd + 4 + len) break;
+    const body = JSON.parse(buf.slice(headEnd + 4, headEnd + 4 + len).toString("utf8"));
+    buf = buf.slice(headEnd + 4 + len);
+    onMessage(body);
+  }
+}
+function onMessage(msg) {
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: {}, serverInfo: { name: "fake-lsp", version: "1.0.0" } } });
+  } else if (msg.method === "textDocument/didSave") {
+    saveUri = msg.params.textDocument.uri;
+    pubCount++;
+    setTimeout(() => {
+      send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: saveUri, diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, severity: 1, message: "error-" + pubCount }] } });
+    }, 30);
+  } else if (msg.method === "shutdown") {
+    send({ jsonrpc: "2.0", id: msg.id, result: null });
+  } else if (msg.method === "exit") {
+    process.exit(0);
+  }
+}
+process.stdin.on("data", (chunk) => { buf = Buffer.concat([buf, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]); pump(); });
+`;
+
+describe("LSP writethrough diagnostics freshness", () => {
+  test("waitForDiagnostics returns post-didSave publishes, never the stale cache", async () => {
+    const client = new LspClient(
+      { command: process.execPath, args: ["-e", FAKE_LSP_SERVER], fileTypes: [".ts"] } as any,
+      "fake-lsp",
+    );
+    await client.initialize(process.cwd());
+    const uri = "file:///repo/a.ts";
+    try {
+      await client.didSave(uri);
+      const first = await client.waitForDiagnostics(uri, 5_000);
+      expect(first?.some((d) => d.message === "error-1")).toBe(true);
+
+      // Second save must observe the NEW publish — returning the cached
+      // diagnostics here would silently drop error-2.
+      await client.didSave(uri);
+      const second = await client.waitForDiagnostics(uri, 5_000);
+      expect(second?.some((d) => d.message === "error-2")).toBe(true);
+    } finally {
+      await client.shutdown();
+    }
+  });
+
+  test("tool_result handler never mutates the event in place and skips failed writes", async () => {
+    const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
+    const fakePi: any = {
+      on: (event: string, handler: (event: any, ctx: any) => any) => {
+        (handlers[event] ??= []).push(handler);
+      },
+      registerTool: () => {},
+    };
+    lspExtension(fakePi);
+    const handler = handlers["tool_result"]![0]!;
+    const ctx = {
+      cwd: process.cwd(),
+      ui: { notify: () => {}, confirm: async () => false, setStatus: () => {} },
+    };
+
+    // Failed writes are skipped entirely (no format-on-write of stale content).
+    const failedEvent = {
+      toolName: "write",
+      isError: true,
+      input: { path: "a.ts" },
+      content: [{ type: "text", text: "boom" }],
+    };
+    expect(await handler(failedEvent, ctx)).toBeUndefined();
+    expect(failedEvent.content).toEqual([{ type: "text", text: "boom" }]);
+
+    // Successful write without a usable server: nothing appended, and the
+    // event object is untouched — upstream only applies the return value.
+    const okEvent = {
+      toolName: "edit",
+      isError: false,
+      input: { path: "a.ts" },
+      content: [{ type: "text", text: "ok" }],
+    };
+    const result = await handler(okEvent, ctx);
+    expect(result).toBeUndefined();
+    expect(okEvent.content).toEqual([{ type: "text", text: "ok" }]);
+  });
+
+  test("ensureNamedServer cleans up state when initialization fails", async () => {
+    const state = createLspManager();
+    state.config = {
+      servers: {
+        "fake-crash": {
+          command: process.execPath,
+          args: ["-e", "process.exit(1)"],
+          fileTypes: [".ts"],
+          rootMarkers: [],
+        },
+      },
+      formatOnWrite: false,
+    } as any;
+
+    const result = await ensureNamedServer(state, "fake-crash", process.cwd());
+    expect(result).toBeNull();
+    expect(state.servers.has("fake-crash")).toBe(false);
   });
 });

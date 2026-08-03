@@ -34,6 +34,12 @@ const SKIP_PREFIXES = [
   "bun --hot",
 ];
 
+/** Commands that tend to run indefinitely (followers, watchers, dev servers). */
+const LONG_RUNNING_COMMANDS = ["tail", "jest", "vitest", "playwright", "bun", "npm", "pnpm", "watch"];
+
+/** Flags/args that turn a supported command into a long-running process. */
+const LONG_RUNNING_FLAGS = ["--watch", "--follow", "-f", "--hot", "watch"];
+
 const SUPPORTED_PREFIXES = [
   "ls",
   "tree",
@@ -79,7 +85,22 @@ export function shouldRewriteWithRtk(command: string): boolean {
   if (normalized.length === 0) return false;
   if (normalized.includes("\n")) return false;
   if (SKIP_PREFIXES.some((prefix) => commandStartsWith(normalized, prefix))) return false;
+  if (isLongRunningCommand(normalized)) return false;
   return SUPPORTED_PREFIXES.some((prefix) => commandStartsWith(normalized, prefix));
+}
+
+/** True when the command spawns a follower/watcher/dev server that never exits. */
+function isLongRunningCommand(command: string): boolean {
+  const tokens = command.split(" ");
+  const head = tokens[0];
+  if (!head || !LONG_RUNNING_COMMANDS.includes(head)) return false;
+  const args = tokens.slice(1);
+  if (args.some((arg) => LONG_RUNNING_FLAGS.includes(arg))) return true;
+  // npm/pnpm/bun run dev-* or run start spawn dev servers / watch mode.
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === "run" && (args[i + 1]!.startsWith("dev") || args[i + 1] === "start")) return true;
+  }
+  return false;
 }
 
 export function rewriteRtkCommand(command: string, rtkCommand = "rtk"): string {

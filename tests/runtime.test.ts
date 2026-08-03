@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { rmSync } from "node:fs";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { buildRuntimeArgs } from "../src/runtime/args.ts";
+import { prepareEmbeddedRuntime } from "../src/runtime/embedded-runtime.ts";
 import { ExtensionRegistry } from "../src/runtime/extensions.ts";
 
 const entryMetaUrl = pathToFileURL(resolve(import.meta.dir, "..", "bin", "pico.ts")).href;
@@ -34,6 +36,21 @@ test("buildRuntimeArgs respects opt-out and package-management commands", () => 
     entryMetaUrl,
     isBunBinary: false,
   })).toEqual(["install", "example"]);
+});
+
+test("prepareEmbeddedRuntime defers signal handling to the host", () => {
+  const sigintBefore = process.listenerCount("SIGINT");
+  const sigtermBefore = process.listenerCount("SIGTERM");
+  const oldPkgDir = process.env.PI_PACKAGE_DIR;
+  const dirs = prepareEmbeddedRuntime(true);
+  try {
+    expect(process.listenerCount("SIGINT")).toBe(sigintBefore);
+    expect(process.listenerCount("SIGTERM")).toBe(sigtermBefore);
+  } finally {
+    if (oldPkgDir === undefined) delete process.env.PI_PACKAGE_DIR;
+    else process.env.PI_PACKAGE_DIR = oldPkgDir;
+    if (dirs) rmSync(dirname(dirs.promptsDir), { recursive: true, force: true });
+  }
 });
 
 test("buildRuntimeArgs does not duplicate existing bundled paths", () => {

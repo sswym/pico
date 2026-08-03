@@ -176,7 +176,7 @@ export function hasRootMarkers(cwd: string, markers: string[]): boolean {
   if (markers.length === 0) return true; // No markers = always match
   let dir = cwd;
   for (let depth = 0; depth < 3; depth++) {
-    if (markers.some((m) => existsSync(join(dir, m)))) return true;
+    if (markers.some((m) => markerMatches(dir, m))) return true;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -184,21 +184,58 @@ export function hasRootMarkers(cwd: string, markers: string[]): boolean {
   return false;
 }
 
+/**
+ * Match a root marker against a directory: plain paths are checked with
+ * existsSync; glob patterns (`*.tf`, `*.csproj`) are expanded with a
+ * directory scan so wildcard markers in defaults.json actually fire.
+ */
+function markerMatches(dir: string, marker: string): boolean {
+  if (!/[*?[\]{}]/.test(marker)) return existsSync(join(dir, marker));
+  const base = marker.startsWith("/") ? marker.slice(1) : marker;
+  const segs = base.split("/");
+  let current = dir;
+  for (const seg of segs) {
+    if (seg.includes("*")) {
+      const re = new RegExp(
+        `^${seg.split("*").map((s) => s.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join(".*")}$`,
+      );
+      try {
+        const names = readdirSync(current);
+        if (!names.some((n) => re.test(n))) return false;
+      } catch {
+        return false;
+      }
+    } else {
+      current = join(current, seg);
+    }
+  }
+  return existsSync(current);
+}
+
 // ── Server routing ────────────────────────────────────────────────────────
 
-/** Normalize a file extension (ensure leading dot). */
+/**
+ * Normalize a file extension (ensure leading dot).
+ * Extensionless filenames (Dockerfile, Makefile) return the lowercase
+ * basename so server configs can route on them.
+ */
 function extOf(filePath: string): string {
-  const ext = filePath.includes(".") ? filePath.slice(filePath.lastIndexOf(".")) : "";
-  return ext.toLowerCase();
+  const base = filePath.slice(filePath.lastIndexOf("/") + 1);
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return base.toLowerCase();
+  return base.slice(dot).toLowerCase();
 }
 
 /** Get all servers that can handle a file, based on fileTypes. */
 export function getServersForFile(config: LspConfig, filePath: string): Array<[string, LspServerConfig]> {
   const ext = extOf(filePath);
+  // Extensionless basenames match both the bare form (dockerfile) and the
+  // normalized leading-dot form (".dockerfile") used by defaults.json.
+  const dottedForm = ext.includes(".") ? "" : `.${ext}`;
   const result: Array<[string, LspServerConfig]> = [];
   for (const [name, serverConfig] of Object.entries(config.servers)) {
     if (serverConfig.disabled) continue;
-    if (serverConfig.fileTypes.includes(ext)) {
+    if (serverConfig.fileTypes.includes(ext) || (dottedForm !== "" && serverConfig.fileTypes.includes(dottedForm))) {
       result.push([name, serverConfig]);
     }
   }

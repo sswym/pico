@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -75,7 +75,22 @@ export function writeInputHistory(entries: string[], path = picoInputHistoryPath
 export function appendInputHistory(text: string, path = picoInputHistoryPath(), limit = DEFAULT_LIMIT): void {
   const normalized = normalizeHistoryText(text);
   if (!normalized) return;
-  writeInputHistory([...readInputHistory(path, limit), normalized], path, limit);
+  mkdirSync(dirname(path), { recursive: true });
+  // Append a single JSONL line: small single-line writes are atomic on POSIX,
+  // so concurrent instances no longer drop entries via the old read-modify-
+  // write race. { mode: 0o600 } only applies on first creation.
+  appendFileSync(path, `${JSON.stringify({ text: normalized })}\n`, { encoding: "utf-8", mode: 0o600 });
+  try {
+    // Trim to the newest `limit` entries once the file grows past the cap.
+    // The trim is best-effort: a concurrent writer may interleave, which is
+    // acceptable since the file stays valid JSONL either way.
+    const raw = readFileSync(path, "utf-8");
+    if (raw.split("\n").filter((line) => line.trim().length > 0).length > limit) {
+      writeInputHistory(parseHistoryFile(raw, limit), path, limit);
+    }
+  } catch {
+    // Read-back is best-effort; the append itself already succeeded.
+  }
 }
 
 export class PersistentHistoryEditor extends CustomEditor {

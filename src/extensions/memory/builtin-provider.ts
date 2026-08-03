@@ -8,6 +8,7 @@
  */
 import { MemoryStore, type Fact as StoreFact } from "./store.ts";
 import { type FactRetriever, type ScoredFact as RetrieverScoredFact, type ContradictionResult as RetrieverContradiction } from "./retrieval.ts";
+import type { Scope } from "./schema.ts";
 import {
   type MemoryProvider,
   type Fact,
@@ -198,11 +199,18 @@ export class BuiltinMemoryProvider implements MemoryProvider {
     }).map(toScoredFact);
   }
   
-  contradict(opts: { category?: string; limit?: number } = {}): ContradictionResult[] {
+  contradict(opts: { category?: string; limit?: number; threshold?: number; scope?: Scope; cwd?: string } = {}): ContradictionResult[] {
     this._renewRetriever();
+    // Forward scope/cwd/threshold: the retriever's scopeFilter is the only
+    // thing that keeps contradict from mixing global and project facts.
+    // Dropping scope/cwd here silently degraded project-scoped calls to
+    // global-only results.
     return this.retriever.contradict({
       category: opts.category,
       limit: opts.limit,
+      threshold: opts.threshold,
+      scope: opts.scope,
+      cwd: opts.cwd,
     }).map(toContradiction);
   }
 

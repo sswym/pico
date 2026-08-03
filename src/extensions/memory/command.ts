@@ -74,7 +74,7 @@ function usageLines(): string[] {
     "  /memory notes replace memory <old> => <new> — replace a curated note",
     "  /memory related <entity>  — find facts related to an entity",
     "  /memory reason <e1>,<e2>  — find facts linking multiple entities",
-    "  /memory contradict        — surface contradictory facts",
+    "  /memory contradict [--scope global|project] — surface contradictory facts",
   ];
 }
 
@@ -112,7 +112,10 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
         lines.push(`Available: ${info.available ? "yes" : "no"}`);
         lines.push(`Facts: ${info.factCount}`);
         lines.push(`Curated notes: ${curated.count()}`);
-        lines.push(`Providers: ${ProviderManager.availableProviders().join(", ")}`);
+        const providers = ProviderManager.availableProviders()
+          .map((p) => (p === "holographic" ? `${p} (demo stub — use builtin)` : p))
+          .join(", ");
+        lines.push(`Providers: ${providers}`);
         break;
       }
       case "setup": {
@@ -201,8 +204,9 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
         break;
       }
       case "contradict": {
-        const cat = asCategory(rest) || undefined;
-        const results = manager.contradict({ category: cat, limit: 10 });
+        const { scope, rest: filterRest } = parseScope(rest);
+        const cat = asCategory(filterRest) || undefined;
+        const results = manager.contradict({ category: cat, limit: 10, scope, cwd: scopedCwd(scope) });
         if (results.length === 0) {
           announce("No contradictions found.");
         } else {

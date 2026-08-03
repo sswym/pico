@@ -54,6 +54,7 @@ import { tryForkSession } from "../src/extensions/subagent/session.ts";
 import {
   mergeParallelWorktrees,
   prepareParallelWorktrees,
+  sanitizeAgentNameForWorktree,
   type WorktreeHandle,
 } from "../src/extensions/subagent/worktree.ts";
 
@@ -523,7 +524,10 @@ test("runJsonProcess handles process errors, aborts, and timeouts", async () => 
   });
   abortProc.close(null);
   expect(await abortRun).toEqual({ exitCode: 0, wasAborted: true, timedOut: false });
-  expect(abortProc.kills).toEqual(["SIGTERM"]);
+  // The mocked setTimeoutFn fires the escalation immediately (simulating a
+  // process still alive 5s after SIGTERM), so the unconditional SIGKILL
+  // escalation must have run.
+  expect(abortProc.kills).toEqual(["SIGTERM", "SIGKILL"]);
 
   let timeoutHandler: (() => void) | undefined;
   const timeoutProc = new FakeProcess();
@@ -887,6 +891,15 @@ test("spillLargeFileOnlyOutput skips inline mode, small output, and failed resul
   await spillLargeFileOnlyOutput(makeResult(1, "large output"), "worker", "file-only", 4, writer);
 
   expect(writes).toBe(0);
+});
+
+test("sanitizeAgentNameForWorktree strips shell metacharacters", () => {
+  expect(sanitizeAgentNameForWorktree("worker")).toBe("worker");
+  // Every illegal-character run collapses to a single underscore, so no
+  // shell metacharacter survives into the branch/dir names.
+  expect(sanitizeAgentNameForWorktree("x; touch /tmp/pwn")).toBe("x_touch_tmp_pwn");
+  expect(sanitizeAgentNameForWorktree("$(rm -rf /)")).toBe("_rm_-rf_");
+  expect(sanitizeAgentNameForWorktree("foo\"bar")).toBe("foo_bar");
 });
 
 test("prepareParallelWorktrees cleans up created handles when later setup fails", () => {

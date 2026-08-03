@@ -380,11 +380,10 @@ export async function runSubagentRequest(
 			const isError = isFailedResult(result);
 			if (isError) {
 				const errorMsg = getResultOutput(result);
-				return {
-					content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}` }],
-					details: makeDetails("chain")(results),
-					isError: true,
-				};
+				// Throw instead of returning an isError flag: the agent loop only
+				// derives isError from thrown exceptions, so a returned flag is
+				// silently dropped and the failure renders as a success.
+				throw new Error(`Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}`);
 			}
 			previousOutput = getFinalOutput(result.messages);
 
@@ -418,16 +417,7 @@ export async function runSubagentRequest(
 			const prepared = prepareParallelWorktrees(ctx.cwd, params.tasks);
 			worktreeHandles.splice(0, worktreeHandles.length, ...prepared.handles);
 			if (prepared.errorText) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: prepared.errorText,
-						},
-					],
-					details: makeDetails("parallel")([]),
-					isError: true,
-				};
+				throw new Error(prepared.errorText);
 			}
 		}
 
@@ -525,11 +515,7 @@ export async function runSubagentRequest(
 		const isError = isFailedResult(result);
 		if (isError) {
 			const errorMsg = getResultOutput(result);
-			return {
-				content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${errorMsg}` }],
-				details: makeDetails("single")([result]),
-				isError: true,
-			};
+			throw new Error(`Agent ${result.stopReason || "failed"}: ${errorMsg}`);
 		}
 		const fallbackPrefix = forkFallbackNote ? `_note: ${forkFallbackNote}_\n\n` : "";
 		return {

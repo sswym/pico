@@ -38,14 +38,10 @@ export function prepareEmbeddedRuntime(isBunBinary: boolean): EmbeddedRuntimeDir
     }
   };
   process.on("exit", cleanup);
-  process.on("SIGINT", () => {
-    cleanup();
-    process.exit(130);
-  });
-  process.on("SIGTERM", () => {
-    cleanup();
-    process.exit(143);
-  });
+  // No SIGINT/SIGTERM handlers here: registering them would run our exit
+  // before the host's graceful teardown (session flush, MCP shutdown), and
+  // a bare signal already terminates the process — which fires "exit" and
+  // runs cleanup anyway. Let the host own signal handling.
 
   for (const key of allKeys) {
     const content = getEmbeddedContent(key);

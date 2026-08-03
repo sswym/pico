@@ -5,7 +5,6 @@
  * exposes typed request/notification helpers. Zero npm dependencies.
  */
 import { type ChildProcess, spawn } from "node:child_process";
-import { EventEmitter } from "node:events";
 import type {
   CodeAction,
   CodeActionContext,
@@ -123,7 +122,6 @@ export class LspClient {
   private pending = new Map<number, PendingRequest>();
   private diagnostics = new Map<string, Diagnostic[]>();
   private diagnosticsHandlers: DiagnosticsHandler[] = [];
-  private emitter = new EventEmitter();
   private _ready = false;
   /** Bounded tail of server stderr, surfaced when the server crashes. */
   private stderrTail = "";
@@ -159,18 +157,17 @@ export class LspClient {
   /**
    * Wait for fresh diagnostics for a URI.
    * Returns diagnostics when they arrive, or null on timeout/abort.
+   *
+   * Never short-circuits on cached diagnostics: callers use this after a
+   * didSave, so only publishes that follow the save count. Reading the
+   * pre-save cache would silently drop newly introduced diagnostics on
+   * the second and later writes to the same file.
    */
   async waitForDiagnostics(
     uri: string,
     timeoutMs: number,
     signal?: AbortSignal,
   ): Promise<Diagnostic[] | null> {
-    // Check cache first
-    const existing = this.diagnostics.get(uri);
-    if (existing && existing.length > 0) {
-      return existing;
-    }
-
     return new Promise<Diagnostic[] | null>((resolve) => {
       const timer = setTimeout(() => {
         cleanup();
@@ -213,6 +210,9 @@ export class LspClient {
       cwd: workspaceRoot,
     });
     this.process = child;
+    // A server that dies between the ready check and the next write raises
+    // EPIPE on stdin; without a listener that's an uncaught exception.
+    child.stdin?.on("error", () => {});
 
     // Detect ENOENT (binary not found) quickly via a race against the
     // initialize request. Node fires "error" asynchronously; we race it
@@ -237,6 +237,7 @@ export class LspClient {
     child.on("exit", (code) => {
       this._ready = false;
       this.status = "stopped";
+      if (this.process === child) this.process = null;
       const detail = this.stderrTail.trim();
       this.rejectAll(
         new LspError(`Server exited with code ${code}${detail ? `: ${detail.slice(-500)}` : ""}`),
@@ -293,15 +294,19 @@ export class LspClient {
     const proc = this.process;
     if (!proc) return;
     try {
-      await this.request("shutdown", null);
+      // Bound the shutdown request: a wedged server must not stall session
+      // teardown for the full request timeout (30s).
+      await this.request("shutdown", null, AbortSignal.timeout(2_000));
       this.notify("exit", null);
     } catch {}
     proc.kill();
     // Escalate to SIGKILL if the server ignores the graceful shutdown, so a
-    // wedged process doesn't linger. Unref'd + cleared on exit so it never
-    // keeps the event loop alive.
+    // wedged process doesn't linger. `proc.killed` flips true on the first
+    // kill() call, so it can't gate the escalation; the timer is cleared on
+    // exit, so firing it means the process is still alive. Unref'd so it
+    // never keeps the event loop alive.
     const forceKill = setTimeout(() => {
-      if (!proc.killed) proc.kill("SIGKILL");
+      proc.kill("SIGKILL");
     }, 2000);
     forceKill.unref?.();
     proc.once("exit", () => clearTimeout(forceKill));
@@ -325,10 +330,16 @@ export class LspClient {
   }
 
   didClose(uri: string): void {
+    // Drop cached diagnostics for closed documents so workspace-level
+    // diagnostics never surface stale entries for deleted/closed files.
+    this.diagnostics.delete(uri);
     this.notify("textDocument/didClose", { textDocument: { uri } });
   }
 
   didSave(uri: string): void {
+    // Invalidate cached diagnostics so waitForDiagnostics observes the
+    // publish triggered by THIS save rather than stale pre-save state.
+    this.diagnostics.delete(uri);
     this.notify("textDocument/didSave", { textDocument: { uri } });
   }
 
@@ -577,7 +588,6 @@ export class LspClient {
         handler(params.uri, params.diagnostics);
       }
     }
-    this.emitter.emit(notif.method, notif.params);
   }
 
   private rejectAll(err: LspError): void {

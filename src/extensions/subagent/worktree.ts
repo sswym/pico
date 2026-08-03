@@ -16,6 +16,17 @@ export interface WorktreeHandle {
 	cleanup: () => void;
 }
 
+/**
+ * The agent name is LLM-supplied and is embedded into shell commands below
+ * (git worktree add/remove, git checkout -b) — restrict it to a safe
+ * character set so shell metacharacters can never escape the quoted
+ * argument. Unknown agent names are not validated before worktrees are
+ * created, so this is the only line of defense.
+ */
+export function sanitizeAgentNameForWorktree(agentName: string): string {
+	return agentName.replace(/[^\w.-]+/g, "_");
+}
+
 export interface WorktreeTask {
 	agent: string;
 }
@@ -31,18 +42,19 @@ export interface PreparedWorktrees {
  * Returns a handle with the worktree directory, branch name,
  * and a cleanup function that removes the worktree and branch.
  */
-export function createWorktree(
+	export function createWorktree(
 	cwd: string,
 	agentName: string,
 	index: number,
 ): WorktreeHandle {
+	const safeAgentName = sanitizeAgentNameForWorktree(agentName);
 	// One unique token for both the branch and the worktree directory. Using
 	// the same token (incl. timestamp) keeps them consistent and prevents a
 	// stale directory from a prior batch — whose cleanup may have silently
 	// failed — from colliding with `git worktree add` on reuse.
 	const unique = `${index}-${process.pid}-${Date.now()}`;
-	const branchName = `subagent/${agentName}-${unique}`;
-	const worktreeDir = path.join(os.tmpdir(), `pico-worktree-${agentName}-${unique}`);
+	const branchName = `subagent/${safeAgentName}-${unique}`;
+	const worktreeDir = path.join(os.tmpdir(), `pico-worktree-${safeAgentName}-${unique}`);
 
 	execSync(
 		`git worktree add --detach "${worktreeDir}" HEAD`,

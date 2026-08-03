@@ -308,7 +308,7 @@ function normalizeUrl(url: string, opts: WebFetchOptions): string {
   return parsed.toString();
 }
 
-function isPrivateHost(hostname: string): boolean {
+export function isPrivateHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   if (host === "::1" || host === "0:0:0:0:0:0:0:1") return true;

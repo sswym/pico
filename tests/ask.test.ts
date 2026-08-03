@@ -124,10 +124,10 @@ describe("findInvalidPreviewMultiSelect", () => {
 });
 
 describe("askExtension execute()", () => {
-  test("hasUI=false → returns isError without prompting", async () => {
+  test("hasUI=false → throws without prompting", async () => {
     const tool = await loadAskTool();
     const { ctx, calls } = makeUi({ hasUI: false });
-    const res = await tool.execute(
+    const run = tool.execute(
       "id",
       {
         questions: [
@@ -145,15 +145,16 @@ describe("askExtension execute()", () => {
       undefined,
       ctx,
     );
-    expect(res.isError).toBe(true);
+    // Tool failures are expressed by throwing: the agent loop derives the
+    // isError flag from thrown exceptions, not from returned objects.
+    await expect(run).rejects.toThrow("requires interactive UI");
     expect(calls).toHaveLength(0);
-    expect(parseDetails(res).error).toContain("requires interactive UI");
   });
 
-  test("preview + multiSelect → execute returns isError", async () => {
+  test("preview + multiSelect → execute throws", async () => {
     const tool = await loadAskTool();
     const { ctx } = makeUi({});
-    const res = await tool.execute(
+    const run = tool.execute(
       "id",
       {
         questions: [
@@ -172,8 +173,7 @@ describe("askExtension execute()", () => {
       undefined,
       ctx,
     );
-    expect(res.isError).toBe(true);
-    expect(parseDetails(res).error).toContain("preview is single-select only");
+    await expect(run).rejects.toThrow("preview is single-select only");
   });
 
   test("single question, plain pick → returns answers", async () => {
@@ -238,7 +238,7 @@ describe("askExtension execute()", () => {
   test("reserved option labels are rejected before prompting", async () => {
     const tool = await loadAskTool();
     const { ctx, calls } = makeUi({});
-    const res = await tool.execute(
+    const run = tool.execute(
       "id",
       {
         questions: [
@@ -257,8 +257,7 @@ describe("askExtension execute()", () => {
       ctx,
     );
 
-    expect(res.isError).toBe(true);
-    expect(parseDetails(res).error).toContain("reserved option label");
+    await expect(run).rejects.toThrow("reserved option label");
     expect(calls).toHaveLength(0);
   });
 
@@ -325,10 +324,10 @@ describe("askExtension execute()", () => {
     ]);
   });
 
-  test("user cancels (select returns undefined) → isError", async () => {
+  test("user cancels (select returns undefined) → throws", async () => {
     const tool = await loadAskTool();
     const { ctx } = makeUi({ selectQueue: [undefined] });
-    const res = await tool.execute(
+    const run = tool.execute(
       "id",
       {
         questions: [
@@ -346,7 +345,6 @@ describe("askExtension execute()", () => {
       undefined,
       ctx,
     );
-    expect(res.isError).toBe(true);
-    expect(parseDetails(res).error).toContain("cancelled");
+    await expect(run).rejects.toThrow(/cancelled/i);
   });
 });

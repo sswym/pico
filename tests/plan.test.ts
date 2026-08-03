@@ -182,7 +182,7 @@ test("SubmitPlan fails outside plan mode", async () => {
   const pi = makeFakePi();
   planExtension(pi as any);
 
-  const result = await pi.tools.get("SubmitPlan")!.execute(
+  const run = pi.tools.get("SubmitPlan")!.execute(
     "c",
     { content: "1. nope" },
     undefined,
@@ -190,8 +190,9 @@ test("SubmitPlan fails outside plan mode", async () => {
     makeCtx(),
   );
 
-  expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("not active");
+  // Tool failures are expressed by throwing: the agent loop derives the
+  // isError flag from thrown exceptions, not from returned objects.
+  await expect(run).rejects.toThrow("not active");
 });
 
 test("ExitPlanMode in non-UI mode requires explicit unattended opt-in", async () => {

@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildSetupSummary, configureCodeGraphMcp, configureRtkIntegration, parseSetupArgs, resetSetupConfig, runSection, runSetupCommand, writeCustomProvider, type SetupLanguage, type SetupPrompter, type SetupShell } from "../src/setup/index.ts";
+import { buildSetupSummary, configureCodeGraphMcp, configureRtkIntegration, parseSetupArgs, resetSetupConfig, runSection, runSetupCommand, splitArgs, writeCustomProvider, type SetupLanguage, type SetupPrompter, type SetupShell } from "../src/setup/index.ts";
 import { picoLspConfigPath, picoMcpConfigPath, picoModelsPath, picoSettingsPath } from "../src/extensions/paths.ts";
 
 const savedEnv = {
@@ -127,9 +127,37 @@ test("writeCustomProvider updates models.json and preserves existing providers",
         supportsReasoningEffort: false,
       },
     });
+    // writeJson must never write API-key-bearing configs world-readable.
+    expect(statSync(picoModelsPath()).mode & 0o777).toBe(0o600);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+test("non-interactive setup writes settings.json with 0600 permissions", async () => {
+  const home = useTempHome();
+  process.env.OPENAI_API_KEY = "sk-test";
+  const output = collectOutput();
+  try {
+    await runSetupCommand({
+      nonInteractive: true,
+      reset: false,
+      help: false,
+      quick: false,
+      reconfigure: false,
+    }, output.io as any);
+    expect(statSync(picoSettingsPath()).mode & 0o777).toBe(0o600);
+  } finally {
+    delete process.env.OPENAI_API_KEY;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("splitArgs is quote-aware", () => {
+  expect(splitArgs("--foo \"bar baz\"")).toEqual(["--foo", "bar baz"]);
+  expect(splitArgs("npx -y @modelcontextprotocol/server-github")).toEqual(["npx", "-y", "@modelcontextprotocol/server-github"]);
+  expect(splitArgs("cmd 'single quoted' plain")).toEqual(["cmd", "single quoted", "plain"]);
+  expect(splitArgs("   ")).toEqual([]);
 });
 
 test("resetSetupConfig removes only setup-managed settings", () => {

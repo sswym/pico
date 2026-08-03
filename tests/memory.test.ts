@@ -7,10 +7,12 @@
  * correction mechanics, extended pattern extraction.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "../src/extensions/memory/store.ts";
+import { BuiltinMemoryProvider } from "../src/extensions/memory/builtin-provider.ts";
 import { CuratedMemoryStore } from "../src/extensions/memory/curated-store.ts";
 import { autoExtractFromMessages } from "../src/extensions/memory/extract.ts";
 import { scanSecrets } from "../src/extensions/memory/secrets.ts";
@@ -495,6 +497,31 @@ test("FactRetriever.related finds co-occurring entity facts", () => {
   const contents = results.map((r) => r.content);
   expect(contents.some((c) => c.includes("Bob"))).toBe(true);
   expect(contents.some((c) => c.includes("Charlie"))).toBe(true);
+});
+
+test("FactRetriever escapes LIKE wildcards in entity names", () => {
+  // Seed an entity whose alias would be wrongly matched by an unescaped
+  // `%,foo_bar,%` pattern (the `_` matches any single char, e.g. the X in
+  // fooXbar). aliases is written directly since the public store API does not
+  // expose it.
+  const raw = new Database(dbPath);
+  raw.query("INSERT INTO entities (name, aliases) VALUES (?, ?)").run("FooXbar", "fooXbar");
+  raw.close();
+
+  store.add("the FooXbar service runs the payment pipeline", { category: "project" });
+  const retriever = store.retriever();
+
+  // Positive control: probe resolves via exact name match.
+  const exact = retriever.probe("fooXbar", { minTrust: 0 });
+  expect(exact.some((r) => r.content.includes("payment pipeline"))).toBe(true);
+
+  // foo_bar must NOT resolve to the FooXbar entity through the wildcard alias.
+  const probed = retriever.probe("foo_bar", { minTrust: 0 });
+  expect(probed.some((r) => r.content.includes("payment pipeline"))).toBe(false);
+  const related = retriever.related("foo_bar", { minTrust: 0 });
+  expect(related.some((r) => r.content.includes("payment pipeline"))).toBe(false);
+  const reasoned = retriever.reason(["foo_bar"], { minTrust: 0 });
+  expect(reasoned.some((r) => r.content.includes("payment pipeline"))).toBe(false);
 });
 
 test("FactRetriever.reason finds facts linked to ALL specified entities", () => {
@@ -1137,4 +1164,88 @@ test("executeMemoryCommand folds thrown errors into the transcript", async () =>
     };
     expect(await executeMemoryCommand("count", exploding)).toBe("Error: db is on fire");
   });
+});
+
+test("builtin provider forwards scope/cwd to contradict", () => {
+  const tempDb = join(tmpdir(), `pico-contradict-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const provider = new BuiltinMemoryProvider(tempDb);
+  try {
+    // Divergent content keeps the contradiction score above the default
+    // threshold (the provider signature does not forward threshold).
+    provider.add('the "Scope Service" bundles with docker', { scope: "project", cwd: "/proj/x" });
+    provider.add('the "Scope Service" deploys via kubernetes', { scope: "project", cwd: "/proj/x" });
+    provider.add('the "Global Service" bundles with docker', {});
+    provider.add('the "Global Service" deploys via kubernetes', {});
+
+    // Project-scoped contradict must see the project pair...
+    const scoped = provider.contradict({ threshold: 0.1, limit: 10, scope: "project", cwd: "/proj/x" });
+    expect(scoped.some((c) => c.fact_a.content.includes("Scope Service"))).toBe(true);
+
+    // ...and global contradict must NOT leak project facts into the report.
+    const globalOnly = provider.contradict({ threshold: 0.1, limit: 10, scope: "global" });
+    expect(globalOnly.some((c) => c.fact_a.content.includes("Scope Service"))).toBe(false);
+  } finally {
+    provider.shutdown();
+    try { rmSync(tempDb); } catch {}
+    try { rmSync(`${tempDb}-wal`); } catch {}
+    try { rmSync(`${tempDb}-shm`); } catch {}
+  }
+});
+
+test("/memory status flags the holographic backend as a demo stub", async () => {
+  await withCommandDeps(async (deps) => {
+    const out = await executeMemoryCommand("status", deps);
+    expect(out).toContain("holographic (demo stub");
+    expect(out).toContain("builtin");
+  });
+});
+
+test("/memory contradict accepts --scope flag without errors", async () => {
+  await withCommandDeps(async (deps) => {
+    const out = await executeMemoryCommand("contradict --scope project", deps);
+    expect(out).toMatch(/No contradictions found\.|Contradictions \(/);
+  });
+});
+
+test("CuratedMemoryStore clamps delimiter characters out of note entries", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pico-curated-clamp-"));
+  try {
+    const curated = new CuratedMemoryStore({ dir });
+    curated.loadFromDisk();
+
+    const add = curated.add("memory", "line one\n\n§\n\nline two with extra spacing   ");
+    expect(add.success).toBe(true);
+    const entry = curated.list("memory").memory[0]!;
+    // Newlines are collapsed to single spaces, so the literal entry
+    // delimiter sequence ("\n§\n") can never appear inside an entry.
+    expect(entry.includes("\n")).toBe(false);
+    expect(entry.includes("\n§")).toBe(false);
+    expect(entry).toContain("line one");
+
+    // The file still round-trips, so later writes keep working.
+    const add2 = curated.add("memory", "second entry");
+    expect(add2.success).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("CuratedMemoryStore rejects add when the file drifted out of round-trip", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pico-curated-drift-"));
+  try {
+    const curated = new CuratedMemoryStore({ dir });
+    curated.loadFromDisk();
+    curated.add("memory", "first");
+
+    // Hand-edit with padded whitespace: parsing then re-joining changes the
+    // content, so the drift guard must refuse further writes.
+    writeFileSync(join(dir, "MEMORY.md"), "  padded  \n§\nnote", "utf8");
+    const add = curated.add("memory", "third");
+    expect(add.success).toBe(false);
+    expect(add.error).toContain("round-trip");
+    // The user's file is preserved.
+    expect(readFileSync(join(dir, "MEMORY.md"), "utf8")).toContain("padded");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

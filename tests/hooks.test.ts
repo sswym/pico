@@ -11,7 +11,7 @@
  * subscriptions, never spawning an actual subprocess.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -134,14 +134,17 @@ test("loadHooks tolerates malformed JSON without throwing", () => {
   expect(loadHooks(workdir)).toEqual([]);
 });
 
-test("substitute fills $FILE / $TOOL / $TURN and leaves unknowns empty", () => {
+test("substitute fills $FILE / $TOOL / $TURN and leaves unknowns for the shell", () => {
   expect(substitute("fmt $FILE for $TOOL turn=$TURN", {
     FILE: "/x/y.ts",
     TOOL: "edit",
     TURN: "3",
   })).toBe("fmt '/x/y.ts' for 'edit' turn='3'");
   expect(substitute("fmt \"$FILE\"", { FILE: "/tmp/has space.ts" })).toBe("fmt \"/tmp/has space.ts\"");
-  expect(substitute("nada $UNKNOWN", {})).toBe("nada ");
+  // Unknown tokens are preserved so the shell expands real environment
+  // variables ($HOME, $PATH) instead of silently collapsing them to empty.
+  expect(substitute("nada $UNKNOWN", {})).toBe("nada $UNKNOWN");
+  expect(substitute("git -C $HOME/proj status", {})).toBe("git -C $HOME/proj status");
 });
 
 test("runHook returns exitCode=0 on success", async () => {
@@ -198,6 +201,33 @@ test("runHook hard-kills on timeout", async () => {
   const elapsed = Date.now() - start;
   expect(res.timedOut).toBe(true);
   expect(elapsed).toBeLessThan(2000);
+});
+
+test("runHook kills the whole process group on timeout (grandchildren included)", async () => {
+  // Real-timer integration test: the point is that sh's grandchild (sleep)
+  // dies with its group, so a short timeout + a brief settle wait is the
+  // contract under test — fake timers cannot observe process death.
+  const pidFile = join(tmpdir(), `pico-hook-grandchild-${process.pid}-${Date.now()}.pid`);
+  const hook: Hook = {
+    event: "PreToolUse",
+    // Record the grandchild's pid, then idle forever.
+    command: `sh -c 'sleep 100 & echo $! > ${pidFile}; wait'`,
+    timeoutMs: 300,
+  };
+  const res = await runHook(hook, {});
+  expect(res.timedOut).toBe(true);
+
+  await Bun.sleep(150);
+  const grandchild = Number(readFileSync(pidFile, "utf8").trim());
+  expect(Number.isInteger(grandchild)).toBe(true);
+  let alive = true;
+  try {
+    process.kill(grandchild, 0);
+  } catch {
+    alive = false;
+  }
+  expect(alive).toBe(false);
+  try { rmSync(pidFile); } catch {}
 });
 
 test("runHook drains output larger than the pipe buffer without deadlocking", async () => {

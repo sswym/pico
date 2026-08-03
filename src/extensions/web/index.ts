@@ -92,11 +92,9 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           };
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          return {
-            content: [{ type: "text" as const, text: `webFetch failed: ${msg}` }],
-            details: undefined,
-            isError: true,
-          };
+          // Throw so the failure is marked as an error upstream (a returned
+          // isError flag is dropped by the agent loop).
+          throw new Error(`webFetch failed: ${msg}`);
         }
       },
     }),
@@ -134,11 +132,9 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           };
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          return {
-            content: [{ type: "text" as const, text: `webSearch failed: ${msg}` }],
-            details: undefined,
-            isError: true,
-          };
+          // Throw so the failure is marked as an error upstream (a returned
+          // isError flag is dropped by the agent loop).
+          throw new Error(`webSearch failed: ${msg}`);
         }
       },
     }),

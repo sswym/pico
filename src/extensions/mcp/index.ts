@@ -120,13 +120,29 @@ function updateMcpStatus(ctx: unknown, entries: ServerEntry[]): void {
   ui?.setStatus?.(MCP_STATUS_KEY, formatMcpStatus(entries));
 }
 
+interface ActiveTool {
+  handle: McpServerHandle | null;
+  toolName: string;
+}
+
 export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
   return (pi: ExtensionAPI) => {
     const entries: ServerEntry[] = [];
-    const activeTools = new Map<string, { handle: McpServerHandle; toolName: string }>();
+    const activeTools = new Map<string, ActiveTool>();
+    /**
+     * Per-tool mutable holder of the CURRENT active handle. pi has no tool
+     * unregistration API, so a tool is registered once per process and its
+     * execute closure must read the holder on every call — reconnects then
+     * just swap the holder's ref instead of leaving the old closure pointing
+     * at a closed handle (which made every MCP tool fail after the first
+     * session switch).
+     */
+    const toolRefHolders = new Map<string, { ref: ActiveTool | null }>();
     /** Tool names registered this process — reconnect must not re-register. */
     const registeredTools = new Set<string>();
     let connectedCwd: string | null = null;
+    /** Bumped per connect; stale generations close their own handles and stop. */
+    let connectGeneration = 0;
 
   // ── Register /mcp command BEFORE async server connections ──────────────
 
@@ -142,6 +158,11 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
 
     async function connect(cwd: string): Promise<void> {
       if (connectedCwd === cwd) return;
+      const generation = ++connectGeneration;
+      // Invalidate every active tool ref so in-flight closures fail fast
+      // instead of calling a server that is about to be closed. The
+      // toolRefHolders get repointed to the new generation below.
+      for (const ref of activeTools.values()) ref.handle = null;
       for (const entry of entries) {
         if (entry.handle) deps.close(entry.handle);
       }
@@ -156,7 +177,18 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
         try {
           handle = deps.spawn(id, config);
           const initResult = await deps.initialize(handle);
+          // A newer connect superseded this one mid-initialization: close
+          // this process and stop publishing its tools (its entries/refs
+          // were already cleared by the newer connect).
+          if (generation !== connectGeneration) {
+            deps.close(handle);
+            return;
+          }
           const tools = await deps.listTools(handle);
+          if (generation !== connectGeneration) {
+            deps.close(handle);
+            return;
+          }
 
           const { name: serverName, version: serverVersion } = initResult.serverInfo;
 
@@ -165,13 +197,21 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
             const piToolName = `mcp__${id}__${tool.name}`;
             toolNames.push(piToolName);
             const schema = tool.inputSchema ?? { type: "object" as const, properties: {} };
-            const toolHandle = handle;
-            activeTools.set(piToolName, { handle: toolHandle, toolName: tool.name });
+            const ref: ActiveTool = { handle, toolName: tool.name };
+            activeTools.set(piToolName, ref);
+
+            let holder = toolRefHolders.get(piToolName);
+            if (!holder) {
+              holder = { ref };
+              toolRefHolders.set(piToolName, holder);
+            } else {
+              holder.ref = ref;
+            }
 
             // pi has no tool-unregistration API; registering the same name
             // twice would leave stale closures behind. Reconnects (cwd change)
-            // reuse the first registration — the execute guard against
-            // inactive handles keeps old sessions safe.
+            // reuse the first registration — its closure reads the holder,
+            // so it picks up the new generation's handle automatically.
             if (registeredTools.has(piToolName)) continue;
             registeredTools.add(piToolName);
 
@@ -190,12 +230,16 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
                   return renderToolResultText(result, options, theme, context);
                 },
                 async execute(_tcId, params, _signal) {
+                  const current = holder!.ref;
+                  if (!current || current.handle === null) {
+                    // Throw so the failure is marked as an error upstream (a
+                    // returned isError flag is dropped by the agent loop).
+                    throw new Error(
+                      `MCP tool "${tool.name}" is not active (server disconnected or reconnecting)`,
+                    );
+                  }
                   try {
-                    const active = activeTools.get(piToolName);
-                    if (!active || active.handle !== toolHandle) {
-                      throw new Error(`MCP tool "${piToolName}" is no longer active for this session`);
-                    }
-                    const result = await deps.callTool(active.handle, active.toolName, params as Record<string, unknown>);
+                    const result = await deps.callTool(current.handle, current.toolName, params as Record<string, unknown>);
                     return {
                       content: result.content.map((c) => {
                         if (c.type === "text") return { type: "text" as const, text: c.text };
@@ -217,11 +261,9 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
                     };
                   } catch (e) {
                     const msg = e instanceof Error ? e.message : String(e);
-                    return {
-                      content: [{ type: "text" as const, text: `MCP tool "${tool.name}" failed: ${msg}` }],
-                      details: { server: id, tool: tool.name },
-                      isError: true,
-                    };
+                    // Throw so the failure is marked as an error upstream (a
+                    // returned isError flag is dropped by the agent loop).
+                    throw new Error(`MCP tool "${tool.name}" failed: ${msg}`);
                   }
                 },
               }),

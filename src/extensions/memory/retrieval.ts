@@ -60,6 +60,11 @@ export function sanitizeFtsQuery(query: string): string {
   return tokens.join(" OR ");
 }
 
+/** Escape LIKE wildcards so entity names containing %/_ are matched literally. */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
 /** Whitespace tokenization for Jaccard similarity. */
 function jaccardTokens(text: string): Set<string> {
   const tokens = new Set<string>();
@@ -210,9 +215,9 @@ export class FactRetriever {
 
     const entityRow = this.db
       .query<{ entity_id: number }, [string, string]>(
-        "SELECT entity_id FROM entities WHERE LOWER(name) = ? OR (',' || aliases || ',') LIKE ?",
+        "SELECT entity_id FROM entities WHERE LOWER(name) = ? OR (',' || aliases || ',') LIKE ? ESCAPE '\\'",
       )
-      .get(name, `%,${name},%`);
+      .get(name, `%,${escapeLike(name)},%`);
 
     if (!entityRow) return this.search(`"${entity}"`, opts);
 
@@ -255,9 +260,9 @@ export class FactRetriever {
 
     const entityRow = this.db
       .query<{ entity_id: number }, [string, string]>(
-        "SELECT entity_id FROM entities WHERE LOWER(name) = ? OR (',' || aliases || ',') LIKE ?",
+        "SELECT entity_id FROM entities WHERE LOWER(name) = ? OR (',' || aliases || ',') LIKE ? ESCAPE '\\'",
       )
-      .get(name, `%,${name},%`);
+      .get(name, `%,${escapeLike(name)},%`);
 
     if (!entityRow) return this.search(entity, opts);
     const scope = scopeFilter(opts);
@@ -307,9 +312,9 @@ export class FactRetriever {
     for (const name of entities) {
       const row = this.db
         .query<{ entity_id: number }, [string, string]>(
-          "SELECT entity_id FROM entities WHERE LOWER(name) = ? OR (',' || aliases || ',') LIKE ?",
+          "SELECT entity_id FROM entities WHERE LOWER(name) = ? OR (',' || aliases || ',') LIKE ? ESCAPE '\\'",
         )
-        .get(name.trim().toLowerCase(), `%,${name.trim().toLowerCase()},%`);
+        .get(name.trim().toLowerCase(), `%,${escapeLike(name.trim().toLowerCase())},%`);
       if (row) entityIds.push(row.entity_id);
     }
 

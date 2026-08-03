@@ -423,7 +423,7 @@ export class ProviderManager {
     return this.provider.reason(entities, opts);
   }
 
-  contradict(opts: { category?: string; limit?: number; scope?: Scope; cwd?: string } = {}): ContradictionResult[] {
+  contradict(opts: { category?: string; limit?: number; threshold?: number; scope?: Scope; cwd?: string } = {}): ContradictionResult[] {
     return this.provider.contradict(opts);
   }
 

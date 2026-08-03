@@ -2,7 +2,7 @@
  * Workspace edit application engine.
  * Pure string transform for text edits; IO-bound apply for workspace edits.
  */
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { uriToPath } from "./client.ts";
 import type {
@@ -92,18 +92,33 @@ export function applyWorkspaceEdit(
             const c = change as CreateFile;
             const filePath = uriToPath(c.uri);
             mkdirSync(dirname(filePath), { recursive: true });
-            if (!c.options?.ignoreIfExists) {
-              writeFileSync(filePath, "", "utf-8");
+            const exists = existsSync(filePath);
+            // LSP semantics: creating an existing file fails unless
+            // ignoreIfExists is set (or overwrite explicitly allows it).
+            if (exists && c.options?.ignoreIfExists) {
+              messages.push(`Skipped create (already exists): ${filePath}`);
+              break;
             }
+            if (exists && !c.options?.overwrite) {
+              throw new Error(`File already exists: ${filePath}`);
+            }
+            writeFileSync(filePath, "", "utf-8");
             messages.push(`Created ${filePath}`);
             break;
           }
           case "delete": {
             const d = change as DeleteFile;
             const filePath = uriToPath(d.uri);
-            if (!d.options?.ignoreIfNotExists) {
-              unlinkSync(filePath);
+            if (!existsSync(filePath)) {
+              // LSP semantics: deleting a missing file fails unless
+              // ignoreIfNotExists tolerates it.
+              if (d.options?.ignoreIfNotExists) {
+                messages.push(`Skipped delete (already gone): ${filePath}`);
+                break;
+              }
+              throw new Error(`File does not exist: ${filePath}`);
             }
+            unlinkSync(filePath);
             messages.push(`Deleted ${filePath}`);
             break;
           }

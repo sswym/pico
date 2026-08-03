@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as defaultInput, stdout as defaultOutput } from "node:process";
@@ -580,7 +580,15 @@ async function runChoiceMenu(
 
   return await new Promise<number>((resolve, reject) => {
     const previousRaw = input.isRaw;
+    let escTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearEscTimer = () => {
+      if (escTimer) {
+        clearTimeout(escTimer);
+        escTimer = undefined;
+      }
+    };
     const cleanup = () => {
+      clearEscTimer();
       input.off("data", onData);
       input.setRawMode?.(previousRaw ?? false);
       output.write("\x1b[?25h");
@@ -598,8 +606,18 @@ async function runChoiceMenu(
     const onData = (chunk: Buffer | string) => {
       pending += chunk.toString("utf-8");
       // A lone ESC may be the first byte of an arrow sequence split across
-      // chunks — wait for the rest before treating it as a cancel.
-      if (pending === "\x1b") return;
+      // chunks — wait a short window for the rest before treating it as a
+      // cancel. Without the timeout a standalone Esc press ("keep current")
+      // hangs the menu forever and swallows the next keystroke.
+      if (pending === "\x1b") {
+        clearEscTimer();
+        escTimer = setTimeout(() => {
+          clearEscTimer();
+          finish(defaultIndex);
+        }, 60);
+        return;
+      }
+      clearEscTimer();
       const key = pending;
       pending = "";
       if (key === "\u0003") {
@@ -1212,7 +1230,14 @@ function readJson(path: string): JsonObject {
 
 function writeJson(path: string, value: JsonObject): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(value, null, 2) + "\n", "utf-8");
+  const content = JSON.stringify(value, null, 2) + "\n";
+  // settings.json / models.json may hold API keys — never world-readable
+  // (mirrors extensions' writeSettings 0o600). Atomic tmp+rename so a crash
+  // mid-write cannot leave a truncated config that silently resets to
+  // defaults and loses the stored keys.
+  const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
+  writeFileSync(tmp, content, { mode: 0o600, encoding: "utf-8" });
+  renameSync(tmp, path);
 }
 
 function commandExists(command: string): boolean {
@@ -1283,8 +1308,15 @@ function userHooksPath(): string {
   return join(picoHome(), "hooks.json");
 }
 
-function splitArgs(value: string): string[] {
-  return value.split(/\s+/).map((part) => part.trim()).filter(Boolean);
+export function splitArgs(value: string): string[] {
+  // Quote-aware split: `--foo "bar baz"` must stay one argument.
+  const args: string[] = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(value)) !== null) {
+    args.push(m[1] ?? m[2] ?? m[3]!);
+  }
+  return args;
 }
 
 function clampIndex(index: number, length: number): number {

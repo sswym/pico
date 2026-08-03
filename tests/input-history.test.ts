@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -68,6 +68,36 @@ test("appendInputHistory persists trimmed non-empty input with consecutive dedup
 
     expect(readInputHistory(path)).toEqual(["first", "second"]);
     expect(parseHistoryFile(serializeHistoryFile(["first", "second"]))).toEqual(["first", "second"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("appendInputHistory appends each entry without rewriting the file", () => {
+  const { dir, path } = makeTempHistoryPath();
+  try {
+    appendInputHistory("one", path);
+    appendInputHistory("two", path);
+
+    const raw = readFileSync(path, "utf-8");
+    expect(raw.split("\n").filter((line) => line.trim().length > 0)).toHaveLength(2);
+    expect(readInputHistory(path)).toEqual(["one", "two"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("appendInputHistory trims the file to the newest limit entries", () => {
+  const { dir, path } = makeTempHistoryPath();
+  try {
+    for (let i = 1; i <= 105; i++) {
+      appendInputHistory(`entry ${i}`, path);
+    }
+
+    const entries = readInputHistory(path);
+    expect(entries).toHaveLength(100);
+    expect(entries[0]).toBe("entry 6");
+    expect(entries[99]).toBe("entry 105");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

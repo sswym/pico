@@ -141,11 +141,7 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       },
       async execute(_id, params, _signal, _onUpdate, ctx) {
         if (!planActive) {
-          return {
-            content: [{ type: "text" as const, text: "Plan mode is not active." }],
-            details: { planActive: false },
-            isError: true,
-          };
+          throw new Error("Plan mode is not active.");
         }
         const path = planFile ?? resolvePlanFile(ctx);
         planFile = path;
