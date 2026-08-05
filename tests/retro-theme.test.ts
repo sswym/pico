@@ -27,6 +27,11 @@ test("retro theme uses powerline-footer inspired color scheme", () => {
   expect(retroTheme.colors.borderMuted).toBe("warmMuted");
   expect(retroTheme.colors.thinkingOff).toBe("inputGray");
   expect(retroTheme.colors.thinkingMinimal).toBe("inputGray");
+  // Input-box border color doubles as a thinking-level indicator; all levels
+  // intentionally share one color (the footer already shows the level).
+  for (const key of ["thinkingLow", "thinkingMedium", "thinkingHigh", "thinkingXhigh", "thinkingMax"] as const) {
+    expect((retroTheme.colors as Record<string, string>)[key]).toBe("inputGray");
+  }
 });
 
 function fakeCtx(overrides: Record<string, unknown> = {}) {

@@ -72,10 +72,11 @@
     "syntaxPunctuation": "commentGray",
     "thinkingOff": "inputGray",
     "thinkingMinimal": "inputGray",
-    "thinkingLow": "pinkMuted",
-    "thinkingMedium": "pink",
-    "thinkingHigh": "pinkBright",
-    "thinkingXhigh": "tealBright",
+    "thinkingLow": "inputGray",
+    "thinkingMedium": "inputGray",
+    "thinkingHigh": "inputGray",
+    "thinkingXhigh": "inputGray",
+    "thinkingMax": "inputGray",
     "bashMode": "teal"
   },
   "export": {
