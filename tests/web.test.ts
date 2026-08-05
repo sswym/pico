@@ -223,6 +223,16 @@ describe("fetchAndConvert", () => {
     }
   });
 
+  test("inet_aton IPv4 variants of loopback are refused as private", async () => {
+    // Trailing dot, single-component shorthand, multi-component octal/hex —
+    // all spellings resolvers accept, all rewrites of 127.0.0.1.
+    for (const host of ["127.0.0.1.", "127.1", "127.0.1", "0177.0.0.1", "0x7f.0.0.1", "127.0.0.0x01"]) {
+      await expect(
+        fetchAndConvert(`https://${host}/status`, { fetcher: (async () => new Response("ok")) as unknown as typeof fetch }),
+      ).rejects.toThrow(/private network/i);
+    }
+  });
+
   test("4xx/5xx responses are not cached and are flagged as errors", async () => {
     let calls = 0;
     globalThis.fetch = (async () => {

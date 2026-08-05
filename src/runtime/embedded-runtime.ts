@@ -28,7 +28,14 @@ export function prepareEmbeddedRuntime(isBunBinary: boolean): EmbeddedRuntimeDir
   if (allKeys.length === 0) return null;
 
   const tmpDir = resolve(tmpdir(), `pico-${randomBytes(6).toString("hex")}`);
-  mkdirSync(tmpDir, { recursive: true });
+  try {
+    mkdirSync(tmpDir, { recursive: true });
+  } catch (err) {
+    // Unwritable tmpdir must not crash the binary at startup — fall back to
+    // source-style resolution (embeddedDirs null keeps the existing branch).
+    console.warn(`[pico] failed to create embedded runtime dir under ${tmpdir()}: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
 
   const cleanup = () => {
     try {
@@ -43,18 +50,27 @@ export function prepareEmbeddedRuntime(isBunBinary: boolean): EmbeddedRuntimeDir
   // a bare signal already terminates the process — which fires "exit" and
   // runs cleanup anyway. Let the host own signal handling.
 
-  for (const key of allKeys) {
-    const content = getEmbeddedContent(key);
-    if (content === null) continue;
+  try {
+    for (const key of allKeys) {
+      const content = getEmbeddedContent(key);
+      if (content === null) continue;
 
-    const filePath = resolve(tmpDir, key);
-    mkdirSync(dirname(filePath), { recursive: true });
+      const filePath = resolve(tmpDir, key);
+      mkdirSync(dirname(filePath), { recursive: true });
 
-    if (key.startsWith("assets/") && !key.endsWith(".json")) {
-      writeFileSync(filePath, Buffer.from(content, "base64"));
-    } else {
-      writeFileSync(filePath, content, "utf-8");
+      if (key.startsWith("assets/") && !key.endsWith(".json")) {
+        writeFileSync(filePath, Buffer.from(content, "base64"));
+      } else {
+        writeFileSync(filePath, content, "utf-8");
+      }
     }
+  } catch (err) {
+    // Disk full / permission error mid-extract: clean up and degrade to
+    // source-mode resolution instead of exiting on a raw ENOENT.
+    console.warn(`[pico] embedded asset extraction failed: ${err instanceof Error ? err.message : String(err)}`);
+    cleanup();
+    process.removeListener("exit", cleanup);
+    return null;
   }
 
   process.env.PI_PACKAGE_DIR = tmpDir;

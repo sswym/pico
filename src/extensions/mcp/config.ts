@@ -51,9 +51,17 @@ function validateServer(key: string, server: unknown): McpServerConfig | null {
   }
   const out: McpServerConfig = { command: s.command };
   if (Array.isArray(s.args)) {
+    const nonStrings = (s.args as unknown[]).filter((a) => typeof a !== "string");
+    if (nonStrings.length > 0) {
+      warnOnce(`${key}:args`, `server "${key}" has ${nonStrings.length} non-string args entry(ies); dropped (e.g. a port number written as 8080 instead of "8080")`);
+    }
     out.args = (s.args as unknown[]).filter((a): a is string => typeof a === "string");
   }
   if (s.env && typeof s.env === "object" && !Array.isArray(s.env)) {
+    const nonStrings = Object.entries(s.env as Record<string, unknown>).filter(([, v]) => typeof v !== "string");
+    if (nonStrings.length > 0) {
+      warnOnce(`${key}:env`, `server "${key}" has ${nonStrings.length} non-string env value(s); dropped (e.g. {"PORT": 8080} instead of "8080")`);
+    }
     out.env = Object.fromEntries(
       Object.entries(s.env as Record<string, unknown>).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",

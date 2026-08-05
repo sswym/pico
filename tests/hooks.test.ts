@@ -190,6 +190,19 @@ test("runHook shell-quotes unquoted placeholder values", async () => {
   expect(res.exitCode).toBe(0);
 });
 
+test("runHook keeps real newlines verbatim inside double quotes", async () => {
+  const hook: Hook = {
+    event: "PreToolUse",
+    // $FILE inside double quotes carries a real newline; the hook must
+    // receive it as a newline, not as a literal backslash-n.
+    command: "printf '%s' \"$FILE\" | grep -c '^$'",
+    timeoutMs: 5000,
+  };
+  const res = await runHook(hook, { FILE: "a\n\nb" });
+  expect(res.exitCode).toBe(0);
+  expect(res.stdout.trim()).toBe("1");
+});
+
 test("runHook hard-kills on timeout", async () => {
   const hook: Hook = {
     event: "PreToolUse",

@@ -521,12 +521,22 @@ describe("LSP executor helpers", () => {
   });
 
   test("executeWorkspaceDiagnosticsAction formats diagnostics from active clients", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pico-lsp-diag-"));
+    const existingFile = join(dir, "a.ts");
+    writeFileSync(existingFile, "const x = 1;\n");
+    const deletedFile = join(dir, "deleted.ts");
     const state = createLspManager();
     state.servers.set("tsserver", {
       client: {
         ready: true,
         getAllDiagnostics: () => new Map([
-          ["file:///repo/a.ts", [
+          // Deleted files must be filtered out of the workspace report.
+          [`file://${deletedFile}`, [{
+            range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+            severity: 1,
+            message: "stale",
+          }]],
+          [`file://${existingFile}`, [
             {
               range: { start: { line: 0, character: 2 }, end: { line: 0, character: 3 } },
               severity: 1,
@@ -546,9 +556,11 @@ describe("LSP executor helpers", () => {
 
     const result: any = executeWorkspaceDiagnosticsAction(state);
     expect(result.content[0].text).toContain("Workspace diagnostics (2):");
-    expect(result.content[0].text).toContain("/repo/a.ts:1:2 ERROR [TS1] (ts): bad");
-    expect(result.content[0].text).toContain("/repo/a.ts:2:0 WARNING: warn");
+    expect(result.content[0].text).toContain(`${existingFile}:1:2 ERROR [TS1] (ts): bad`);
+    expect(result.content[0].text).toContain(`${existingFile}:2:0 WARNING: warn`);
+    expect(result.content[0].text).not.toContain("stale");
     expect(result.details).toEqual({ action: "diagnostics", success: true });
+    rmSync(dir, { recursive: true, force: true });
   });
 
   test("symbol formatters handle workspace and document symbol shapes", () => {

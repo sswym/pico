@@ -8,7 +8,7 @@ import { readFileSync, readdirSync, promises as fsPromises } from "node:fs";
 import { spawn } from "node:child_process";
 import { join, extname } from "node:path";
 import type { LspServerConfig, LspConfig } from "./config.ts";
-import { loadConfig, getPrimaryServerForFile, getServersForFile, detectServers, resolveCommand } from "./config.ts";
+import { loadConfig, getPrimaryServerForFile, getServersForFile, detectServers, resolveCommand, hasRootMarkers } from "./config.ts";
 import { LspClient, locationToDisplay, lspPositionToDisplay, LspError, COMMAND_NOT_FOUND } from "./client.ts";
 
 // ── Runtime state ───────────────────────────────────────────────────────────
@@ -373,6 +373,10 @@ export async function ensureServer(
   for (const [name, serverConfig] of Object.entries(state.config.servers)) {
     if (serverConfig.disabled) continue;
     if (serverConfig.isLinter) continue; // Skip linters for primary
+    // A ready server from another project shape must not be reused: in a Go
+    // project that synced a .py file earlier, returning pyright here would
+    // route every workspace query to the wrong language.
+    if (!hasRootMarkers(workspaceRoot, serverConfig.rootMarkers)) continue;
     const managed = state.servers.get(name);
     if (managed?.client.ready) {
       managed.lastActivity = Date.now();
@@ -466,6 +470,13 @@ export async function ensureNamedServer(
   name: string,
   workspaceRoot: string,
 ): Promise<LspClient | null> {
+  // Mirrors ensureServer: an idle-reaped server may still be shutting down —
+  // spawning its replacement now would run two processes for one server name
+  // (port bind races, duplicate diagnostics).
+  const pendingShutdowns = [...state.runtime.shuttingDown.values()];
+  if (pendingShutdowns.length > 0) {
+    await Promise.allSettled(pendingShutdowns);
+  }
   if (!state.config) {
     state.config = loadConfig(workspaceRoot);
     state.configured = true;
@@ -679,6 +690,13 @@ function syncDocumentToServer(managed: ManagedServer, absPath: string): string |
   try {
     text = readFileSync(absPath, "utf8");
   } catch {
+    // File deleted mid-session — close it on the server so stale diagnostics
+    // and the openDocuments map don't linger (previously they grew forever).
+    const existing = managed.openDocuments.get(absPath);
+    if (existing) {
+      managed.client.didClose(existing.uri);
+      managed.openDocuments.delete(absPath);
+    }
     return null;
   }
 

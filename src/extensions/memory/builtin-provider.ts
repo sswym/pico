@@ -71,9 +71,11 @@ export class BuiltinMemoryProvider implements MemoryProvider {
     // MemoryStore is initialized in the constructor; nothing extra needed.
   }
 
-  shutdown(): void {
+  shutdown(closeStore = true): void {
     this.queue.drain();
-    this.store.close();
+    // Session switch (resume/fork/new) must NOT close the store — the same
+    // provider instance keeps serving the new session in this process.
+    if (closeStore) this.store.close();
   }
 
   // -- Fact conversion helpers -------------------------------------------

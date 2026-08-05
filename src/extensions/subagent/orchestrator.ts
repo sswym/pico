@@ -22,6 +22,7 @@ import {
 	createInitialResult,
 	createUnknownAgentResult,
 	runJsonProcess,
+	subagentChildEnv,
 } from "./process.ts";
 import {
 	getFinalOutput,
@@ -105,12 +106,18 @@ interface AgentRunSupport {
 
 async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
 	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pico-subagent-"));
-	const safeName = agentName.replace(/[^\w.-]+/g, "_");
-	const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
-	await withFileMutationQueue(filePath, async () => {
-		await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
-	});
-	return { dir: tmpDir, filePath };
+	try {
+		const safeName = agentName.replace(/[^\w.-]+/g, "_");
+		const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
+		await withFileMutationQueue(filePath, async () => {
+			await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
+		});
+		return { dir: tmpDir, filePath };
+	} catch (err) {
+		// A failed write must not leak the temp directory in /tmp.
+		await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+		throw err;
+	}
 }
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -169,6 +176,7 @@ async function runSingleAgent(
 
 		const args = buildAgentProcessArgs(agent, task, forkSessionPath, tmpPromptPath ?? undefined);
 		const invocation = getPiInvocation(args);
+		// 2.6.3: stderr accumulates unboundedly and floods failed-result messages.
 		const processResult = await runJsonProcess({
 			command: invocation.command,
 			args: invocation.args,
@@ -176,7 +184,9 @@ async function runSingleAgent(
 			result: currentResult,
 			signal,
 			timeoutMs: agent.maxExecutionTimeMs ?? DEFAULT_AGENT_TIMEOUT_MS,
-			spawn: (command, args, options) => spawn(command, args, options),
+			// Tag the child with PICO_SUBAGENT_DEPTH so nesting is bounded
+			// (bin/pico.ts refuses to start past MAX_SUBAGENT_DEPTH).
+			spawn: (command, args, options) => spawn(command, args, { ...options, env: subagentChildEnv() }),
 			onMessage: emitUpdate,
 		});
 
@@ -470,6 +480,14 @@ export async function runSubagentRequest(
 		// until the first task produces output.
 		emitParallelUpdate();
 
+		// One task failing (e.g. prompt-temp-file write) must not leave the
+		// siblings running into a worktree that is about to be cleaned up:
+		// abort them via a private controller, and wait for all workers to
+		// settle (mapWithConcurrencyLimit) before the finally below removes
+		// the worktrees.
+		const parallelAbort = new AbortController();
+		const parallelSignal = signal ? AbortSignal.any([signal, parallelAbort.signal]) : parallelAbort.signal;
+
 		try {
 			const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
 				const handle = worktreeHandles[index];
@@ -487,7 +505,7 @@ export async function runSubagentRequest(
 					{
 						defaultCwd: ctx.cwd,
 						agents,
-						signal,
+						signal: parallelSignal,
 						onUpdate: (partial) => {
 						if (partial.details?.results[0]) {
 							allResults[index] = partial.details.results[0];
@@ -502,6 +520,8 @@ export async function runSubagentRequest(
 				allResults[index] = result;
 				emitParallelUpdate();
 				return result;
+			}, () => {
+				parallelAbort.abort();
 			});
 
 			// 2.4.5: on interrupt, running tasks come back as aborted results

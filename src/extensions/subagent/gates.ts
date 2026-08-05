@@ -12,6 +12,16 @@ import { isFailedResult, type SingleResult } from "./results.ts";
 
 const EVIDENCE_TIMEOUT_MS = 60_000;
 const EVIDENCE_OUTPUT_CAP = 500;
+/** Memory cap for in-flight evidence output — keeps a runaway `yes`-style
+ *  command from accumulating unbounded strings during the 60s window
+ *  (EVIDENCE_OUTPUT_CAP only truncates the returned value). */
+const EVIDENCE_BUFFER_CAP_BYTES = 64 * 1024;
+
+/** Append with an unbounded-growth guard: drop chunks past the byte cap. */
+function appendCapped(target: string, chunk: string, capBytes: number): string {
+	const next = target + chunk;
+	return Buffer.byteLength(next, "utf8") > capBytes ? target : next;
+}
 
 export interface GateResult {
 	passed: boolean;
@@ -90,7 +100,11 @@ export async function runGateAfterSuccess<TContext>(
 		return markGateFailed(result, `Acceptance gate failed.\n${failureSummary}`);
 	}
 
-	const maxAttempts = acceptance.maxRepairAttempts ?? 1;
+	// Hard cap on self-repair rounds: frontmatter is project-controlled and
+	// `toNumber` only checks > 0 — 999999 + an always-failing gate would loop
+	// full subagent runs forever.
+	const MAX_REPAIR_ATTEMPTS = 5;
+	const maxAttempts = Math.min(acceptance.maxRepairAttempts ?? 1, MAX_REPAIR_ATTEMPTS);
 	let lastResult = result;
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		if (signal?.aborted) break;
@@ -185,8 +199,8 @@ function runEvidenceCommand(command: string, cwd: string, signal?: AbortSignal):
 		}, EVIDENCE_TIMEOUT_MS);
 		timer.unref?.();
 
-		child.stdout.on("data", (d) => { stdout += String(d); });
-		child.stderr.on("data", (d) => { stderr += String(d); });
+		child.stdout.on("data", (d) => { stdout = appendCapped(stdout, String(d), EVIDENCE_BUFFER_CAP_BYTES); });
+		child.stderr.on("data", (d) => { stderr = appendCapped(stderr, String(d), EVIDENCE_BUFFER_CAP_BYTES); });
 		child.on("close", () => finish({}));
 		child.on("error", () => finish({ exitCode: 127 }));
 

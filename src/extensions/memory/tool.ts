@@ -114,6 +114,14 @@ export function executeMemoryToolAction(
         const cat = asCategory(params.category);
         if (params.category && !cat) return errorResult(`invalid category '${params.category}'`);
         const scope = parseScope(params.scope);
+        // 2.3.4 ownership gate also applies to corrections: docking the trust
+        // of another project's fact must not be possible from this session.
+        if (params.correction_of !== undefined) {
+          const original = provider.get(params.correction_of);
+          if (!original) return errorResult(`correction_of #${params.correction_of} not found`);
+          const violation = ownershipViolation(original, currentCwd);
+          if (violation) return errorResult(violation);
+        }
         const beforeAdd = provider.onBeforeWrite?.({ action: "add", content: params.content, category: cat, scope, tags: params.tags, source: "manual" });
         if (beforeAdd && beforeAdd.ok === false) return errorResult(beforeAdd.reason ?? "memory write denied");
         const id = provider.add(params.content, {

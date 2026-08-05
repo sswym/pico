@@ -46,6 +46,20 @@ if (process.env.PICO_HOOK_RECURSION_GUARD === "1") {
   process.exit(1);
 }
 
+// ── Subagent nesting depth guard ─────────────────────────────────────────
+// Every subagent child is spawned with PICO_SUBAGENT_DEPTH = parent depth + 1
+// (subagent/process.ts). An LLM that keeps calling the subagent tool inside a
+// subagent would otherwise stack full pico processes (each ~100MB binary +
+// independent model context) until the machine is exhausted. Mirrors the hook
+// recursion guard: refuse to start past the configured depth.
+if (Number.parseInt(process.env.PICO_SUBAGENT_DEPTH ?? "0", 10) >= 3) {
+  console.error(
+    "[pico] refusing to start: subagent nesting depth limit reached (PICO_SUBAGENT_DEPTH >= 3). " +
+      "Subagents cannot spawn sub-subagents past 3 levels.",
+  );
+  process.exit(1);
+}
+
 // ── Brand layer for --version / --help ──────────────────────────────────
 // Upstream prints its own "pi" brand and version; pico prefixes its own
 // identity so users and scripts see a consistent product name/version.

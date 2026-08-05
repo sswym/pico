@@ -74,6 +74,7 @@ class FakeProcess implements SpawnedProcessLike {
   stdoutHandlers: Array<(data: unknown) => void> = [];
   stderrHandlers: Array<(data: unknown) => void> = [];
   closeHandlers: Array<(code: number | null) => void> = [];
+  exitHandlers: Array<(code: number | null) => void> = [];
   errorHandlers: Array<(error: unknown) => void> = [];
   stdout = {
     on: (_event: "data", handler: (data: unknown) => void) => {
@@ -85,8 +86,9 @@ class FakeProcess implements SpawnedProcessLike {
       this.stderrHandlers.push(handler);
     },
   };
-  on(event: "close" | "error", handler: any): void {
+  on(event: "close" | "error" | "exit", handler: any): void {
     if (event === "close") this.closeHandlers.push(handler);
+    else if (event === "exit") this.exitHandlers.push(handler);
     else this.errorHandlers.push(handler);
   }
   kill(signal: "SIGTERM" | "SIGKILL"): void {
@@ -101,6 +103,9 @@ class FakeProcess implements SpawnedProcessLike {
   }
   close(code: number | null): void {
     for (const handler of this.closeHandlers) handler(code);
+  }
+  exit(code: number | null): void {
+    for (const handler of this.exitHandlers) handler(code);
   }
   error(error: unknown): void {
     for (const handler of this.errorHandlers) handler(error);
@@ -166,6 +171,27 @@ test("mapWithConcurrencyLimit preserves result order while respecting concurrenc
 
   expect(results).toEqual(["item-0", "item-1", "item-2", "item-3"]);
   expect(maxRunning).toBeLessThanOrEqual(2);
+});
+
+test("mapWithConcurrencyLimit waits for sibling workers and calls onFailure on error", async () => {
+  let siblingFinished = false;
+  let onFailureCalled = 0;
+  const run = mapWithConcurrencyLimit(
+    [0, 1, 2],
+    3,
+    async (delay) => {
+      await new Promise((resolve) => setTimeout(resolve, delay * 20));
+      if (delay === 1) throw new Error("boom");
+      siblingFinished = true;
+      return "ok";
+    },
+    () => onFailureCalled++,
+  );
+
+  await expect(run).rejects.toThrow("boom");
+  // The error must not be propagated until every worker has settled.
+  expect(siblingFinished).toBe(true);
+  expect(onFailureCalled).toBe(1);
 });
 
 test("tryForkSession returns branched session path when manager supports it", () => {

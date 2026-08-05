@@ -127,6 +127,88 @@ function dedupeFacts(facts: Fact[]): Fact[] {
   return out;
 }
 
+/**
+ * Last-resort provider: every operation is a harmless no-op. Only used when
+ * even the builtin store cannot be constructed (read-only data dir, disk
+ * full) — the session must still start with a working (empty) memory.
+ */
+class NoopMemoryProvider implements MemoryProvider {
+  readonly name = "noop";
+  readonly queue = new WriteQueue();
+
+  isAvailable(): boolean {
+    return false;
+  }
+
+  initialize(): void {}
+
+  shutdown(): void {}
+
+  get(): Fact | null {
+    return null;
+  }
+
+  add(): number {
+    return -1;
+  }
+
+  update(): boolean {
+    return false;
+  }
+
+  remove(): boolean {
+    return false;
+  }
+
+  feedback(): Fact | null {
+    return null;
+  }
+
+  clear(): void {}
+
+  count(): number {
+    return 0;
+  }
+
+  search(): Fact[] {
+    return [];
+  }
+
+  probe(): Fact[] {
+    return [];
+  }
+
+  list(): Fact[] {
+    return [];
+  }
+
+  related(): ScoredFact[] {
+    return [];
+  }
+
+  reason(): ScoredFact[] {
+    return [];
+  }
+
+  contradict(): ContradictionResult[] {
+    return [];
+  }
+
+  getRawStore(): unknown {
+    return null;
+  }
+
+  systemPromptBlock(): string {
+    return "";
+  }
+
+  prefetch(): Fact[] {
+    return [];
+  }
+
+  queuePrefetch(): void {}
+}
+
 export class ProviderManager {
   readonly provider: MemoryProvider;
   readonly providers: MemoryProvider[] = [];
@@ -143,13 +225,24 @@ export class ProviderManager {
     this.indexProviderTools(this.provider);
   }
 
-  private resolveProvider(backend: string): MemoryProvider {
+  private   resolveProvider(backend: string): MemoryProvider {
     const factory = FACTORY_REGISTRY.get(backend);
-    if (factory) return factory();
+    if (factory) {
+      try {
+        return factory();
+      } catch (err) {
+        console.warn(`[memory] Provider "${backend}" failed to construct: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     const builtinFactory = FACTORY_REGISTRY.get("builtin");
     if (!builtinFactory) throw new Error("Builtin memory provider factory missing");
     console.warn(`[memory] Unknown provider "${backend}", falling back to builtin`);
-    return builtinFactory();
+    try {
+      return builtinFactory();
+    } catch (err) {
+      console.warn(`[memory] Builtin provider failed to construct: ${err instanceof Error ? err.message : String(err)} — memory disabled for this session`);
+      return new NoopMemoryProvider();
+    }
   }
 
   private indexProviderTools(provider: MemoryProvider): void {
@@ -174,11 +267,11 @@ export class ProviderManager {
     }
   }
 
-  shutdown(): void {
+  shutdown(closeStore = true): void {
     this._background.drain();
     for (const provider of this.providers) {
       try {
-        provider.shutdown();
+        provider.shutdown(closeStore);
       } catch {
         // best effort
       }
@@ -457,7 +550,14 @@ export class ProviderManager {
     });
   }
 
-  async flushPending(timeoutMs = 2_000): Promise<boolean> {
+  /**
+   * Drain the background queue.
+   * `closeQueue: false` keeps the queue usable — needed on session switch
+   * (resume/fork/new) where the same manager serves the next session in this
+   * process. Default (true) closes it because after a process-exit drain any
+   * later push would sit forever.
+   */
+  async flushPending(timeoutMs = 2_000, opts: { closeQueue?: boolean } = {}): Promise<boolean> {
     try {
       if (timeoutMs <= 0) {
         await this._background.flush();
@@ -476,10 +576,12 @@ export class ProviderManager {
         if (timer) clearTimeout(timer);
       }
     } finally {
-      // flushPending is the session-end drain; any op enqueued after this
-      // point would sit forever, so the queue is closed (later pushes throw
-      // instead of silently vanishing).
-      this._background.close();
+      if (opts.closeQueue !== false) {
+        // flushPending is the session-end drain; any op enqueued after this
+        // point would sit forever, so the queue is closed (later pushes throw
+        // instead of silently vanishing).
+        this._background.close();
+      }
     }
   }
 }

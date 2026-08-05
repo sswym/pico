@@ -344,15 +344,26 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
   pi.on("session_shutdown", async (event) => {
     try {
+      const reason = (event as { reason?: string }).reason;
       // /reload re-runs every extension factory (upstream clears the extension
       // cache and loads them again); drop the session-scoped event-bus
       // subscriptions so handlers do not accumulate across reloads.
-      if ((event as { reason?: string }).reason === "reload") {
+      if (reason === "reload") {
         clearSessionExtensionSubscriptions();
       }
       manager.onSessionEnd(sessionMessages);
-      await manager.flushPending();
-      manager.shutdown();
+      // resume/fork/new keep the SAME manager/store instances for the next
+      // session in this process (factories do not re-run) — draining must not
+      // close the store or the background queue, or memory dies for the rest
+      // of the process lifetime. Only quit/reload (process exit / factory
+      // re-run) gets the permanent close.
+      if (reason === "quit" || reason === "reload") {
+        await manager.flushPending();
+        manager.shutdown();
+      } else {
+        await manager.flushPending(2_000, { closeQueue: false });
+        manager.shutdown(false);
+      }
     } catch {
       // ignore
     }

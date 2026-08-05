@@ -254,39 +254,46 @@ export async function analyzeImageWithVisionModel(
   const cached = cache.get(key);
   if (cached) return { analysis: cached, model: model.id, provider: model.provider, cached: true };
 
-  const response = await deps.complete(
-    model,
-    {
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            image,
-          ],
-          timestamp: Date.now(),
-        },
-      ],
-    },
-    {
-      apiKey: auth.apiKey,
-      env: auth.env,
-      headers: auth.headers,
-      // 2.5.9: a hung vision provider must not stall the turn forever —
-      // bound the call with its own wall-clock timeout.
-      signal: withTimeoutSignal(ctx.signal, VISION_TIMEOUT_MS, "visionAnalyze").signal,
-      maxTokens: 2048,
-    },
-  );
+  const timeout = withTimeoutSignal(ctx.signal, VISION_TIMEOUT_MS, "visionAnalyze");
+  try {
+    const response = await deps.complete(
+      model,
+      {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              image,
+            ],
+            timestamp: Date.now(),
+          },
+        ],
+      },
+      {
+        apiKey: auth.apiKey,
+        env: auth.env,
+        headers: auth.headers,
+        // 2.5.9: a hung vision provider must not stall the turn forever —
+        // bound the call with its own wall-clock timeout.
+        signal: timeout.signal,
+        maxTokens: 2048,
+      },
+    );
 
-  if (response.stopReason === "error" || response.stopReason === "aborted") {
-    throw new Error(response.errorMessage ?? `Vision model stopped with ${response.stopReason}`);
+    if (response.stopReason === "error" || response.stopReason === "aborted") {
+      throw new Error(response.errorMessage ?? `Vision model stopped with ${response.stopReason}`);
+    }
+
+    const analysis = assistantText(response);
+    if (!analysis) throw new Error("Vision model returned no text");
+    cacheSet(key, analysis);
+    return { analysis, model: model.id, provider: model.provider, cached: false };
+  } finally {
+    // Clear the 60s timer + the ctx.signal listener, or every vision call
+    // leaks a timer that keeps the process alive in non-interactive runs.
+    timeout.cleanup();
   }
-
-  const analysis = assistantText(response);
-  if (!analysis) throw new Error("Vision model returned no text");
-  cacheSet(key, analysis);
-  return { analysis, model: model.id, provider: model.provider, cached: false };
 }
 
 export function formatVisionNote(results: Array<{ analysis: string; model: string; provider: string }>): string {

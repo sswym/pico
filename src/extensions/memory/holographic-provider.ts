@@ -237,7 +237,10 @@ export class HolographicMemoryProvider implements MemoryProvider {
       const raw = readFileSync(this.dbPath, "utf-8");
       const parsed = JSON.parse(raw) as { rows: StoredFact[]; nextId: number };
       this.rows = parsed.rows ?? [];
-      this.nextId = parsed.nextId ?? this.rows.length + 1;
+      // rows.length + 1 can COLLIDE with an existing fact_id when the file
+      // has deleted rows (id holes) — the next add would then update/remove
+      // the wrong fact. Always pick max+1.
+      this.nextId = parsed.nextId ?? Math.max(0, ...this.rows.map((r) => r.fact_id)) + 1;
     } catch {
       // Corrupt JSON must not be silently reset (that would destroy the
       // stored memory): back the file up before falling back to empty state.

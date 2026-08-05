@@ -36,39 +36,49 @@ export const languageExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.registerCommand("language", {
     description: "Show or change the response language (e.g. /language English)",
     handler: async (args, ctx) => {
-      const value = args.trim();
+      try {
+        const value = args.trim();
 
-      if (!value) {
-        ctx.ui.notify(
-          `Language: ${readLanguage()}\nChange it with: /language English（或任意语言名）`,
-          "info",
-        );
-        return;
+        if (!value) {
+          ctx.ui.notify(
+            `Language: ${readLanguage()}\nChange it with: /language English（或任意语言名）`,
+            "info",
+          );
+          return;
+        }
+
+        if (value.length > LANGUAGE_MAX_LENGTH || /[\r\n]/.test(value)) {
+          ctx.ui.notify(
+            `语言名无效：长度不能超过 ${LANGUAGE_MAX_LENGTH} 字符且不能包含换行。`,
+            "error",
+          );
+          return;
+        }
+
+        if (isSettingsDamaged()) {
+          // Overwriting here would replace the unreadable settings.json with a
+          // language-only object, permanently losing env/safety/API keys.
+          ctx.ui.notify(
+            "settings.json 已损坏（无法解析）。拒绝写入以免覆盖现有配置；请先修复该文件。",
+            "error",
+          );
+          return;
+        }
+
+        const settings = readSettings();
+        settings.language = value;
+        writeSettings(settings);
+
+        ctx.ui.notify(`Language set to: ${value}`, "info");
+      } catch (err) {
+        // notify/writeSettings can throw outside the TUI (headless runs) or
+        // on disk failure — surface instead of crashing the command loop.
+        try {
+          ctx.ui.notify(`Failed to set language: ${err instanceof Error ? err.message : String(err)}`, "error");
+        } catch {
+          // no UI — swallow
+        }
       }
-
-      if (value.length > LANGUAGE_MAX_LENGTH || /[\r\n]/.test(value)) {
-        ctx.ui.notify(
-          `语言名无效：长度不能超过 ${LANGUAGE_MAX_LENGTH} 字符且不能包含换行。`,
-          "error",
-        );
-        return;
-      }
-
-      if (isSettingsDamaged()) {
-        // Overwriting here would replace the unreadable settings.json with a
-        // language-only object, permanently losing env/safety/API keys.
-        ctx.ui.notify(
-          "settings.json 已损坏（无法解析）。拒绝写入以免覆盖现有配置；请先修复该文件。",
-          "error",
-        );
-        return;
-      }
-
-      const settings = readSettings();
-      settings.language = value;
-      writeSettings(settings);
-
-      ctx.ui.notify(`Language set to: ${value}`, "info");
     },
   });
 };

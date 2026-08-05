@@ -288,8 +288,12 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             // 2.5.11: a fixed 500ms sleep returned stale/empty diagnostics on
             // slow servers — wait for the server's own publish instead
             // (inline window, then a bounded deferred catch-up).
-            const diags = await waitForFreshDiagnostics(doc.client, doc.uri, 500, 5_000);
-            return ok(formatDiagnosticsForFile(params.file, diags ?? []));
+            const fresh = await waitForFreshDiagnostics(doc.client, doc.uri, 500, 5_000);
+            // An unchanged (already-synced) file makes the server never
+            // re-publish, so both windows time out — fall back to the cached
+            // diagnostics instead of reporting a false "no diagnostics".
+            const diags = fresh ?? doc.client.getDiagnostics(doc.uri);
+            return ok(formatDiagnosticsForFile(params.file, diags));
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             return fail(`LSP diagnostics failed: ${msg}`);
@@ -470,18 +474,29 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           const formatOpts = resolveFormattingOptions(absFilePath);
           const edits = await client.textDocumentFormatting(uri, formatOpts);
           if (edits && edits.length > 0) {
-            const currentContent = readFileSync(absFilePath, "utf8");
-            const formatted = applyTextEditsToString(currentContent, edits);
-            if (formatted !== currentContent) {
-              const now = statSync(absFilePath, { throwIfNoEntry: false });
-              if (snapshot && now && now.mtimeMs !== snapshot.mtimeMs) {
-                additions.push({
-                  type: "text",
-                  text: "\n[LSP] file changed on disk during formatting; rewrite skipped to avoid clobbering external edits.",
-                });
-              } else {
-                writeFileSync(absFilePath, formatted, "utf8");
-                await syncDocumentWithInstall(ctx.cwd, filePath, ctx);
+            const raw = readFileSync(absFilePath);
+            const currentContent = raw.toString("utf8");
+            // Non-UTF-8 files (GBK/Latin-1 legacy) read as utf8 silently
+            // replace invalid bytes with U+FFFD — formatting those and
+            // writing the result back would permanently corrupt the file.
+            if (!Buffer.from(currentContent, "utf8").equals(raw)) {
+              additions.push({
+                type: "text",
+                text: "\n[LSP] formatOnWrite skipped: file is not valid UTF-8 (a rewrite would corrupt non-ASCII content).",
+              });
+            } else {
+              const formatted = applyTextEditsToString(currentContent, edits);
+              if (formatted !== currentContent) {
+                const now = statSync(absFilePath, { throwIfNoEntry: false });
+                if (snapshot && now && now.mtimeMs !== snapshot.mtimeMs) {
+                  additions.push({
+                    type: "text",
+                    text: "\n[LSP] file changed on disk during formatting; rewrite skipped to avoid clobbering external edits.",
+                  });
+                } else {
+                  writeFileSync(absFilePath, formatted, "utf8");
+                  await syncDocumentWithInstall(ctx.cwd, filePath, ctx);
+                }
               }
             }
           }

@@ -2,6 +2,7 @@ import type { LspManagerState } from "./manager.ts";
 import { flattenDocumentSymbols, formatDocumentSymbols, getActiveClients } from "./manager.ts";
 import { loadConfig } from "./config.ts";
 import { lspPositionToDisplay, uriToPath } from "./client.ts";
+import { existsSync } from "node:fs";
 import {
 	extractLocationFields,
 	isFlatSymbolInfoArray,
@@ -138,7 +139,11 @@ export function executeWorkspaceDiagnosticsAction(state: LspManagerState) {
 		const allDiags = managed.getAllDiagnostics();
 		for (const [uri, diags] of allDiags) {
 			if (diags.length === 0) continue;
+			// Files deleted mid-session keep their cached diagnostics forever
+			// — drop them from the workspace report so the model isn't told
+			// that a deleted file still has errors.
 			const filePath = uriToPath(uri);
+			if (filePath && !existsSync(filePath)) continue;
 			for (const diagnostic of diags) {
 				const pos = lspPositionToDisplay(diagnostic.range.start);
 				const severity = diagnostic.severity === 1

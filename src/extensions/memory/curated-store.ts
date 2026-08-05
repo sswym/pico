@@ -52,6 +52,9 @@ const INSTRUCTION_PATTERNS = [
   /^\s*请\s*(?:用|调用|执行)/,
 ];
 
+/** Question marks (? or ？) — questions are never durable statements. */
+const QUESTION_RE = /[?？]/;
+
 function defaultDir(): string {
   return join(picoHome(), "memories");
 }
@@ -168,7 +171,12 @@ export class CuratedMemoryStore {
     if (drift) return this.driftResult(target, drift);
 
     const entries = this.entriesFor(target);
-    if (entries.includes(clean)) return this.result(target, true, "Entry already exists.");
+    // Dedupe must match loadFromDisk's unique() semantics (case-insensitive
+    // dedupeKey) — otherwise "We use bun" then "we use bun" both report
+    // "added", and the second silently vanishes on the next load.
+    if (entries.some((e) => dedupeKey(e) === dedupeKey(clean))) {
+      return this.result(target, true, "Entry already exists.");
+    }
 
     const next = [...entries, clean];
     const over = this.limitError(target, next);
@@ -246,6 +254,9 @@ export class CuratedMemoryStore {
       const text = extractText(msg.content).trim();
       if (text.length < 10) continue;
       if (INSTRUCTION_PATTERNS.some((p) => p.test(text))) continue;
+      // Questions ("Do I prefer X?") are not durable statements — do not
+      // freeze them into MEMORY.md/USER.md entries.
+      if (QUESTION_RE.test(text)) continue;
 
       const target = USER_PATTERNS.some((p) => p.test(text))
         ? "user"

@@ -507,11 +507,30 @@ export class LspClient {
     });
   }
 
+  /**
+   * FIFO chain honouring stdin backpressure for notifications: `write()`
+   * returning false means the kernel buffer is full (slow server, e.g. a
+   * busy rust-analyzer) — keep queuing would grow memory without bound, so
+   * wait for `drain` before the next frame.
+   */
+  private notifyQueue: Promise<void> = Promise.resolve();
+
   private notify(method: string, params: unknown): void {
     if (!this.process?.stdin) return;
     const msg = JSON.stringify({ jsonrpc: "2.0", method, params });
     const frame = `Content-Length: ${Buffer.byteLength(msg)}\r\n\r\n${msg}`;
-    this.process.stdin.write(frame);
+    this.notifyQueue = this.notifyQueue
+      .then(async () => {
+        const stdin = this.process?.stdin;
+        if (!stdin) return;
+        if (stdin.write(frame) === false) {
+          await new Promise<void>((resolve) => stdin.once("drain", resolve));
+        }
+      })
+      .catch(() => {
+        // A closed stdin must not take notifications down; the frame is
+        // dropped (the server is gone anyway).
+      });
   }
 
   private onStdout(chunk: Buffer): void {
@@ -591,10 +610,18 @@ export class LspClient {
 
   private handleNotification(notif: { method: string; params?: unknown }): void {
     if (notif.method === "textDocument/publishDiagnostics") {
-      const params = notif.params as PublishDiagnosticsParams;
-      this.diagnostics.set(params.uri, params.diagnostics);
+      // Malformed servers (protocol-tolerance bugs / version skew) can send
+      // the notification without params. Dereferencing `params.uri` would
+      // throw inside the stdout data handler — outside any try/catch — and
+      // crash the whole process. Drop the notification instead.
+      const params = notif.params;
+      if (typeof params !== "object" || params === null) return;
+      const uri = (params as { uri?: unknown }).uri;
+      const diagnostics = (params as { diagnostics?: unknown }).diagnostics;
+      if (typeof uri !== "string" || !Array.isArray(diagnostics)) return;
+      this.diagnostics.set(uri, diagnostics as Diagnostic[]);
       for (const handler of this.diagnosticsHandlers) {
-        handler(params.uri, params.diagnostics);
+        handler(uri, diagnostics as Diagnostic[]);
       }
     }
   }

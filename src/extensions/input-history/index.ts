@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -113,7 +113,15 @@ export function appendInputHistory(text: string, path = picoInputHistoryPath(), 
   mkdirSync(dirname(path), { recursive: true });
   // Append a single JSONL line: small single-line writes are atomic on POSIX,
   // so concurrent instances no longer drop entries via the old read-modify-
-  // write race. { mode: 0o600 } only applies on first creation.
+  // write race. { mode: 0o600 } only applies on first creation — a file left
+  // at 0644 by an older version or a concurrent writer stays world-readable,
+  // so repair the mode here (history contains pasted prompts, possibly keys).
+  try {
+    const mode = statSync(path).mode & 0o777;
+    if ((mode & 0o077) !== 0) chmodSync(path, 0o600);
+  } catch {
+    // File does not exist yet — appendFileSync below creates it with 0o600.
+  }
   appendFileSync(path, `${JSON.stringify({ text: normalized })}\n`, { encoding: "utf-8", mode: 0o600 });
   try {
     // Trim to the newest `limit` entries once the file grows past the cap.

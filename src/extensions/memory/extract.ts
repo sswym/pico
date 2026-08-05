@@ -214,6 +214,10 @@ export function autoExtractFromMessages(
     if (isHelpRequest(text)) continue;
     // Denials ("I never said that") must not be stored as preferences.
     if (isDenial(text)) continue;
+    // Questions ("Do I use bun?") are never durable statements — only the
+    // correction path had this guard, so question-asked preferences used to
+    // get frozen into USER.md-style facts.
+    if (isQuestion(text)) continue;
 
     let category: Category | undefined;
     if (isLikelyCorrection(text)) category = "correction";

@@ -153,6 +153,53 @@ test("non-interactive setup writes settings.json with 0600 permissions", async (
   }
 });
 
+test("setup refuses to run when settings.json is malformed (would clobber API keys)", async () => {
+  const home = useTempHome();
+  const output = collectOutput();
+  try {
+    mkdirSync(join(home, "agent"), { recursive: true });
+    writeFileSync(picoSettingsPath(), "{ not valid json ", "utf-8");
+    const before = readFileSync(picoSettingsPath(), "utf-8");
+
+    const code = await runSetupCommand({
+      nonInteractive: true,
+      reset: false,
+      help: false,
+      quick: false,
+      reconfigure: false,
+    }, output.io as any);
+
+    expect(code).toBe(1);
+    expect(output.output).toContain("malformed JSON");
+    // The damaged file must be untouched — no silent overwrite.
+    expect(readFileSync(picoSettingsPath(), "utf-8")).toBe(before);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setup --reset also refuses on malformed settings.json", async () => {
+  const home = useTempHome();
+  const output = collectOutput();
+  try {
+    mkdirSync(join(home, "agent"), { recursive: true });
+    writeFileSync(picoSettingsPath(), "{ not valid json ", "utf-8");
+
+    const code = await runSetupCommand({
+      nonInteractive: false,
+      reset: true,
+      help: false,
+      quick: false,
+      reconfigure: false,
+    }, output.io as any);
+
+    expect(code).toBe(1);
+    expect(readFileSync(picoSettingsPath(), "utf-8")).toContain("not valid json");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("splitArgs is quote-aware", () => {
   expect(splitArgs("--foo \"bar baz\"")).toEqual(["--foo", "bar baz"]);
   expect(splitArgs("npx -y @modelcontextprotocol/server-github")).toEqual(["npx", "-y", "@modelcontextprotocol/server-github"]);

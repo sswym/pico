@@ -5,7 +5,7 @@ import { applyJsonModeLine } from "./runner.ts";
 export interface SpawnedProcessLike {
 	stdout: { on(event: "data", handler: (data: unknown) => void): void };
 	stderr: { on(event: "data", handler: (data: unknown) => void): void };
-	on(event: "close", handler: (code: number | null) => void): void;
+	on(event: "close" | "error" | "exit", handler: (code: number | null) => void): void;
 	on(event: "error", handler: (error: unknown) => void): void;
 	kill(signal: "SIGTERM" | "SIGKILL"): void;
 	killed: boolean;
@@ -34,6 +34,22 @@ export interface RunJsonProcessResult {
 /** 2.6.3: stderr accumulates unboundedly and floods failed-result messages. */
 const STDERR_CAP_BYTES = 256 * 1024;
 const STDERR_OVERFLOW_MARKER = "[stderr truncated — head dropped]\n";
+
+/**
+ * Subagent nesting depth guard (mirrors PICO_HOOK_RECURSION_GUARD): every
+ * subagent child is marked with PICO_SUBAGENT_DEPTH = parent depth + 1 and
+ * bin/pico.ts refuses to start once the limit is reached, so an LLM cannot
+ * recursively stack full pico processes (each ~100MB + own model context).
+ */
+export const SUBAGENT_DEPTH_ENV = "PICO_SUBAGENT_DEPTH";
+export const MAX_SUBAGENT_DEPTH = 3;
+
+/** Environment for a subagent child: inherit parent env + bumped depth. */
+export function subagentChildEnv(): Record<string, string> {
+	const raw = Number.parseInt(process.env[SUBAGENT_DEPTH_ENV] ?? "0", 10);
+	const depth = Number.isFinite(raw) && raw >= 0 ? raw : 0;
+	return { ...process.env, [SUBAGENT_DEPTH_ENV]: String(depth + 1) };
+}
 
 function appendStderr(result: SingleResult, chunk: string): void {
 	result.stderr += chunk;
@@ -174,6 +190,12 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 			});
 			let buffer = "";
 			let killTimer: ReturnType<typeof setTimeout> | undefined;
+			// `close` (all stdio EOF) can be delayed forever when a grandchild
+			// escaped the process group (setsid/nohup daemon) and keeps the
+			// pipes open. The process itself is gone once `exit` fires — a
+			// bounded grace period then force-resolves instead of hanging the
+			// tool call indefinitely.
+			let hangTimer: ReturnType<typeof setTimeout> | undefined;
 
 			const killProc = (reason: "abort" | "timeout") => {
 				if (reason === "abort") wasAborted = true;
@@ -188,6 +210,12 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 				killTimer = setTimer(() => {
 					killProcessGroup(proc, "SIGKILL");
 				}, 5000);
+			};
+
+			const clearTimers = () => {
+				if (timeoutHandle) clearTimer(timeoutHandle);
+				if (killTimer) clearTimer(killTimer);
+				if (hangTimer) clearTimer(hangTimer);
 			};
 
 		const processLine = (line: string) => {
@@ -214,8 +242,7 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 		});
 
 		proc.on("close", (code) => {
-			if (timeoutHandle) clearTimer(timeoutHandle);
-			if (killTimer) clearTimer(killTimer);
+			clearTimers();
 			// Flush any trailing bytes held by the streaming decoders.
 			buffer += stdoutDecoder.decode();
 			options.result.stderr += stderrDecoder.decode();
@@ -226,12 +253,23 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 			resolve(code ?? 1);
 		});
 
+		proc.on("exit", (code) => {
+			// The child process itself is gone; `close` may still be pending
+			// because an escaped grandchild holds the stdio pipes open. Bound
+			// that wait so the tool call cannot hang forever. If `close` does
+			// arrive (with the last buffered output), it wins and clears this.
+			hangTimer = setTimer(() => {
+				if (timeoutHandle) clearTimer(timeoutHandle);
+				if (killTimer) clearTimer(killTimer);
+				resolve(code ?? 1);
+			}, 10_000);
+		});
+
 		proc.on("error", (error) => {
 			// 2.4.3: a spawn failure (ENOENT, EACCES, bad PATH) must not
 			// degrade to a bare "Agent failed: (no output)" — the reason is
 			// what lets the user actually diagnose it.
-			if (timeoutHandle) clearTimer(timeoutHandle);
-			if (killTimer) clearTimer(killTimer);
+			clearTimers();
 			const detail = error instanceof Error ? error.message : String(error);
 			options.result.stopReason = "error";
 			options.result.errorMessage = `Failed to spawn ${options.command}: ${detail} — check PATH and permissions.`;
@@ -239,8 +277,16 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 		});
 
 		if (options.signal) {
-			if (options.signal.aborted) killProc("abort");
-			else options.signal.addEventListener("abort", () => killProc("abort"), { once: true });
+			const onAbort = () => killProc("abort");
+			if (options.signal.aborted) onAbort();
+			else options.signal.addEventListener("abort", onAbort, { once: true });
+			// Detach the listener once the process is done so long sessions
+			// with many subagent runs don't accumulate listeners on the
+			// shared session signal (and don't SIGTERM a dead process on a
+			// later interrupt).
+			const detach = () => options.signal?.removeEventListener("abort", onAbort);
+			proc.on("close", detach);
+			proc.on("error", detach);
 		}
 
 		if (options.timeoutMs && options.timeoutMs > 0) {

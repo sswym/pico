@@ -172,6 +172,7 @@ async function readBodyUntilParsed(response: Response, signal: AbortSignal): Pro
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8");
   let accumulated = "";
+  let resolvedEarly = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -179,13 +180,18 @@ async function readBodyUntilParsed(response: Response, signal: AbortSignal): Pro
       accumulated += decoder.decode(value, { stream: true });
       try {
         parseExaResponse(accumulated);
-        return accumulated;
+        // First parseable SSE event wins — cancel the stream so the
+        // keep-alive connection does not linger (releaseLock alone leaves
+        // the socket open until the server closes it).
+        resolvedEarly = true;
+        break;
       } catch {
         // Not complete yet — keep reading.
       }
     }
     return accumulated;
   } finally {
+    if (resolvedEarly) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }
@@ -448,11 +454,23 @@ function hostMatches(host: string, pattern: string): boolean {
  *  burned 10KB+ of context. */
 export const SEARCH_OUTPUT_CAP_BYTES = 12 * 1024;
 
-/** Cap a formatted search result by bytes (safe on UTF-8 boundaries). */
+/**
+ * Cap a formatted search result by bytes without splitting a surrogate pair.
+ * (The old check tested UTF-8 continuation-byte patterns against UTF-16 code
+ * units — dead code that left half-emoji at the cut point.)
+ */
 export function capSearchOutput(text: string, cap = SEARCH_OUTPUT_CAP_BYTES): string {
   if (Buffer.byteLength(text, "utf8") <= cap) return text;
   let cut = cap;
-  while (cut > 0 && (text.charCodeAt(cut - 1) & 0xc0) === 0x80) cut--;
+  // Back up so the cut lands between code points (never inside a surrogate
+  // pair). `cut` indexes UTF-16 units; a low surrogate at cut-1 or a high
+  // surrogate at cut means the pair is split.
+  while (cut > 0) {
+    const prev = text.charCodeAt(cut - 1);
+    if (prev >= 0xdc00 && prev <= 0xdfff) { cut--; continue; } // cut after a low surrogate
+    if (prev >= 0xd800 && prev <= 0xdbff && text.charCodeAt(cut) >= 0xdc00 && text.charCodeAt(cut) <= 0xdfff) { cut--; continue; }
+    break;
+  }
   const truncated = text.slice(0, cut);
   const omitted = Buffer.byteLength(text.slice(cut), "utf8");
   return `${truncated}\n\n[Results truncated: ${omitted} bytes omitted to protect context.]`;

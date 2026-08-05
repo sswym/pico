@@ -431,9 +431,19 @@ export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
     return 1;
   }
   if (options.reset) {
+    const damaged = firstDamagedConfigPath();
+    if (damaged) {
+      writeLine(io, `error: refusing to reset — ${damaged} is malformed JSON. Fix or remove it manually, then re-run.`);
+      return 1;
+    }
     resetSetupConfig();
     writeLine(io, `pico setup reset complete\nsettings: ${picoSettingsPath()}`);
     return 0;
+  }
+  const damagedConfig = firstDamagedConfigPath();
+  if (damagedConfig) {
+    writeLine(io, `error: refusing to run setup — ${damagedConfig} is malformed JSON and would be overwritten, losing API keys / safety config. Fix or remove it manually, then re-run.`);
+    return 1;
   }
   if (options.nonInteractive) {
     applyNonInteractiveDefaults();
@@ -1261,6 +1271,24 @@ function readJson(path: string): JsonObject {
     // Missing or malformed config should not block setup.
   }
   return {};
+}
+
+/**
+ * A malformed settings.json/models.json must never be silently overwritten by
+ * a setup section's read-modify-write — that would permanently wipe API keys
+ * and safety switches (settings.ts documents the same guard). Returns the
+ * first damaged (exists but unparseable) path, or null.
+ */
+function firstDamagedConfigPath(): string | null {
+  for (const path of [picoSettingsPath(), picoModelsPath()]) {
+    if (!existsSync(path)) continue;
+    try {
+      JSON.parse(readFileSync(path, "utf-8"));
+    } catch {
+      return path;
+    }
+  }
+  return null;
 }
 
 function writeJson(path: string, value: JsonObject): void {

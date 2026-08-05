@@ -32,6 +32,16 @@ import { FactRetriever } from "./retrieval.ts";
 import { normalizeTerm, expandQuery } from "./synonyms.ts";
 import { projectScopeKey } from "./query-scope.ts";
 
+/**
+ * Distinguish real corruption (backup-and-rebuild) from transient open
+ * failures (busy/permission/disk) that must propagate to the caller instead
+ * of renaming a healthy database away.
+ */
+function isCorruptionError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /corrupt|malformed|not a database/i.test(message);
+}
+
 export interface Fact {
   fact_id: number;
   content: string;
@@ -150,9 +160,13 @@ export class MemoryStore {
       this.db = new Database(dbPath);
       this._configureDb();
     } catch (err) {
-      // SQLITE_CORRUPT (or any open/init failure) must never block startup:
-      // back the damaged file up, rebuild an empty store, and surface a
-      // visible notice (2.3.3).
+      // Only actual corruption gets the backup-and-rebuild treatment. Any
+      // other open/init failure (SQLITE_BUSY on a concurrently-held DB,
+      // permissions, disk errors) must propagate instead of renaming a
+      // healthy file out from under another process (split-brain).
+      if (!isCorruptionError(err)) throw err;
+      // SQLITE_CORRUPT must never block startup: back the damaged file up,
+      // rebuild an empty store, and surface a visible notice (2.3.3).
       this.recoveryNotice = this._backupCorrupt(err);
       this.db = new Database(dbPath);
       this._configureDb();
@@ -161,11 +175,12 @@ export class MemoryStore {
   }
 
   private _configureDb(): void {
+    // busy_timeout must come FIRST: switching to WAL needs a write lock, and
+    // with the default busy timeout that lock contention would raise
+    // SQLITE_BUSY immediately instead of waiting.
+    this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
-    // Concurrent pico instances sharing one memory DB must wait for the lock
-    // instead of failing with SQLITE_BUSY.
-    this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec(SCHEMA);
   }
 
@@ -315,20 +330,26 @@ export class MemoryStore {
       throw new Error(`memory.update: invalid category '${opts.category}'`);
     }
 
-    this.db
-      .query(
-        `UPDATE facts
-            SET content = ?, category = ?, tags = ?, trust_score = ?,
-                updated_at = CURRENT_TIMESTAMP
-          WHERE fact_id = ?`,
-      )
-      .run(next.content, next.category, next.tags, next.trust_score, fact_id);
+    // UPDATE + entity/TF-IDF recompute must be atomic (mirrors add()'s
+    // runAdd transaction): a failure mid-way must not leave the content
+    // updated while the derived rows still describe the old text.
+    const runUpdate = this.db.transaction(() => {
+      this.db
+        .query(
+          `UPDATE facts
+              SET content = ?, category = ?, tags = ?, trust_score = ?,
+                  updated_at = CURRENT_TIMESTAMP
+            WHERE fact_id = ?`,
+        )
+        .run(next.content, next.category, next.tags, next.trust_score, fact_id);
 
-    // If content changed, re-extract entities and recompute TF-IDF
-    if (opts.content !== undefined) {
-      this._linkEntities(fact_id, next.content);
-      this._computeTfIdf(fact_id, next.content);
-    }
+      // If content changed, re-extract entities and recompute TF-IDF
+      if (opts.content !== undefined) {
+        this._linkEntities(fact_id, next.content);
+        this._computeTfIdf(fact_id, next.content);
+      }
+    });
+    runUpdate();
 
     return true;
   }

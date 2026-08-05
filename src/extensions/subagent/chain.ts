@@ -24,7 +24,10 @@ export function buildChainTask(
 	readFile: ReadFile,
 ): string {
 	const cappedPrevious = previousOutput ? truncate(previousOutput, PREVIOUS_OUTPUT_CAP) : previousOutput;
-	let taskWithContext = step.task.replace(/\{previous\}/g, cappedPrevious);
+	// Replacement FUNCTION (not string): a string replacement would interpret
+	// `$$`, `$&`, `` $` ``, `$'` in the agent's previous output as special
+	// patterns and silently corrupt the task prompt.
+	let taskWithContext = step.task.replace(/\{previous\}/g, () => cappedPrevious);
 	taskWithContext = taskWithContext.replace(
 		/\{outputs\.(\w+)\}/g,
 		(_, key: string) =>

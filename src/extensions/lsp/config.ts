@@ -278,6 +278,9 @@ export function detectServers(config: LspConfig, workspaceRoot: string): Array<[
   // Sort by how many matching source files exist in the project.
   // Ensures language-specific servers (basedpyright for .py) rank higher than
   // generic ones (vscode-html-language-server) when the project has actual source files.
+  // File counts are precomputed once — counting inside the comparator would
+  // re-scan the whole workspace on every comparison (O(n²) sync IO on the
+  // event loop).
   const SKIP = new Set(["node_modules", ".git", "build", "dist", "target", ".next", "__pycache__", ".venv"]);
   function countFiles(dir: string, exts: Set<string>, depth: number): number {
     if (depth > 2) return 0;
@@ -292,10 +295,13 @@ export function detectServers(config: LspConfig, workspaceRoot: string): Array<[
     } catch {}
     return count;
   }
-  result.sort(([, a], [, b]) => {
-    const extsA = new Set(a.fileTypes.map(e => e.startsWith(".") ? e : `.${e}`));
-    const extsB = new Set(b.fileTypes.map(e => e.startsWith(".") ? e : `.${e}`));
-    return countFiles(workspaceRoot, extsB, 0) - countFiles(workspaceRoot, extsA, 0);
+  const fileCounts = new Map<string, number>();
+  for (const [name, serverConfig] of result) {
+    const exts = new Set(serverConfig.fileTypes.map(e => e.startsWith(".") ? e : `.${e}`));
+    fileCounts.set(name, countFiles(workspaceRoot, exts, 0));
+  }
+  result.sort(([aName, a], [bName, b]) => {
+    return (fileCounts.get(bName) ?? 0) - (fileCounts.get(aName) ?? 0);
   });
   return result;
 }

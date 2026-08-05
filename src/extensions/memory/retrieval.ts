@@ -571,7 +571,10 @@ export class FactRetriever {
   private _temporalDecay(timestampStr: string): number {
     if (this.temporalDecayHalfLife <= 0) return 1.0;
     if (!timestampStr) return 1.0;
-    const dt = new Date(timestampStr);
+    // updated_at comes from SQLite CURRENT_TIMESTAMP — a UTC string WITHOUT
+    // a timezone suffix ("2026-08-05 18:40:00"). `new Date()` would parse it
+    // as LOCAL time, skewing every fact's age by the local offset; append Z.
+    const dt = new Date(`${timestampStr.replace(" ", "T")}Z`);
     if (isNaN(dt.getTime())) return 1.0;
     const ageMs = Date.now() - dt.getTime();
     const ageDays = ageMs / 86_400_000;

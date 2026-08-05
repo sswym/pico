@@ -274,6 +274,9 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
         if (hop >= MAX_REDIRECTS) throw new Error("Too many redirects");
         // Resolve relative Location against the current URL, then re-validate.
         currentUrl = normalizeUrl(new URL(location, currentUrl).toString(), opts);
+        // The intermediate response is dropped — cancel its body so the
+        // connection can be reused instead of lingering until GC.
+        await response.body?.cancel().catch(() => {});
       }
       // Body download stays inside the timeout/abort scope: a stalled body must
       // not hang the tool after the headers arrived.
@@ -340,35 +343,34 @@ export function isPrivateHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   if (host === "::1" || host === "0:0:0:0:0:0:0:1") return true;
-  // ULA / link-local prefixes only apply to IPv6 literals. Plain domains that
-  // merely start with "fc"/"fd" (fcc.gov, fda.gov, …) are public and must
-  // not be refused as private-network addresses.
+
   if (host.includes(":")) {
-    if (host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:")) return true;
-  }
-
-  // IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1 or ::ffff:7f00:1): unwrap and
-  // re-check the embedded IPv4 so mapped loopback/metadata addresses are caught.
-  const mapped = /^::ffff:(.+)$/.exec(host);
-  if (mapped) {
-    const inner = mapped[1]!;
-    if (inner.includes(".")) return isPrivateHost(inner);
-    const hex = inner.replace(/:/g, "");
-    if (/^[0-9a-f]{1,8}$/.test(hex)) {
-      const n = parseInt(hex, 16);
-      return isPrivateHost(`${(n >>> 24) & 0xff}.${(n >>> 16) & 0xff}.${(n >>> 8) & 0xff}.${n & 0xff}`);
+    // IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1 or ::ffff:7f00:1): unwrap and
+    // re-check the embedded IPv4 so mapped loopback/metadata addresses are caught.
+    const mapped = /^::ffff:(.+)$/.exec(host);
+    if (mapped) {
+      const inner = mapped[1]!;
+      if (inner.includes(".")) return isPrivateHost(inner);
+      const hex = inner.replace(/:/g, "");
+      if (/^[0-9a-f]{1,8}$/.test(hex)) {
+        const n = parseInt(hex, 16);
+        return isPrivateHost(`${(n >>> 24) & 0xff}.${(n >>> 16) & 0xff}.${(n >>> 8) & 0xff}.${n & 0xff}`);
+      }
     }
+    // ULA / link-local prefixes only apply to IPv6 literals. Plain domains that
+    // merely start with "fc"/"fd" (fcc.gov, fda.gov, …) are public and must
+    // not be refused as private-network addresses.
+    if (host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:")) return true;
+    return false;
   }
 
-  const parts = host.split(".").map((p) => Number(p));
-  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) {
-    // Non-dotted host: normalize alternate IPv4 spellings (decimal integer
-    // 2130706433, hex 0x7f000001, octal 0177.0.0.1) and re-check, so the
-    // private guard can't be bypassed with a rewritten loopback address.
-    const numeric = parseNumericIpv4(host);
-    return numeric !== null && isPrivateHost(numeric);
-  }
-  const [a, b] = parts as [number, number, number, number];
+  // inet_aton-compatible IPv4 parsing — every spelling a resolver may accept:
+  // trailing dot (127.0.0.1.), single-component (127.1 ≡ 127.0.0.1,
+  // 2130706433), and per-component octal/hex (0177.0.0.1, 0x7f.0.0.1). Plain
+  // domains fail parsing and fall through to false.
+  const dotted = parseInetAtonIpv4(host);
+  if (dotted === null) return false;
+  const [a, b] = dotted.split(".").map(Number) as [number, number, number, number];
   if (a === 10 || a === 127 || a === 0) return true;
   if (a === 169 && b === 254) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
@@ -376,21 +378,53 @@ export function isPrivateHost(hostname: string): boolean {
   return false;
 }
 
-/** Parse a single-component IPv4 spelling (decimal / hex / octal) into dotted form. */
-function parseNumericIpv4(host: string): string | null {
-  const m = /^(0[xX][0-9a-fA-F]+|\d+)$/.exec(host);
-  if (!m) return null;
-  const raw = m[1]!;
-  let n: number;
-  if (raw.startsWith("0x") || raw.startsWith("0X")) {
-    n = Number.parseInt(raw, 16);
-  } else if (raw.length > 1 && raw.startsWith("0")) {
-    n = Number.parseInt(raw, 8);
-  } else {
-    n = Number.parseInt(raw, 10);
+/**
+ * Parse an IPv4 address with inet_aton() semantics — the spellings glibc and
+ * DNS resolvers accept beyond plain dotted decimal:
+ *   - trailing dot: "127.0.0.1." ≡ "127.0.0.1"
+ *   - fewer than 4 components: the last one may carry 8/16/24 bits
+ *     ("127.1" ≡ 127.0.0.1, "127.0.1" ≡ 127.0.0.1)
+ *   - per-component octal (0177) and hex (0x7f) prefixes
+ *   - single-component 32-bit integers (2130706433 ≡ 127.0.0.1)
+ * Returns dotted-quad form, or null when the input is not a numeric IPv4
+ * (i.e. a hostname).
+ */
+export function parseInetAtonIpv4(host: string): string | null {
+  const h = host.replace(/\.$/, "");
+  if (h === "") return null;
+  const parts = h.split(".");
+  if (parts.length > 4) return null;
+  const nums: number[] = [];
+  for (const p of parts) {
+    if (p === "") return null;
+    let n: number;
+    if (/^0[xX][0-9a-fA-F]+$/.test(p)) {
+      n = Number.parseInt(p, 16);
+    } else if (/^0[0-7]+$/.test(p)) {
+      n = Number.parseInt(p, 8);
+    } else if (/^\d+$/.test(p)) {
+      n = Number.parseInt(p, 10);
+    } else {
+      return null;
+    }
+    if (!Number.isSafeInteger(n) || n < 0 || n > 0xffffffff) return null;
+    nums.push(n);
   }
-  if (!Number.isSafeInteger(n) || n < 0 || n > 0xffffffff) return null;
-  return `${(n >>> 24) & 0xff}.${(n >>> 16) & 0xff}.${(n >>> 8) & 0xff}.${n & 0xff}`;
+  const last = nums[nums.length - 1]!;
+  let value: number;
+  if (nums.length === 1) {
+    value = last;
+  } else if (nums.length === 2) {
+    if (nums[0]! > 255 || last > 0xffffff) return null;
+    value = (nums[0]! << 24) | last;
+  } else if (nums.length === 3) {
+    if (nums[0]! > 255 || nums[1]! > 255 || last > 0xffff) return null;
+    value = (nums[0]! << 24) | (nums[1]! << 16) | last;
+  } else {
+    if (nums.some((n) => n > 255)) return null;
+    value = (nums[0]! << 24) | (nums[1]! << 16) | (nums[2]! << 8) | last;
+  }
+  return `${(value >>> 24) & 0xff}.${(value >>> 16) & 0xff}.${(value >>> 8) & 0xff}.${value & 0xff}`;
 }
 
 export function withTimeoutSignal(

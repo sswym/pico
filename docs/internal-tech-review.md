@@ -600,3 +600,24 @@ bun test tests/<feature>.test.ts  # 单文件测试
 - **界面**：不再删除用户主题文件、用户显式配置主题时不强制覆盖；logo 支持 setExpanded 折叠；折叠预览按列宽截断；展开模式设渲染上限；页脚 git 超时结果负缓存 30s；活动行工具名截断；DCS/APC 序列清洗；输入框装饰宽度按 visibleWidth 对齐；todo 面板空任务 F7 提示、全部完成保留汇总。
 - **配置可见性**：hooks/subagent 配置解析错误经 session_start notify 可见；项目级 MCP/hooks 配置存在但被安全开关禁用时显式提示；`pico --version` 默认只显示 pico 版本（`--verbose` 带上游）、`setup --help` 不再重复品牌头。
 - **审查类任务规则**：`src/prompts/vibe-system.md` 新增「只读优先」——分析/审查请求默认只输出报告，修改需先征得用户同意。
+
+---
+
+### 6.8 第六轮整改（2026-08-05 全项目只读深度审查，4 高 / 15 中 / 10+ 低，全部附回归测试）
+
+对应首次只读代码审查报告的修复提交，按严重度从高到低全部落地：
+
+- **高**：
+  - `session_shutdown` 按 reason 区分（`memory/index.ts`）：`/resume` `/fork` `/new` 复用同一扩展实例（上游 `agent-session-runtime` teardownCurrent 只发事件、工厂不重跑），此前会永久 close store + 写队列，memory 在进程剩余生命周期内全部失败；现仅 `quit`/`reload` 才 close。
+  - `pico setup` 拒绝在 settings.json/models.json 损坏时运行（`setup/index.ts` read-modify-write 全覆盖）——此前解析失败静默返回 `{}` 再整体写回，API key/安全配置被抹掉。
+  - 子代理嵌套深度限制：`PICO_SUBAGENT_DEPTH`（`subagent/process.ts` 子进程 +1，`bin/pico.ts` 深度 ≥3 拒绝启动），补上 hooks 递归防护之外的缺口。
+  - MemoryStore 打开失败分类（`store.ts`）：仅真正 corrupt（"corrupt"/"malformed"/"not a database"）才备份重建；`busy_timeout` 先于 `journal_mode=WAL` 设置——并发实例共享 DB 时不再把别人的活库改名（split-brain）；provider 构造全部失败时回退 noop provider，扩展不再整体抛错。
+- **中**：
+  - LSP：`diagnostics` 未变更文件回退缓存（不再谎报"无诊断"+空等 5.5s）；`ensureNamedServer` 等待 reaper 的 in-flight shutdown；`detectServers` 文件数预计算（比较器不再每次全量扫盘）；`publishDiagnostics` 通知参数校验（畸形通知不再崩溃进程）；stdin 通知 FIFO 背压链；已删文件诊断过滤 + `didClose` 清理 `openDocuments`；`ensureServer` 首循环按 rootMarkers 过滤；formatOnWrite 写回前 UTF-8 往返校验（GBK 文件不再被乱码重写）。
+  - 子代理：`{previous}` 替换改函数形式（`$$`/`$&` 不再被 String.replace 特殊解释）；parallel 任一失败 abort 兄弟任务 + 等全部 worker 收敛后才清 worktree；`runJsonProcess` 增加 `exit` 兜底（逃逸进程组的孙进程不再让工具调用永久挂起）；abort 监听器随 close/error 移除；gate evidence 输出 64KB 上限、`maxRepairAttempts` 硬上限 5；prompt 临时目录写失败即清理；`fallbackModels`/`tools` 非数组值拒绝（不再逐字符迭代）。
+  - web：SSE 读到首个事件即 `cancel()`（连接不再滞留）；redirect 跳转 body `cancel()`；`isPrivateHost` 按 inet_aton 语义补齐（尾点/单组件/多组件八进制十六进制 `0177.0.0.1`）；`capSearchOutput` 代理对安全截断（旧实现把 UTF-8 连续字节检测用在 UTF-16 码元上，切出半个 emoji）。
+  - vision：`withTimeoutSignal` cleanup 进 finally（此前每次调用泄漏 60s 计时器，非交互进程被拖住）。
+  - hooks：stdout/stderr 边读边截断（不再全量物化）；双引号内真实换行保持原样（POSIX sh 不解释 `\n`）。
+  - memory：`update()` 的实体链接/TF-IDF 重算纳入事务；`correction_of` 目标过所有权门禁；`_temporalDecay` 按 UTC 解析（`CURRENT_TIMESTAMP` 无时区后缀）；疑问句不再自动抽取为偏好/笔记；curated 去重大小写对齐（不再"添加成功但下次加载消失"）；holographic `nextId` 取 max+1。
+- **低**：input-history append 前修复 0644 权限；MCP 配置非字符串 args/env 告警；embedded-runtime 解包 try/catch 降级；`SubmitPlan` 确认对话框截断显示；`/language` 命令 try/catch；AGENTS.md 补齐 `PICO_RTK`/`PICO_VISION_*`/`PICO_CACHE_OPTIMIZER_*`/`PICO_SUBAGENT_DEPTH` 环境变量文档。
+- **未修（客观记录）**：Windows 路径假设（当前发布目标 linux-x64，属未支持平台）；`capSearchOutput`/`isPrivateHost` 的剩余变体依赖下游解析器行为。

@@ -90,7 +90,11 @@ function quoteContextAt(template: string, endOffset: number): QuoteContext {
 }
 
 function quoteForShellContext(value: string, context: QuoteContext): string {
-  if (context === "double") return value.replace(/(["\\$`])/g, "\\$1").replace(/\n/g, "\\n");
+  // Double-quoted values only need `"`, `\`, `$`, backtick escaped. Real
+  // newlines stay VERBATIM: POSIX sh does not interpret `\n` inside double
+  // quotes, so replacing them with backslash-n would corrupt multi-line
+  // $FILE values instead of quoting them.
+  if (context === "double") return value.replace(/(["\\$`])/g, "\\$1");
   if (context === "single") return value.replace(/'/g, "'\\''");
   if (value.length === 0) return "''";
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -103,11 +107,34 @@ function truncate(s: string): string {
 
 async function readAll(stream: ReadableStream<Uint8Array> | undefined | null): Promise<string> {
   if (!stream) return "";
+  // Read incrementally and stop at the cap — `new Response(stream).text()`
+  // would materialize the whole stream first, so a 120s `yes` run could
+  // still accumulate hundreds of MB before truncation.
+  const reader = stream.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let out = "";
   try {
-    return truncate(await new Response(stream).text());
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out += decoder.decode(value, { stream: true });
+      if (Buffer.byteLength(out, "utf8") >= TRUNCATE_BYTES) {
+        // Stop consuming and cancel the stream so the writer sees a broken
+        // pipe instead of buffering indefinitely.
+        await reader.cancel().catch(() => {});
+        break;
+      }
+    }
   } catch {
     return "";
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // already released/cancelled — fine
+    }
   }
+  return truncate(out + decoder.decode());
 }
 
 /**

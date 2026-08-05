@@ -195,7 +195,14 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         }
         const path = planFile ?? resolvePlanFile(ctx);
         const plan = await readPlanFile(path);
-        const summary = plan.trim().length === 0 ? "(plan file is empty)" : plan;
+        // A model-submitted plan can be arbitrarily large; the approval
+        // dialog must not render megabytes of text into the TUI.
+        const MAX_SUMMARY_CHARS = 4000;
+        const summary = plan.trim().length === 0
+          ? "(plan file is empty)"
+          : plan.length > MAX_SUMMARY_CHARS
+            ? `${plan.slice(0, MAX_SUMMARY_CHARS)}\n…[plan truncated for display — full text stays in ${path}]`
+            : plan;
 
         let approved = false;
         if (ctx.hasUI) {

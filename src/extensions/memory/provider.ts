@@ -179,8 +179,14 @@ export interface MemoryProvider {
   /** Initialize for a session. Called once at startup. */
   initialize(sessionId: string, context?: MemoryInitializeContext): void;
 
-  /** Clean shutdown — flush queues, close connections. */
-  shutdown(): void;
+  /**
+   * Clean shutdown — flush queues, close connections.
+   * `closeStore` is false when the provider must stay usable (the session
+   * is switching to another session in the same process, e.g. /resume /fork
+   * /new — a closed store/queue would kill memory for the rest of the
+   * process lifetime).
+   */
+  shutdown(closeStore?: boolean): void;
 
   // -- Data API ----------------------------------------------------------
 

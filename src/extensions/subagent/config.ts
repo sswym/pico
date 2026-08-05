@@ -71,6 +71,11 @@ export function applyOverrides(agents: AgentConfig[], config: SubagentConfig): A
 	const positiveNumber = (value: unknown): number | undefined =>
 		typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 
+	// A string in these fields would be iterated character-by-character in
+	// fallback.ts / joined into tool args — reject non-array values entirely.
+	const stringArray = (value: unknown): string[] | undefined =>
+		Array.isArray(value) && value.every((v) => typeof v === "string") ? value : undefined;
+
 	return agents.map((agent) => {
 		const specific = config.agents?.[agent.name];
 		const defaults = config.defaults;
@@ -83,8 +88,8 @@ export function applyOverrides(agents: AgentConfig[], config: SubagentConfig): A
 			maxTokens: positiveNumber(specific?.maxTokens ?? defaults?.maxTokens) ?? agent.maxTokens,
 			maxExecutionTimeMs:
 				positiveNumber(specific?.maxExecutionTimeMs ?? defaults?.maxExecutionTimeMs) ?? agent.maxExecutionTimeMs,
-			fallbackModels: specific?.fallbackModels ?? defaults?.fallbackModels ?? agent.fallbackModels,
-			tools: specific?.tools ?? agent.tools,
+			fallbackModels: stringArray(specific?.fallbackModels ?? defaults?.fallbackModels) ?? agent.fallbackModels,
+			tools: stringArray(specific?.tools) ?? agent.tools,
 		};
 	});
 }
