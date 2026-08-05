@@ -53,6 +53,12 @@ export function loadSubagentConfig(): SubagentConfig {
 export function applyOverrides(agents: AgentConfig[], config: SubagentConfig): AgentConfig[] {
 	if (!config.agents && !config.defaults) return agents;
 
+	// subagent.json is hand-edited; the frontmatter path validates numbers
+	// (toNumber, must be > 0) but overrides previously bypassed it — a typo'd
+	// "abc"/-1/0 would be passed straight into the child argv. Re-validate.
+	const positiveNumber = (value: unknown): number | undefined =>
+		typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+
 	return agents.map((agent) => {
 		const specific = config.agents?.[agent.name];
 		const defaults = config.defaults;
@@ -62,8 +68,9 @@ export function applyOverrides(agents: AgentConfig[], config: SubagentConfig): A
 			...agent,
 			model: specific?.model ?? defaults?.model ?? agent.model,
 			thinking: specific?.thinking ?? defaults?.thinking ?? agent.thinking,
-			maxTokens: specific?.maxTokens ?? defaults?.maxTokens ?? agent.maxTokens,
-			maxExecutionTimeMs: specific?.maxExecutionTimeMs ?? defaults?.maxExecutionTimeMs ?? agent.maxExecutionTimeMs,
+			maxTokens: positiveNumber(specific?.maxTokens ?? defaults?.maxTokens) ?? agent.maxTokens,
+			maxExecutionTimeMs:
+				positiveNumber(specific?.maxExecutionTimeMs ?? defaults?.maxExecutionTimeMs) ?? agent.maxExecutionTimeMs,
 			fallbackModels: specific?.fallbackModels ?? defaults?.fallbackModels ?? agent.fallbackModels,
 			tools: specific?.tools ?? agent.tools,
 		};

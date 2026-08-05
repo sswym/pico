@@ -15,7 +15,11 @@ const SECRET_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
   { name: "Stripe/OpenAI-style key", pattern: /\b(?:sk-|sk_live_|sk_test_|pk_live_|pk_test_)[A-Za-z0-9_-]{20,}/ },
   {
     name: "key=value secret",
-    pattern: /['"]?(?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|auth[_-]?token|private[_-]?key|client[_-]?secret)['"]?\s*[:=]\s*['"][^'"\s]{12,}['"]/i,
+    // Unquoted (`KEY = value`) and non-canonical spellings (`aws_secret_access_key`,
+    // `GITHUB_TOKEN`) must not bypass the scan. Values require 8+ chars so
+    // placeholder text like `api_key = xxx` is not refused.
+    pattern:
+      /['"]?(?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|auth[_-]?token|private[_-]?key|client[_-]?secret|github[_-]?token|token)['"]?\s*[:=]\s*(?:['"][^'"\s]{8,}['"]|\S{8,})/i,
   },
   // Slack tokens
   { name: "Slack token", pattern: /xox[baprs]-[A-Za-z0-9-]{10,}/ },

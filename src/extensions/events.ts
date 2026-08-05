@@ -16,6 +16,11 @@ export interface ExtensionEvents {
 type Handler<K extends keyof ExtensionEvents> = (event: ExtensionEvents[K]) => void;
 
 const handlers: Partial<Record<keyof ExtensionEvents, Set<(event: unknown) => void>>> = {};
+/** Handlers registered as session-scoped; dropped when the session teardown
+ *  is a reload (the only path where the upstream resource loader re-runs the
+ *  extension factories, which would otherwise stack duplicate subscriptions
+ *  onto the module-level sets forever). */
+const sessionScopedHandlers = new Set<(event: unknown) => void>();
 
 export function subscribeExtensionEvent<K extends keyof ExtensionEvents>(
   eventName: K,
@@ -26,6 +31,37 @@ export function subscribeExtensionEvent<K extends keyof ExtensionEvents>(
   return () => {
     set.delete(handler as (event: unknown) => void);
   };
+}
+
+/**
+ * Like subscribeExtensionEvent, but the subscription is dropped on the next
+ * `/reload` teardown via clearSessionExtensionSubscriptions().
+ */
+export function subscribeSessionExtensionEvent<K extends keyof ExtensionEvents>(
+  eventName: K,
+  handler: Handler<K>,
+): () => void {
+  const unsubscribe = subscribeExtensionEvent(eventName, handler);
+  sessionScopedHandlers.add(handler as (event: unknown) => void);
+  return () => {
+    unsubscribe();
+    sessionScopedHandlers.delete(handler as (event: unknown) => void);
+  };
+}
+
+/**
+ * Drop every session-scoped subscription. Extension factories re-run on
+ * `/reload` (resource-loader.reload() → clearExtensionCache() → loadExtensions
+ * → factory(api)); without this, each reload doubles the subscriber set and
+ * stale closures (dead session ctx, duplicate memory writes) pile up.
+ */
+export function clearSessionExtensionSubscriptions(): void {
+  for (const handler of sessionScopedHandlers) {
+    for (const set of Object.values(handlers)) {
+      set?.delete(handler);
+    }
+  }
+  sessionScopedHandlers.clear();
 }
 
 export function publishExtensionEvent<K extends keyof ExtensionEvents>(

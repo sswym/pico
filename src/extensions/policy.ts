@@ -86,21 +86,31 @@ export function envFlag(name: string): boolean | undefined {
   return undefined;
 }
 
+const warnedSafetyTypes = new Set<string>();
+
+function readSafetyValue(raw: Record<string, unknown>, key: string): boolean | undefined {
+  const value = raw[key];
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string" && !warnedSafetyTypes.has(key)) {
+    warnedSafetyTypes.add(key);
+    console.warn(
+      `[pico] settings.json safety.${key} is a string ("${value}"); expected a boolean — treated as disabled`,
+    );
+  }
+  return undefined;
+}
+
 export function readSafetySettings(): SafetySettings {
   const raw = readSettingsObject("safety");
   const settings: SafetySettings = {};
-  if (typeof raw.enableProjectHooks === "boolean") {
-    settings.enableProjectHooks = raw.enableProjectHooks;
-  }
-  if (typeof raw.enableProjectMcp === "boolean") {
-    settings.enableProjectMcp = raw.enableProjectMcp;
-  }
-  if (typeof raw.allowUnattendedPlanApproval === "boolean") {
-    settings.allowUnattendedPlanApproval = raw.allowUnattendedPlanApproval;
-  }
-  if (typeof raw.allowLspFormatOnWrite === "boolean") {
-    settings.allowLspFormatOnWrite = raw.allowLspFormatOnWrite;
-  }
+  const enableProjectHooks = readSafetyValue(raw, "enableProjectHooks");
+  if (enableProjectHooks !== undefined) settings.enableProjectHooks = enableProjectHooks;
+  const enableProjectMcp = readSafetyValue(raw, "enableProjectMcp");
+  if (enableProjectMcp !== undefined) settings.enableProjectMcp = enableProjectMcp;
+  const allowUnattendedPlanApproval = readSafetyValue(raw, "allowUnattendedPlanApproval");
+  if (allowUnattendedPlanApproval !== undefined) settings.allowUnattendedPlanApproval = allowUnattendedPlanApproval;
+  const allowLspFormatOnWrite = readSafetyValue(raw, "allowLspFormatOnWrite");
+  if (allowLspFormatOnWrite !== undefined) settings.allowLspFormatOnWrite = allowLspFormatOnWrite;
   return settings;
 }
 

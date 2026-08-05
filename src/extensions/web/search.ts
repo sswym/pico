@@ -95,11 +95,10 @@ const EXA_FETCH_UA = "pico/0.2";
 
 async function exaSearch(query: string, max: number, opts: SearchOptions): Promise<SearchResult[]> {
   const fetcher = opts.fetcher ?? globalThis.fetch;
-  const timeout = withTimeoutSignal(opts.signal, SEARCH_TIMEOUT_MS);
-  let response: Response;
+  const timeout = withTimeoutSignal(opts.signal, SEARCH_TIMEOUT_MS, "webSearch");
   let raw: string;
   try {
-    response = await fetcher(EXA_MCP_URL, {
+    const response = await fetcher(EXA_MCP_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -120,8 +119,11 @@ async function exaSearch(query: string, max: number, opts: SearchOptions): Promi
     if (!response.ok) {
       throw new Error(`Exa search failed: ${response.status} ${response.statusText}`);
     }
-    // Body download stays inside the timeout scope.
-    raw = await response.text();
+    // Read incrementally: SSE keep-alive connections may never close, so
+    // waiting for EOF (`response.text()`) would time out even after the
+    // result event already arrived. Body download stays inside the timeout
+    // scope either way.
+    raw = await readBodyUntilParsed(response, timeout.signal);
   } finally {
     timeout.cleanup();
   }
@@ -145,6 +147,34 @@ async function exaSearch(query: string, max: number, opts: SearchOptions): Promi
   return parseExaTextResults(text);
 }
 
+/**
+ * Read the response body until the first parseable Exa payload is complete.
+ * Plain JSON resolves at EOF; SSE resolves as soon as a `data:` event parses,
+ * even if the connection stays open with heartbeats.
+ */
+async function readBodyUntilParsed(response: Response, signal: AbortSignal): Promise<string> {
+  if (!response.body) return await response.text();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let accumulated = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      accumulated += decoder.decode(value, { stream: true });
+      try {
+        parseExaResponse(accumulated);
+        return accumulated;
+      } catch {
+        // Not complete yet — keep reading.
+      }
+    }
+    return accumulated;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function isExaToolResult(value: unknown): value is ExaToolResult {
   if (typeof value !== "object" || value === null || !("content" in value)) return false;
   const content = (value as { content: unknown }).content;
@@ -153,22 +183,42 @@ function isExaToolResult(value: unknown): value is ExaToolResult {
 
 /**
  * Parse an Exa MCP response, handling both plain JSON and SSE-wrapped formats.
+ *
+ * SSE: `data:` lines (with or without a space), multi-line data events joined
+ * with "\n", events terminated by a blank line. Comment/heartbeat lines are
+ * ignored. A parseable data event anywhere in the stream wins.
  */
 export function parseExaResponse(raw: string): { result?: unknown; error?: { code?: number; message?: string } } {
   // Try plain JSON first.
   try {
     return JSON.parse(raw) as { result?: unknown; error?: { code?: number; message?: string } };
   } catch {
-    // SSE format — look for `data: <json>` lines.
-    for (const line of raw.split("\n")) {
-      if (line.startsWith("data: ")) {
-        try {
-          return JSON.parse(line.slice(6)) as { result?: unknown; error?: { code?: number; message?: string } };
-        } catch {
-          // Keep trying other data: lines.
-        }
+    // SSE format — collect data lines (with multi-line continuation) per event.
+    let dataLines: string[] = [];
+    const flush = (): { result?: unknown; error?: { code?: number; message?: string } } | undefined => {
+      if (dataLines.length === 0) return undefined;
+      const json = dataLines.join("\n");
+      dataLines = [];
+      try {
+        return JSON.parse(json) as { result?: unknown; error?: { code?: number; message?: string } };
+      } catch {
+        return undefined;
       }
+    };
+    for (const line of raw.split("\n")) {
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).replace(/^ /, ""));
+        continue;
+      }
+      if (line.trim() === "") {
+        const parsed = flush();
+        if (parsed) return parsed;
+        continue;
+      }
+      // Comment / heartbeat / other event fields — ignored.
     }
+    const parsed = flush();
+    if (parsed) return parsed;
     throw new Error("Exa response is neither plain JSON nor SSE format");
   }
 }
@@ -255,18 +305,43 @@ async function hybridSearch(
       .join("; ");
     throw new Error(`Hybrid search failed: ${messages}`);
   }
+  // A single-source failure must not vanish silently — the user sees a
+  // half-coverage result with no hint that a provider is down.
+  if (exaResult.status === "rejected") {
+    const reason = exaResult.reason instanceof Error ? exaResult.reason.message : String(exaResult.reason);
+    console.warn(`[pico web] Exa unavailable, using Tavily only: ${reason}`);
+  } else if (tavilyResult.status === "rejected") {
+    const reason = tavilyResult.reason instanceof Error ? tavilyResult.reason.message : String(tavilyResult.reason);
+    console.warn(`[pico web] Tavily unavailable, using Exa only: ${reason}`);
+  }
 
-  // Merge with URL dedup, preserving interleaved ordering.
+  // Merge with URL dedup, preserving interleaved ordering. The two providers
+  // spell the same page differently (trailing slash, fragment, default port,
+  // case) — normalize before comparing so duplicates are actually caught.
   const seen = new Set<string>();
   const merged: SearchResult[] = [];
   for (const r of [...exaResults, ...tavilyResults]) {
-    const key = r.url.toLowerCase();
+    const key = normalizeUrlForDedup(r.url);
     if (!seen.has(key)) {
       seen.add(key);
       merged.push(r);
     }
   }
   return merged;
+}
+
+/** Lowercase host, drop fragment/default port/trailing slash — a stable page key. */
+function normalizeUrlForDedup(url: string): string {
+  try {
+    const u = new URL(url);
+    u.hash = "";
+    const defaultPort = (u.protocol === "https:" && u.port === "443") || (u.protocol === "http:" && u.port === "80");
+    if (defaultPort) u.port = "";
+    u.pathname = u.pathname.replace(/\/+$/, "") || "/";
+    return u.toString().replace(/\/$/, "");
+  } catch {
+    return url.toLowerCase();
+  }
 }
 
 // ─── Tavily fallback ────────────────────────────────────────────────────────
@@ -284,7 +359,7 @@ async function tavilySearch(
   opts: SearchOptions,
 ): Promise<SearchResult[]> {
   const fetcher = opts.fetcher ?? globalThis.fetch;
-  const timeout = withTimeoutSignal(opts.signal, SEARCH_TIMEOUT_MS);
+  const timeout = withTimeoutSignal(opts.signal, SEARCH_TIMEOUT_MS, "webSearch");
   let data: { results?: TavilyAPIResult[] };
   try {
     const response = await fetcher("https://api.tavily.com/search", {

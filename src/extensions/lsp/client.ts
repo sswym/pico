@@ -562,7 +562,12 @@ export class LspClient {
     ]);
 
     let response: Record<string, unknown>;
-    if (KNOWN_METHODS.has(req.method)) {
+    if (req.method === "workspace/applyEdit") {
+      // We never apply server-initiated edits — but answering null (instead
+      // of the spec-mandated { applied: boolean }) would make the server
+      // believe the edit landed and silently diverge from disk state.
+      response = { jsonrpc: "2.0", id: req.id, result: { applied: false } };
+    } else if (KNOWN_METHODS.has(req.method)) {
       response = { jsonrpc: "2.0", id: req.id, result: null };
     } else {
       response = {
@@ -603,11 +608,21 @@ export class LspClient {
 
 export function pathToUri(filePath: string): string {
   const abs = filePath.startsWith("/") ? filePath : `/${filePath}`;
-  return `file://${abs}`;
+  // Encode spaces/#/non-ASCII — a raw file:// URL is invalid for strict
+  // servers (rust-analyzer/gopls) and round-trips through uriToPath broken.
+  return `file://${encodeURI(abs)}`;
 }
 
 export function uriToPath(uri: string): string {
-  if (uri.startsWith("file://")) return uri.slice(7);
+  if (uri.startsWith("file://")) {
+    const path = uri.slice(7);
+    try {
+      return decodeURI(path);
+    } catch {
+      // Malformed percent-encoding — return as-is rather than corrupting it.
+      return path;
+    }
+  }
   return uri;
 }
 

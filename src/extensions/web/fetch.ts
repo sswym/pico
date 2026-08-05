@@ -220,7 +220,27 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
     if (hit) return hit;
     // Coalesce concurrent misses for the same URL into one network request.
     const pending = inflight.get(upgraded);
-    if (pending) return pending;
+    if (pending) {
+      // The waiter's own cancellation must still land: an aborted waiter must
+      // not keep waiting on (and getting) the shared response.
+      if (opts.signal?.aborted) {
+        return Promise.reject(opts.signal.reason ?? new Error("aborted"));
+      }
+      return new Promise<FetchedPage>((resolve, reject) => {
+        const onAbort = () => reject(opts.signal?.reason ?? new Error("aborted"));
+        opts.signal?.addEventListener("abort", onAbort, { once: true });
+        pending.then(
+          (page) => {
+            opts.signal?.removeEventListener("abort", onAbort);
+            resolve(page);
+          },
+          (err: unknown) => {
+            opts.signal?.removeEventListener("abort", onAbort);
+            reject(err);
+          },
+        );
+      });
+    }
   }
 
   const run = (async (): Promise<FetchedPage> => {
@@ -229,6 +249,7 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
     let response!: Response;
     let finalUrl = upgraded;
     let body = "";
+    let contentType = "";
     try {
       // Follow redirects manually so every hop is re-validated against the
       // private-network guard. `redirect: "follow"` would let a public URL
@@ -245,23 +266,30 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
         finalUrl = currentUrl;
         if (response.status < 300 || response.status >= 400) break;
         const location = response.headers.get("location");
-        if (!location) break;
+        if (!location) {
+          // A 3xx without Location (or a bogus 304) must not be treated as a
+          // successful page and cached for 15 minutes.
+          throw new Error(`Redirect (${response.status}) without Location header`);
+        }
         if (hop >= MAX_REDIRECTS) throw new Error("Too many redirects");
         // Resolve relative Location against the current URL, then re-validate.
         currentUrl = normalizeUrl(new URL(location, currentUrl).toString(), opts);
       }
       // Body download stays inside the timeout/abort scope: a stalled body must
       // not hang the tool after the headers arrived.
-      body = await readResponseText(response, FETCH_MAX_RESPONSE_BYTES);
+      contentType = response.headers.get("content-type") ?? "";
+      body = await readResponseText(response, FETCH_MAX_RESPONSE_BYTES, contentType);
     } finally {
       timeout.cleanup();
     }
 
-    const contentType = response.headers.get("content-type") ?? "";
-
     let markdown: string;
     if (contentType.includes("text/html") || /<html[\s>]/i.test(body.slice(0, 256))) {
       markdown = htmlToMarkdown(body);
+    } else if (isBinaryContentType(contentType)) {
+      // Images / pdfs / archives are not page content — dump a short notice
+      // instead of binary garbage that the model would read as text.
+      markdown = `[Binary content (${contentType.split(";")[0]?.trim() || "unknown content-type"}), skipped]`;
     } else {
       markdown = body;
     }
@@ -276,9 +304,9 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
       markdown: out,
       truncated,
     };
-    // Error pages are not cached as successful content — a cached 404/500 would
-    // be re-served to later fetches for 15 minutes.
-    if (response.status < 400) {
+    // Only 2xx responses are cached as successful content — a cached 3xx/4xx
+    // would be re-served to later fetches for 15 minutes.
+    if (response.status >= 200 && response.status < 300) {
       cache.set(upgraded, page);
     }
     return page;
@@ -365,8 +393,16 @@ function parseNumericIpv4(host: string): string | null {
   return `${(n >>> 24) & 0xff}.${(n >>> 16) & 0xff}.${(n >>> 8) & 0xff}.${n & 0xff}`;
 }
 
-export function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; cleanup: () => void } {  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error(`webFetch timed out after ${timeoutMs}ms`)), timeoutMs);
+export function withTimeoutSignal(
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  caller = "webFetch",
+): { signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error(`${caller} timed out after ${timeoutMs}ms`)),
+    timeoutMs,
+  );
   const abort = () => controller.abort(signal?.reason);
   if (signal?.aborted) abort();
   else signal?.addEventListener("abort", abort, { once: true });
@@ -379,7 +415,37 @@ export function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: nu
   };
 }
 
-async function readResponseText(response: Response, maxBytes: number): Promise<string> {
+const SUPPORTED_DECODERS = new Set(["utf-8", "gbk", "gb2312", "shift_jis", "big5", "euc-jp", "iso-8859-1"]);
+
+function decoderForContentType(contentType: string): TextDecoder {
+  const charsetMatch = /charset\s*=\s*"?([^";\s]+)"?/i.exec(contentType);
+  const label = charsetMatch?.[1]?.toLowerCase();
+  if (label && SUPPORTED_DECODERS.has(label)) {
+    try {
+      // Bun's runtime implements the full Encoding Standard (gbk/shift_jis/…)
+      // even though its TextDecoder constructor type only lists utf-8.
+      const decoderCtor = TextDecoder as unknown as new (l?: string, o?: { fatal?: boolean; ignoreBOM?: boolean }) => TextDecoder;
+      return new decoderCtor(label);
+    } catch {
+      // Unsupported label — fall through to utf-8.
+    }
+  }
+  return new TextDecoder("utf-8");
+}
+
+/** Non-text payloads (images, pdfs, archives) must not be dumped as markdown. */
+function isBinaryContentType(contentType: string): boolean {
+  const t = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (t === "") return false;
+  if (t.startsWith("text/")) return false;
+  if (t.includes("json") || t.includes("xml") || t.includes("javascript") || t.includes("x-www-form-urlencoded")) {
+    return false;
+  }
+  return true;
+}
+
+async function readResponseText(response: Response, maxBytes: number, contentType?: string): Promise<string> {
+  const decoder = decoderForContentType(contentType ?? "");
   if (!response.body) return await response.text();
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -406,7 +472,7 @@ async function readResponseText(response: Response, maxBytes: number): Promise<s
     out.set(chunk, offset);
     offset += chunk.length;
   }
-  return new TextDecoder("utf-8").decode(out);
+  return decoder.decode(out);
 }
 
 export function formatFetchResult(page: FetchedPage, prompt: string | undefined): string {

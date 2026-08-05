@@ -19,12 +19,16 @@
  */
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const picoHome = process.env.PICO_HOME && process.env.PICO_HOME.length > 0
-  ? process.env.PICO_HOME
-  : join(homedir(), ".pico");
+// Normalize exactly like paths.ts's picoHome(): expand a leading ~ and
+// resolve relative overrides against the cwd, so PI_CODING_AGENT_DIR here and
+// picoHome()/picoAgentHome() downstream agree on the same absolute root.
+const picoHomeOverride = process.env.PICO_HOME && process.env.PICO_HOME.length > 0
+  ? process.env.PICO_HOME.replace(/^~(?=\/|$)/, homedir())
+  : null;
+const picoHome = picoHomeOverride ? resolve(picoHomeOverride) : join(homedir(), ".pico");
 const agentDir = join(picoHome, "agent");
 const sessionDir = join(agentDir, "sessions");
 

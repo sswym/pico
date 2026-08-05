@@ -64,3 +64,7 @@ export function picoMcpConfigPath(): string {
 export function picoLspConfigPath(): string {
   return join(picoHome(), "lsp.json");
 }
+
+export function picoHooksConfigPath(): string {
+  return join(picoHome(), "hooks.json");
+}

@@ -709,3 +709,94 @@ test("fetchAndConvert refuses a redirect into a private network address", async 
   // Stopped at the redirect boundary — never fetched the private target.
   expect(calls).toBe(1);
 });
+
+// ---- Fourth-round regression tests: charset / binary / 3xx / single-flight / SSE / dedup ----
+
+test("fetchAndConvert decodes non-UTF-8 charsets from Content-Type", async () => {
+  // "中文标题" in GBK (D6D0 CEC4 B1EA CCE2).
+  const gbkBytes = new Uint8Array([0xd6, 0xd0, 0xce, 0xc4, 0xb1, 0xea, 0xcc, 0xe2]);
+  globalThis.fetch = (async () => new Response(gbkBytes, {
+    status: 200,
+    headers: { "content-type": "text/html; charset=gbk" },
+  })) as unknown as typeof fetch;
+  const page = await fetchAndConvert("https://example.test/gbk", { bypassCache: true });
+  expect(page.markdown).toContain("中文标题");
+});
+
+test("fetchAndConvert marks binary content types instead of dumping bytes", async () => {
+  globalThis.fetch = (async () => new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]), {
+    status: 200,
+    headers: { "content-type": "image/png" },
+  })) as unknown as typeof fetch;
+  const page = await fetchAndConvert("https://example.test/img.png", { bypassCache: true });
+  expect(page.markdown).toContain("Binary content (image/png)");
+});
+
+test("fetchAndConvert rejects 3xx without Location and never caches it", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    return new Response(null, { status: 302, headers: {} });
+  }) as unknown as typeof fetch;
+  await expect(
+    fetchAndConvert("https://example.test/redir", { bypassCache: true }),
+  ).rejects.toThrow(/Redirect \(302\) without Location/);
+  // Second call must hit the network again (nothing cached).
+  await expect(
+    fetchAndConvert("https://example.test/redir", { bypassCache: true }),
+  ).rejects.toThrow(/without Location/);
+  expect(calls).toBe(2);
+});
+
+test("single-flight waiters observe their own abort signal", async () => {
+  let release!: (r: Response) => void;
+  const gate = new Promise<Response>((resolve) => { release = resolve; });
+  const fetcher = (async () => gate) as unknown as typeof fetch;
+
+  const first = fetchAndConvert("https://example.test/shared-abort", { fetcher });
+  const controller = new AbortController();
+  const second = fetchAndConvert("https://example.test/shared-abort", {
+    fetcher,
+    signal: controller.signal,
+  });
+  controller.abort(new Error("waiter cancelled"));
+  await expect(second).rejects.toThrow(/waiter cancelled/);
+
+  release(new Response("<p>late</p>", { status: 200, headers: { "content-type": "text/html" } }));
+  await first;
+});
+
+test("parseExaResponse accepts data: without space and multi-line data events", () => {
+  const noSpace = "event: message\ndata:{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}}\n\n";
+  const parsed = parseExaResponse(noSpace);
+  expect(parsed.result).toBeDefined();
+
+  const multiLine = "data: {\"result\":{\"content\":[{\"type\":\"text\",\ndata: \"text\":\"y\"}]}}\n\n";
+  const parsed2 = parseExaResponse(multiLine);
+  expect(parsed2.result).toBeDefined();
+});
+
+test("exaSearch returns as soon as the SSE data event parses (keep-alive safe)", async () => {
+  // A stream that never closes: the first chunk carries the full result event,
+  // later chunks are heartbeats. EOF-based reading would hang; incremental
+  // reading returns immediately.
+  const chunks = [
+    "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Title: T\\nURL: https://example.com/a\\n\"}]}}\n\n",
+    ": heartbeat\n",
+  ];
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const c of chunks) controller.enqueue(new TextEncoder().encode(c));
+      // Note: no close() — the connection stays open.
+    },
+  });
+  globalThis.fetch = (async () => new Response(stream, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  })) as unknown as typeof fetch;
+
+  const { webSearch } = await import("../src/extensions/web/search.ts");
+  const results = await webSearch({ query: "hello" }, { maxResults: 3 } as never);
+  expect(results.length).toBeGreaterThan(0);
+  expect(results[0]!.url).toBe("https://example.com/a");
+});

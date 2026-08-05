@@ -24,7 +24,7 @@ import {
   isLspReadonlyInput,
   isLspWriteOrHighRiskInput,
 } from "../src/extensions/lsp/executor.ts";
-import { isLspReadonlyToolCall, isLspWriteOrHighRiskToolCall, lspExtension, resolveSessionFilePath } from "../src/extensions/lsp/index.ts";
+import { isLspReadonlyToolCall, isLspWriteOrHighRiskToolCall, lspExtension, resolveSessionFilePath, waitForFreshDiagnostics } from "../src/extensions/lsp/index.ts";
 import {
   __checkInitBackoffForTests,
   __getUnsupportedServerCommandReasonForTests,
@@ -633,6 +633,36 @@ process.stdin.on("data", (chunk) => { buf = Buffer.concat([buf, Buffer.isBuffer(
 `;
 
 describe("LSP writethrough diagnostics freshness", () => {
+  test("waitForFreshDiagnostics does not stall on a fast empty publish", async () => {
+    // A server that answers quickly with [] has already responded — entering
+    // the 5s deferred window would stall every clean write ~5.5s.
+    let calls = 0;
+    const client = {
+      waitForDiagnostics: async (_uri: string, _ms: number) => {
+        calls++;
+        return [] as unknown[];
+      },
+    };
+    const result = await waitForFreshDiagnostics(client as never, "file:///x");
+    expect(result).toEqual([]);
+    expect(calls).toBe(1);
+  });
+
+  test("waitForFreshDiagnostics falls back to the deferred window only on timeout", async () => {
+    const calls: number[] = [];
+    const client = {
+      waitForDiagnostics: async (_uri: string, ms: number, signal?: AbortSignal) => {
+        calls.push(ms);
+        if (calls.length === 1) return null; // inline window elapsed, no publish
+        signal?.addEventListener("abort", () => {});
+        return [{ message: "late error" }];
+      },
+    };
+    const result = await waitForFreshDiagnostics(client as never, "file:///x");
+    expect(calls).toEqual([500, 5000]);
+    expect((result as Array<{ message: string }>)[0]!.message).toBe("late error");
+  });
+
   test("waitForDiagnostics returns post-didSave publishes, never the stale cache", async () => {
     const client = new LspClient(
       { command: process.execPath, args: ["-e", FAKE_LSP_SERVER], fileTypes: [".ts"] } as any,
@@ -730,4 +760,47 @@ test("formatInstallHint fallback points at lsp.json for unknown commands", () =>
 test("formatInstallHint keeps registry install commands for known servers", () => {
   const hint = formatInstallHint("pyright");
   expect(hint).toContain("npm install -g pyright");
+});
+
+// ---- Fourth-round regression tests: URI encoding / applyEdit contract ----
+
+test("pathToUri/uriToPath round-trip spaces and non-ASCII paths", () => {
+  const { pathToUri, uriToPath } = require("../src/extensions/lsp/client.ts") as typeof import("../src/extensions/lsp/client.ts");
+  const p = "/repo/我的 项目/a file.ts";
+  const uri = pathToUri(p);
+  expect(uri).toBe(`file://${encodeURI(p)}`);
+  expect(uriToPath(uri)).toBe(p);
+  // Server-style percent-encoded URIs decode to real paths.
+  expect(uriToPath("file:///repo/a%20b.ts")).toBe("/repo/a b.ts");
+  // Malformed encodings are returned as-is, not corrupted.
+  expect(uriToPath("file:///repo/%zz.ts")).toBe("/repo/%zz.ts");
+});
+
+test("workspace/applyEdit server requests are answered with applied:false", () => {
+  const { LspClient } = require("../src/extensions/lsp/client.ts") as typeof import("../src/extensions/lsp/client.ts");
+  const client = new LspClient({ command: "unused", args: [], fileTypes: [".ts"] } as never, "apply-test");
+  const writes: string[] = [];
+  // No real process is spawned — drive the request handler directly with a
+  // fake stdin so the response contract is asserted deterministically.
+  const anyClient = client as unknown as {
+    process: { stdin: { write: (s: string) => number } } | null;
+    handleRequest: (req: { id: unknown; method: string; params?: unknown }) => void;
+  };
+  anyClient.process = {
+    stdin: {
+      write: (s: string) => {
+        writes.push(s);
+        return s.length;
+      },
+    },
+  };
+
+  anyClient.handleRequest({ id: 7, method: "workspace/applyEdit", params: { edit: { changes: {} } } });
+  expect(writes.join("")).toContain('"applied":false');
+
+  anyClient.handleRequest({ id: 8, method: "client/registerCapability" });
+  expect(writes.join("")).toContain('"result":null');
+
+  anyClient.handleRequest({ id: 9, method: "bogus/method" });
+  expect(writes.join("")).toContain("Method not found");
 });

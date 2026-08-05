@@ -20,6 +20,10 @@ interface LspManagerRuntime {
   idleTimeoutMs: number | null;
   idleCheckInterval: ReturnType<typeof setInterval> | null;
   initFailures: Map<string, { at: number; message: string }>;
+  /** In-flight shutdowns (idle reaper) keyed by server name — a new ensure
+   *  must wait for the old process to die before spawning a replacement,
+   *  otherwise two servers race on the same name/ports. */
+  shuttingDown: Map<string, Promise<void>>;
 }
 
 export function setIdleTimeout(state: LspManagerState, ms: number | null | undefined): void {
@@ -39,8 +43,13 @@ function startIdleChecker(state: LspManagerState): void {
     const now = Date.now();
     for (const [name, managed] of state.servers) {
       if (managed.client.ready && now - managed.lastActivity > idleTimeoutMs) {
-        managed.client.shutdown().catch(() => {});
         state.servers.delete(name);
+        const shuttingDown = managed.client.shutdown()
+          .catch(() => {})
+          .finally(() => {
+            state.runtime.shuttingDown.delete(name);
+          });
+        state.runtime.shuttingDown.set(name, shuttingDown);
       }
     }
   }, IDLE_CHECK_INTERVAL_MS);
@@ -72,23 +81,43 @@ function recordInitFailure(state: LspManagerState, serverName: string, message: 
   state.runtime.initFailures.set(serverName, { at: Date.now(), message });
 }
 
+/** Probe results cached per (command, cwd): warmup runs it on every session. */
+const unsupportedProbeCache = new Map<string, string | null>();
+
+/** Invalidate cached probe results after a successful install. */
+export function resetUnsupportedProbeCache(): void {
+  unsupportedProbeCache.clear();
+}
+
 function getUnsupportedServerCommandReason(serverName: string, command: string, cwd: string): string | null {
   if (serverName !== "typescript-native") return null;
+
+  const key = `${command}\0${cwd}`;
+  const cached = unsupportedProbeCache.get(key);
+  if (cached !== undefined) return cached;
 
   const probe = spawnSync(command, ["--help", "--all"], {
     cwd,
     encoding: "utf8",
     timeout: 2_000,
   });
+  let reason: string | null;
   if (probe.error) {
     const errno = probe.error as NodeJS.ErrnoException;
-    if (errno.code === "ENOENT") return null;
-    return `Command "${command}" probe failed: ${probe.error.message}`;
+    if (errno.code === "ENOENT") {
+      // Command missing — not a probe verdict; the caller reports
+      // COMMAND_NOT_FOUND and may install it, so don't cache this outcome.
+      return null;
+    }
+    reason = `Command "${command}" probe failed: ${probe.error.message}`;
+  } else {
+    const output = `${probe.stdout ?? ""}\n${probe.stderr ?? ""}`;
+    reason = output.includes("--lsp")
+      ? null
+      : `Command "${command}" does not advertise TypeScript native LSP support (--lsp).`;
   }
-
-  const output = `${probe.stdout ?? ""}\n${probe.stderr ?? ""}`;
-  if (output.includes("--lsp")) return null;
-  return `Command "${command}" does not advertise TypeScript native LSP support (--lsp).`;
+  unsupportedProbeCache.set(key, reason);
+  return reason;
 }
 
 // ── Type guards for Hover contents ────────────────────────────────────────
@@ -279,6 +308,7 @@ export function createLspManager(): LspManagerState {
       idleTimeoutMs: null,
       idleCheckInterval: null,
       initFailures: new Map(),
+      shuttingDown: new Map(),
     },
   };
 }
@@ -294,6 +324,13 @@ export async function ensureServer(
   state: LspManagerState,
   workspaceRoot: string,
 ): Promise<LspClient | null> {
+  // Wait for any idle-reaped server still shutting down before starting a
+  // replacement — two processes for one server name would race on ports and
+  // both publish diagnostics.
+  const pendingShutdowns = [...state.runtime.shuttingDown.values()];
+  if (pendingShutdowns.length > 0) {
+    await Promise.allSettled(pendingShutdowns);
+  }
   // Ensure config is loaded
   if (!state.config) {
     state.config = loadConfig(workspaceRoot);

@@ -111,13 +111,25 @@ export interface QueuedOp {
 export class WriteQueue {
   private queue: QueuedOp[] = [];
   private draining = false;
+  private closed = false;
+
   /** Enqueue a background operation. Starts draining on the next microtask. */
   push(description: string, run: () => void): void {
+    // Ops enqueued after the queue was flushed at session end would sit
+    // forever — surface them instead of silently dropping the work.
+    if (this.closed) {
+      throw new Error(`WriteQueue is closed; refusing to enqueue "${description}"`);
+    }
     this.queue.push({ description, run });
     if (!this.draining) {
       this.draining = true;
       queueMicrotask(() => this.drain());
     }
+  }
+
+  /** Permanently close the queue; later pushes throw. */
+  close(): void {
+    this.closed = true;
   }
 
 

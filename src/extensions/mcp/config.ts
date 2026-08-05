@@ -15,6 +15,54 @@ import type { McpConfig, McpServerConfig } from "./types.ts";
 import { picoMcpConfigPath } from "../paths.ts";
 import { allowProjectMcp } from "../policy.ts";
 
+const warnedInvalidServers = new Set<string>();
+
+function warnOnce(key: string, message: string): void {
+  if (warnedInvalidServers.has(key)) return;
+  warnedInvalidServers.add(key);
+  console.warn(`[pico mcp] ${message}`);
+}
+
+export function __resetMcpConfigWarningsForTests(): void {
+  warnedInvalidServers.clear();
+}
+
+/**
+ * Validate a single server entry; a malformed entry must not silently vanish
+ * (it would look like "no servers configured" and poison the whole file).
+ */
+function validateServer(key: string, server: unknown): McpServerConfig | null {
+  if (!server || typeof server !== "object") {
+    warnOnce(key, `server "${key}" is not an object; skipped`);
+    return null;
+  }
+  const s = server as Record<string, unknown>;
+  if (typeof s.command !== "string" || s.command.trim() === "") {
+    warnOnce(key, `server "${key}" has no valid "command" (must be a non-empty string); skipped`);
+    return null;
+  }
+  if (s.args !== undefined && !Array.isArray(s.args)) {
+    warnOnce(key, `server "${key}" has invalid "args" (must be an array); skipped`);
+    return null;
+  }
+  if (s.env !== undefined && (typeof s.env !== "object" || s.env === null || Array.isArray(s.env))) {
+    warnOnce(key, `server "${key}" has invalid "env" (must be an object); skipped`);
+    return null;
+  }
+  const out: McpServerConfig = { command: s.command };
+  if (Array.isArray(s.args)) {
+    out.args = (s.args as unknown[]).filter((a): a is string => typeof a === "string");
+  }
+  if (s.env && typeof s.env === "object" && !Array.isArray(s.env)) {
+    out.env = Object.fromEntries(
+      Object.entries(s.env as Record<string, unknown>).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    );
+  }
+  return out;
+}
+
 /**
  * Load the MCP server configuration by merging home and project configs.
  * Project config values override home config values for the same server key
@@ -22,24 +70,31 @@ import { allowProjectMcp } from "../policy.ts";
  * Returns an empty record when no config is found.
  */
 export function loadMcpConfig(cwd: string): Record<string, McpServerConfig> {
-  const merger = (path: string): Record<string, McpServerConfig> => {
+  const merger = (path: string, sourceName: string): Record<string, McpServerConfig> => {
     try {
       if (!existsSync(path)) return {};
       const raw = readFileSync(path, "utf-8");
       const parsed: McpConfig = JSON.parse(raw);
-      if (parsed && typeof parsed === "object" && parsed.mcpServers) {
-        return parsed.mcpServers;
+      if (!parsed || typeof parsed !== "object" || !parsed.mcpServers) {
+        warnOnce(sourceName, `${sourceName} is missing "mcpServers"; ignored`);
+        return {};
       }
-      return {};
+      const out: Record<string, McpServerConfig> = {};
+      for (const [key, server] of Object.entries(parsed.mcpServers)) {
+        const validated = validateServer(key, server);
+        if (validated) out[key] = validated;
+      }
+      return out;
     } catch (e) {
-      void e;
+      const msg = e instanceof Error ? e.message : String(e);
+      warnOnce(sourceName, `${sourceName} could not be parsed (${msg}); ignored`);
       return {};
     }
   };
 
-  const homeServers = merger(picoMcpConfigPath());
+  const homeServers = merger(picoMcpConfigPath(), picoMcpConfigPath());
   const projectPath = join(cwd, ".pico", "mcp-servers.json");
-  const projectServers = allowProjectMcp() ? merger(projectPath) : {};
+  const projectServers = allowProjectMcp() ? merger(projectPath, projectPath) : {};
 
   const merged: Record<string, McpServerConfig> = { ...homeServers };
   for (const [key, server] of Object.entries(projectServers)) {

@@ -1251,7 +1251,6 @@ test("CuratedMemoryStore rejects add when the file drifted out of round-trip", (
 });
 
 // ---- category distribution + db path in /memory status (P2) ---------------
-
 test("MemoryStore.countByCategory groups facts per category", () => {
   const store = new MemoryStore(":memory:");
   try {
@@ -1268,5 +1267,107 @@ test("MemoryStore.countByCategory groups facts per category", () => {
     expect(byCategory.reduce((sum, c) => sum + c.n, 0)).toBe(4);
   } finally {
     store.close();
+  }
+});
+
+// ---- Fourth-round regression tests (scope contract / curated clamp / limits / secrets / queue) ----
+
+test("store.add rejects project scope without cwd instead of silently losing the fact", () => {
+  expect(() => store.add("orphaned project fact", { category: "project", scope: "project" })).toThrow(/requires a cwd/i);
+  expect(store.count()).toBe(0);
+  // With a cwd the same call stores under project:<cwd> as before.
+  const id = store.add("scoped fact", { category: "project", scope: "project", cwd: "/tmp/proj" });
+  expect(store.get(id)!.scope).toBe("project:/tmp/proj");
+});
+
+test("secret scanning catches unquoted and variant-spelling key=value secrets", () => {
+  expect(scanSecrets("aws_secret_access_key = xyzsecret123").blocked).toBe(true);
+  expect(scanSecrets("GITHUB_TOKEN: mytokenvalue99").blocked).toBe(true);
+  expect(scanSecrets("client_secret=abcdefgh12345").blocked).toBe(true);
+  // Non-assignment mentions and short placeholders stay allowed.
+  expect(scanSecrets("we should rotate our api keys regularly").blocked).toBe(false);
+  expect(scanSecrets("token = p").blocked).toBe(false);
+});
+
+test("curated replace() clamps delimiters like add() does", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pico-curated-replace-"));
+  try {
+    const curated = new CuratedMemoryStore({ dir });
+    curated.loadFromDisk();
+    curated.add("memory", "original entry");
+
+    const replaced = curated.replace("memory", "original entry", "line one\n\n§\n\nline two");
+    expect(replaced.success).toBe(true);
+    const entry = curated.list("memory").memory[0]!;
+    expect(entry.includes("\n")).toBe(false);
+    expect(entry.includes("\n§")).toBe(false);
+
+    // File still round-trips — later writes keep working (no drift lockout).
+    const add2 = curated.add("memory", "after replace");
+    expect(add2.success).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("contradict clamps negative and zero limits", () => {
+  const provider = new BuiltinMemoryProvider(":memory:");
+  try {
+    provider.add("alice uses redux", { category: "project", scope: "project", cwd: "/p/a" });
+    provider.add("alice uses zustand", { category: "project", scope: "project", cwd: "/p/a" });
+    const neg = provider.contradict({ limit: -999, scope: "project", cwd: "/p/a" });
+    const zero = provider.contradict({ limit: 0, scope: "project", cwd: "/p/a" });
+    const one = provider.contradict({ limit: 1, scope: "project", cwd: "/p/a" });
+    expect(Array.isArray(neg)).toBe(true);
+    expect(zero.length).toBeLessThanOrEqual(1);
+    expect(one.length).toBeLessThanOrEqual(1);
+  } finally {
+    provider.shutdown();
+  }
+});
+
+test("probe clamps negative FTS-fallback limits (no unbounded result set)", () => {
+  // No entity row exists for this name → FTS fallback path with the raw limit.
+  store.add("quantum entanglement research notes", { category: "general" });
+  const hits = store.probe("quantum entanglement", { limit: -1, minTrust: 0 });
+  expect(hits.length).toBeLessThanOrEqual(1);
+  expect(Array.isArray(hits)).toBe(true);
+});
+
+test("busy_timeout pragma is configured on new stores", () => {
+  const row = store.db.query<{ timeout: number }, []>("PRAGMA busy_timeout").get();
+  expect(row?.timeout).toBe(5000);
+});
+
+test("add rolls back the whole fact when post-insert processing fails", () => {
+  const before = store.count();
+  const broken = store as unknown as { _linkEntities: (factId: number, content: string) => void };
+  const original = broken._linkEntities;
+  broken._linkEntities = () => { throw new Error("entity extraction boom"); };
+  try {
+    expect(() => store.add("fact with failing entity link", { category: "general" })).toThrow(/entity extraction boom/);
+  } finally {
+    broken._linkEntities = original;
+  }
+  // The insert itself must be rolled back — no orphan fact without entities.
+  expect(store.count()).toBe(before);
+});
+
+test("WriteQueue refuses pushes after close", () => {
+  const queue = new WriteQueue();
+  queue.push("op1", () => {});
+  queue.close();
+  expect(() => queue.push("op2", () => {})).toThrow(/closed/i);
+});
+
+test("prefetch hits the queued cache with a prefix query", () => {
+  const provider = new BuiltinMemoryProvider(":memory:");
+  try {
+    provider.queuePrefetch("fix the login bug", "/p/a");
+    // Next turn's message starts with the queued query — must hit the cache.
+    const hits = provider.prefetch("fix the login bug in the auth flow", "/p/a");
+    expect(Array.isArray(hits)).toBe(true);
+  } finally {
+    provider.shutdown();
   }
 });

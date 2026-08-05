@@ -403,3 +403,26 @@ test("non-matching tool name skips the hook", async () => {
   expect(runs).toBe(0);
   expect(out.block).toBeUndefined();
 });
+
+test("substitute skips escaped placeholders and heredoc bodies", () => {
+  const vars = { FILE: "/tmp/secret.txt" };
+  // Escaped placeholder stays literal for the shell.
+  expect(substitute("echo \\$FILE", vars)).toBe("echo \\$FILE");
+  // Heredoc bodies are literal text.
+  const heredoc = "cat <<EOF > out.txt\nline with $FILE inside\nEOF";
+  expect(substitute(heredoc, vars)).toBe(heredoc);
+  // Substitution outside heredocs still works.
+  expect(substitute("echo $FILE <<EOF\n$FILE\nEOF", vars)).toContain("'/tmp/secret.txt'");
+});
+
+test("runHook spawns in the given cwd", async () => {
+  const hook = { event: "PreToolUse" as const, command: "pwd" };
+  const tmp = mkdtempSync(join(tmpdir(), "pico-hook-cwd-"));
+  try {
+    const res = await runHook(hook, {}, tmp);
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout.trim()).toBe(tmp);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

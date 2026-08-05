@@ -13,7 +13,7 @@
  * registered tools and event handlers, then drives them directly.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -336,4 +336,40 @@ test("/plan command publishes plan_mode_changed active=true", async () => {
 
   expect(events).toEqual([{ active: true }]);
   __resetExtensionEventsForTests();
+});
+
+test("EnterPlanMode failure leaves plan mode inactive", async () => {
+  const pi = makeFakePi();
+  planExtension(pi as never);
+  const enter = pi.tools.get("EnterPlanMode")!;
+  // Make the plans dir unwritable by pointing PICO_HOME into a read-only dir.
+  const roDir = mkdtempSync(join(tmpdir(), "pico-plan-ro-"));
+  chmodSync(roDir, 0o500);
+  const savedHome = process.env.PICO_HOME;
+  process.env.PICO_HOME = join(roDir, "home");
+  try {
+    await expect(enter.execute("t1", {}, undefined, undefined, makeCtx())).rejects.toThrow();
+    expect(__getPlanStateForTests().planActive).toBe(false);
+  } finally {
+    if (savedHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = savedHome;
+    chmodSync(roDir, 0o700);
+    rmSync(roDir, { recursive: true, force: true });
+  }
+});
+
+test("ExitPlanMode outside plan mode fails without popping the approval dialog", async () => {
+  const pi = makeFakePi();
+  planExtension(pi as never);
+  const exit = pi.tools.get("ExitPlanMode")!;
+  let confirmCalls = 0;
+  const ctx = makeCtx({
+    hasUI: true,
+    confirm: async () => {
+      confirmCalls++;
+      return true;
+    },
+  });
+  await expect(exit.execute("t1", {}, undefined, undefined, ctx)).rejects.toThrow(/not active/);
+  expect(confirmCalls).toBe(0);
 });

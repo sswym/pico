@@ -23,7 +23,7 @@ function isEnabledEnv(value: string | undefined): boolean {
 }
 
 function optimizerDisabled(): boolean {
-  return isEnabledEnv(process.env[DISABLE_ENV]);
+  return isEnabledEnv(process.env[DISABLE_ENV]) || isEnabledEnv(process.env.PI_CACHE_OPTIMIZER_DISABLE);
 }
 
 function promptRewriteDisabled(): boolean {
@@ -283,7 +283,10 @@ function shouldBypassPromptRewrite(model: PiModel | undefined): boolean {
 function shouldInjectOpenAIPromptCacheKey(model: PiModel | undefined): boolean {
   if (openAICacheKeyDisabled()) return false;
   const api = apiName(model);
-  return api.includes("openai-completions") || api.includes("openai-responses") || api.includes("codex-responses");
+  // prompt_cache_key is a Chat Completions request field; the Responses and
+  // Codex APIs cache automatically and have no such parameter — injecting it
+  // there is at best a no-op and can 400 on strict gateways.
+  return api.includes("openai-completions");
 }
 
 function clampPromptCacheKey(key: string | undefined): string | undefined {

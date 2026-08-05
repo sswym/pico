@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as defaultInput, stdout as defaultOutput } from "node:process";
 import { spawnSync } from "node:child_process";
-import { picoHome, picoLspConfigPath, picoMcpConfigPath, picoModelsPath, picoSettingsPath } from "../extensions/paths.ts";
+import { picoHome, picoHooksConfigPath, picoLspConfigPath, picoMcpConfigPath, picoModelsPath, picoSettingsPath } from "../extensions/paths.ts";
 import type { Settings } from "../extensions/settings.ts";
 
 export type SetupSection = "model" | "tools" | "safety" | "ui" | "memory" | "lsp" | "hooks" | "mcp" | "integrations" | "env";
@@ -422,6 +422,12 @@ export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
   }
   if (options.error) {
     writeLine(io, `error: ${options.error}\n\n${setupUsage()}`);
+    return 1;
+  }
+  if (options.section && !SETUP_SECTION_META.some((meta) => meta.key === options.section)) {
+    // Unknown section names used to be silently ignored (summary printed,
+    // exit 0) — fail loudly so CI scripts catch typos.
+    writeLine(io, `error: unknown section "${options.section}"\n\n${setupUsage()}`);
     return 1;
   }
   if (options.reset) {
@@ -912,16 +918,25 @@ async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo, shell: S
   const rtk = objectSetting(integrations.rtk);
 
   const enableCodeGraph = await prompt.yesNo(text.codegraphEnable, booleanSetting(codegraph.enabled, false));
-  codegraph.enabled = enableCodeGraph;
   if (enableCodeGraph) {
     if (!shell.commandExists("codegraph")) {
       const install = await prompt.yesNo(text.codegraphInstall, false);
       if (install) {
         const result = shell.runInstall("curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh");
-        if (!result.ok) writeLine(io, `${text.installFailed}: ${result.output}`);
+        if (!result.ok) {
+          writeLine(io, `${text.installFailed}: ${result.output}`);
+          codegraph.enabled = false;
+        } else {
+          codegraph.enabled = true;
+        }
       } else {
         writeLine(io, text.installSkipped);
+        // Enabling an integration whose binary is missing turns every
+        // supported command into a hard failure — keep it disabled.
+        codegraph.enabled = false;
       }
+    } else {
+      codegraph.enabled = true;
     }
     const disableTelemetry = await prompt.yesNo(text.codegraphTelemetryOff, true);
     if (await prompt.yesNo(text.codegraphMcp, true)) {
@@ -931,23 +946,34 @@ async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo, shell: S
       const result = shell.run(["codegraph", "init"]);
       if (!result.ok) writeLine(io, `${text.installFailed}: ${result.output}`);
     }
+  } else {
+    codegraph.enabled = false;
   }
 
   const enableRtk = await prompt.yesNo(text.rtkEnable, booleanSetting(rtk.enabled, false));
-  rtk.enabled = enableRtk;
   if (enableRtk) {
     if (!shell.commandExists("rtk")) {
       const install = await prompt.yesNo(text.rtkInstall, false);
       if (install) {
         const result = shell.runInstall("curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh");
-        if (!result.ok) writeLine(io, `${text.installFailed}: ${result.output}`);
+        if (!result.ok) {
+          writeLine(io, `${text.installFailed}: ${result.output}`);
+          rtk.enabled = false;
+        } else {
+          rtk.enabled = true;
+        }
       } else {
         writeLine(io, text.installSkipped);
+        rtk.enabled = false;
       }
+    } else {
+      rtk.enabled = true;
     }
     const modeIndex = await prompt.choice(text.rtkMode, text.rtkModeChoices, stringSetting(rtk.mode) === "instructionsOnly" ? 1 : 0);
     rtk.mode = modeIndex === 1 ? "instructionsOnly" : "spawnHook";
     rtk.command = stringSetting(rtk.command) ?? "rtk";
+  } else {
+    rtk.enabled = false;
   }
 
   integrations.codegraph = codegraph;
@@ -1123,6 +1149,15 @@ export function resetSetupConfig(): void {
   if (Object.keys(env).length === 0) delete settings.env;
   else settings.env = env;
   writeJson(picoSettingsPath(), settings);
+  // Files managed by the per-section setups must go too, or --reset followed
+  // by --quick would still report those sections as "configured" and skip.
+  for (const file of [picoLspConfigPath(), picoHooksConfigPath(), picoMcpConfigPath()]) {
+    try {
+      rmSync(file, { force: true });
+    } catch {
+      // best-effort cleanup
+    }
+  }
 }
 
 export function writeCustomProvider(config: CustomProviderConfig): void {
@@ -1248,7 +1283,11 @@ function commandExists(command: string): boolean {
 }
 
 function runInstallCommand(command: string): { ok: boolean; output: string } {
-  const result = spawnSync("sh", ["-c", command], {
+  // `curl | sh` installers: without pipefail the exit status is sh's, so a
+  // failed download is reported as a successful install. Prefix a guarded
+  // shell so curl's failure propagates.
+  const guarded = command.includes("|") ? `set -o pipefail; ${command}` : command;
+  const result = spawnSync("sh", ["-c", guarded], {
     encoding: "utf-8",
     maxBuffer: 1024 * 1024,
     // `curl | sh` installers can hang on unresponsive sources — bound the wait.

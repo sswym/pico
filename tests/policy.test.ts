@@ -81,3 +81,13 @@ test("env overrides settings.json in both directions", () => {
   expect(allowProjectMcp()).toBe(true);
   expect(safetyFlagSource("PICO_ENABLE_PROJECT_MCP", "enableProjectMcp")).toBe("env");
 });
+
+test("safety string booleans are treated as disabled with a warning", () => {
+  writeSettings({ safety: { enableProjectHooks: "true" } });
+  // String "true" is not a boolean: the flag stays on its default (false)
+  // and the source reports default — no silent "enabled".
+  expect(safetyFlagSource("PICO_ENABLE_PROJECT_HOOKS", "enableProjectHooks")).toBe("default");
+  // Real booleans still resolve normally.
+  writeSettings({ safety: { enableProjectHooks: true } });
+  expect(safetyFlagSource("PICO_ENABLE_PROJECT_HOOKS", "enableProjectHooks")).toBe("settings");
+});

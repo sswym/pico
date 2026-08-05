@@ -751,7 +751,7 @@ test("integrations section reports a failed codegraph install", async () => {
   );
 });
 
-test("integrations section skips the install when the user declines", async () => {
+test("integrations section keeps the integration disabled when the install is declined", async () => {
   const { shell, calls } = fakeShell({ exists: false });
   await withSection(
     "integrations",
@@ -759,8 +759,23 @@ test("integrations section skips the install when the user declines", async () =
     ({ output, settings }) => {
       expect(calls.runInstall).toEqual([]);
       expect(output.length).toBeGreaterThan(0);
-      // Declining the install must not disable the integration itself.
-      expect(settings().integrations.codegraph.enabled).toBe(true);
+      // Enabling an integration whose binary is missing would break every
+      // supported command — declining the install keeps it disabled.
+      expect(settings().integrations.codegraph.enabled).toBe(false);
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section disables the integration when the install fails", async () => {
+  const { shell, calls } = fakeShell({ exists: false, installResult: { ok: false, output: "network down" } });
+  await withSection(
+    "integrations",
+    { yesNo: [true, true] },
+    ({ settings }) => {
+      expect(calls.runInstall).toHaveLength(1);
+      expect(settings().integrations.codegraph.enabled).toBe(false);
     },
     undefined,
     shell,

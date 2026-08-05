@@ -458,21 +458,28 @@ export class ProviderManager {
   }
 
   async flushPending(timeoutMs = 2_000): Promise<boolean> {
-    if (timeoutMs <= 0) {
-      await this._background.flush();
-      return true;
-    }
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const completed = await Promise.race([
-        this._background.flush().then(() => true),
-        new Promise<boolean>((resolve) => {
-          timer = setTimeout(() => resolve(false), timeoutMs);
-        }),
-      ]);
-      return completed;
+      if (timeoutMs <= 0) {
+        await this._background.flush();
+        return true;
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const completed = await Promise.race([
+          this._background.flush().then(() => true),
+          new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(false), timeoutMs);
+          }),
+        ]);
+        return completed;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     } finally {
-      if (timer) clearTimeout(timer);
+      // flushPending is the session-end drain; any op enqueued after this
+      // point would sit forever, so the queue is closed (later pushes throw
+      // instead of silently vanishing).
+      this._background.close();
     }
   }
 }

@@ -16,7 +16,7 @@
  * plan-mode toggle at a time. Persistence to ~/.pico/plans/<sid>.md
  * means re-entering plan mode in the same session resumes the existing plan.
  */
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
@@ -115,9 +115,13 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         return renderToolResultText(result, options, theme, context);
       },
       async execute(_id, _params, _signal, _onUpdate, ctx) {
+        const path = resolvePlanFile(ctx);
+        // Create the plan file BEFORE activating: if the write fails (read-only
+        // plans dir, disk full), plan mode must not stay locked with no way to
+        // submit a plan.
+        await ensurePlanFile(path);
         planActive = true;
-        planFile = resolvePlanFile(ctx);
-        await ensurePlanFile(planFile);
+        planFile = path;
         publishPlanMode(true);
         const text =
           `Plan mode enabled. Plan file: ${planFile}\n` +
@@ -154,7 +158,11 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         planFile = path;
         await ensurePlanFile(path);
         const content = params.content.trimEnd();
-        await Bun.write(path, content.length > 0 ? `${content}\n` : "");
+        // Atomic write: a crash or full disk mid-write must not truncate the
+        // previously approved plan.
+        const tmp = `${path}.tmp`;
+        writeFileSync(tmp, content.length > 0 ? `${content}\n` : "", "utf8");
+        renameSync(tmp, path);
         return {
           content: [{ type: "text" as const, text: `Plan saved to ${path}. Call ExitPlanMode when ready for approval.` }],
           details: { planActive: true, planFile: path },
@@ -180,6 +188,11 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         return renderToolResultText(result, options, theme, context);
       },
       async execute(_id, _params, _signal, _onUpdate, ctx) {
+        if (!planActive) {
+          // Calling ExitPlanMode outside plan mode would pop a pointless
+          // approval dialog and report a state change that never happened.
+          throw new Error("Plan mode is not active. Call EnterPlanMode first.");
+        }
         const path = planFile ?? resolvePlanFile(ctx);
         const plan = await readPlanFile(path);
         const summary = plan.trim().length === 0 ? "(plan file is empty)" : plan;
@@ -221,9 +234,10 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.registerCommand("plan", {
     description: "Enter plan mode (read-only research; ExitPlanMode to resume writes)",
     handler: async (_args, ctx) => {
+      const path = resolvePlanFile(ctx);
+      await ensurePlanFile(path);
       planActive = true;
-      planFile = resolvePlanFile(ctx);
-      await ensurePlanFile(planFile);
+      planFile = path;
       publishPlanMode(true);
       try {
         ctx.ui.notify(`Plan mode enabled. Plan file: ${planFile}`, "info");

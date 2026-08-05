@@ -5,7 +5,7 @@
  * package manager. Detects which package managers are available on the
  * system and picks the best one.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 // ── Install hint types ────────────────────────────────────────────────────
 
@@ -230,6 +230,9 @@ export function formatInstallHint(command: string): string {
 /**
  * Execute the install command for a given LSP server command.
  * Returns { ok, output } where output contains stdout+stderr.
+ *
+ * Runs asynchronously: an `npm install -g` can take 30-60s+ and must not
+ * block the agent loop (previously spawnSync froze the whole process).
  */
 export async function installServer(command: string): Promise<{ ok: boolean; output: string }> {
   const hint = getInstallHint(command);
@@ -238,17 +241,41 @@ export async function installServer(command: string): Promise<{ ok: boolean; out
   }
 
   const [cmd, ...args] = hint.command.split(/\s+/)!;
-  const result = spawnSync(cmd!, args, {
+  const { promise, resolve } = Promise.withResolvers<{ ok: boolean; output: string }>();
+  const child = spawn(cmd!, args, {
     stdio: ["ignore", "pipe", "pipe"],
-    timeout: 120_000,
-    encoding: "utf8",
+    // Own process group so a timeout kills npm AND its node children.
+    detached: true,
   });
-
-  const stdout = typeof result.stdout === "string" ? result.stdout : "";
-  const stderr = typeof result.stderr === "string" ? result.stderr : "";
-  const output = [stdout, stderr].filter(Boolean).join("\n").trim();
-
-  return { ok: result.status === 0, output };
+  let stdout = "";
+  let stderr = "";
+  let settled = false;
+  const killGroup = (sig: NodeJS.Signals) => {
+    try {
+      process.kill(-child.pid!, sig);
+    } catch {
+      try { child.kill(sig); } catch { /* already gone */ }
+    }
+  };
+  const finish = (ok: boolean, output: string) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    resolve({ ok, output });
+  };
+  const timer = setTimeout(() => {
+    killGroup("SIGTERM");
+    const k2 = setTimeout(() => killGroup("SIGKILL"), 2000);
+    k2.unref?.();
+    child.once("close", () => clearTimeout(k2));
+    finish(false, (stdout + stderr).trim() || "Install timed out after 120s");
+  }, 120_000);
+  timer.unref?.();
+  child.stdout.on("data", (d) => { stdout += String(d); });
+  child.stderr.on("data", (d) => { stderr += String(d); });
+  child.on("error", (err) => finish(false, (stdout + stderr).trim() || `Failed to start installer: ${err.message}`));
+  child.on("close", (code) => finish(code === 0, (stdout + stderr).trim()));
+  return promise;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

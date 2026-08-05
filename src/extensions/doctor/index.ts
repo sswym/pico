@@ -54,11 +54,20 @@ export const doctorExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     description: "Show pico safety switches and capability boundaries",
     handler: async (_args, ctx) => {
       const report = buildDoctorReport(ctx.cwd ?? process.cwd());
-      pi.sendMessage({
-        customType: "pico.doctor",
-        content: report,
-        display: true,
-      });
+      if (ctx.hasUI) {
+        pi.sendMessage({
+          customType: "pico.doctor",
+          content: report,
+          display: true,
+        });
+        return;
+      }
+      // Non-interactive (--print / CI): the custom-message channel goes
+      // nowhere — emit the report on stdout instead of silently doing
+      // nothing with a success exit code.
+      try {
+        console.log(report);
+      } catch {}
     },
   });
 };

@@ -8,7 +8,7 @@
  * To activate, set `memory.backend: "holographic"` in settings.
  * ProviderManager falls back to builtin if this module is unavailable.
  */
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import {
   type Fact,
@@ -23,6 +23,7 @@ import {
 import type { Category, Scope } from "./schema.ts";
 import { HELPFUL_DELTA, UNHELPFUL_DELTA } from "./schema.ts";
 import { picoHolographicMemoryPath } from "../paths.ts";
+import { scanSecrets } from "./secrets.ts";
 
 function defaultDbPath(): string {
   return picoHolographicMemoryPath();
@@ -99,6 +100,10 @@ export class HolographicMemoryProvider implements MemoryProvider {
   }
 
   add(content: string, opts?: AddOptions): number {
+    // Same secret gate as the builtin store: the demo backend must not be a
+    // bypass for persisting credentials.
+    const scan = scanSecrets(content);
+    if (scan.blocked) throw new Error(`memory.add: ${scan.reason}`);
     const now = new Date().toISOString();
     const row: StoredFact = {
       fact_id: this.nextId++,
@@ -234,6 +239,15 @@ export class HolographicMemoryProvider implements MemoryProvider {
       this.rows = parsed.rows ?? [];
       this.nextId = parsed.nextId ?? this.rows.length + 1;
     } catch {
+      // Corrupt JSON must not be silently reset (that would destroy the
+      // stored memory): back the file up before falling back to empty state.
+      try {
+        const backup = `${this.dbPath}.corrupt-${Date.now()}`;
+        renameSync(this.dbPath, backup);
+        console.warn(`[pico memory] holographic store unreadable; backed up to ${backup}`);
+      } catch {
+        // No file at all (first run) or backup failed — nothing to preserve.
+      }
       this.rows = [];
       this.nextId = 1;
     }
@@ -243,7 +257,10 @@ export class HolographicMemoryProvider implements MemoryProvider {
     try {
       const dir = this.dbPath.slice(0, this.dbPath.lastIndexOf("/"));
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      writeFileSync(this.dbPath, JSON.stringify({ rows: this.rows, nextId: this.nextId }, null, 2));
+      // tmp + rename: a crash mid-write must not truncate the store.
+      const tmp = `${this.dbPath}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ rows: this.rows, nextId: this.nextId }, null, 2));
+      renameSync(tmp, this.dbPath);
     } catch {
       // best-effort
     }

@@ -26,10 +26,46 @@ export type HookVars = Record<string, string | undefined>;
 const TRUNCATE_BYTES = 4 * 1024;
 const PLACEHOLDER_RE = /\$([A-Z][A-Z0-9_]*)/g;
 
+/**
+ * Locate heredoc body ranges (`<<EOF ... EOF`). Inside them everything is
+ * literal text, so placeholders must NOT be substituted — the body may be
+ * written verbatim to a file.
+ */
+function heredocRanges(template: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const lines = template.split("\n");
+  const lineStart = new Array<number>(lines.length);
+  let pos = 0;
+  for (let i = 0; i < lines.length; i++) {
+    lineStart[i] = pos;
+    pos += lines[i]!.length + 1;
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const m = /<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/.exec(lines[i]!);
+    if (!m) continue;
+    const delim = m[1]!;
+    let j = i + 1;
+    while (j < lines.length && lines[j]!.trim() !== delim) j++;
+    if (j >= lines.length) continue; // unterminated heredoc — leave untouched
+    ranges.push([lineStart[i]! + lines[i]!.length + 1, lineStart[j]!]);
+    i = j;
+  }
+  return ranges;
+}
+
 export function substitute(template: string, vars: HookVars): string {
+  const heredocs = heredocRanges(template);
   return template.replace(PLACEHOLDER_RE, (match, name: string, offset: number) => {
     const v = vars[name];
     if (v === undefined) return match;
+    // Escaped placeholder (`\$FILE`) stays literal.
+    let backslashes = 0;
+    for (let i = offset - 1; i >= 0 && template[i] === "\\"; i--) backslashes++;
+    if (backslashes % 2 === 1) return match;
+    // Heredoc bodies are literal text.
+    for (const [start, end] of heredocs) {
+      if (offset >= start && offset < end) return match;
+    }
     return quoteForShellContext(String(v), quoteContextAt(template, offset + match.length));
   });
 }
@@ -78,7 +114,7 @@ async function readAll(stream: ReadableStream<Uint8Array> | undefined | null): P
  * Run `hook.command` with placeholder substitution. Returns exit metadata
  * even on timeout / spawn failure — we never throw out of here.
  */
-export async function runHook(hook: Hook, vars: HookVars): Promise<HookRunResult> {
+export async function runHook(hook: Hook, vars: HookVars, cwd?: string): Promise<HookRunResult> {
   const command = substitute(hook.command, vars);
   const timeoutMs = hook.timeoutMs ?? 30_000;
 
@@ -88,6 +124,7 @@ export async function runHook(hook: Hook, vars: HookVars): Promise<HookRunResult
 
   try {
     proc = Bun.spawn(["sh", "-c", command], {
+      cwd: cwd ?? process.cwd(),
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",

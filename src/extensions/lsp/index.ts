@@ -7,7 +7,7 @@
  *
  * Lazy server startup on first call. Graceful degradation when no server available.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
@@ -17,8 +17,8 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
-import { positionToLsp, LspError, COMMAND_NOT_FOUND } from "./client.ts";
-import type { Location, Position, WorkspaceSymbol } from "./types.ts";
+import { positionToLsp, LspError, COMMAND_NOT_FOUND, type LspClient } from "./client.ts";
+import type { Diagnostic, Location, Position, WorkspaceSymbol } from "./types.ts";
 import {
   createLspManager,
   ensureServer,
@@ -105,6 +105,27 @@ function shouldWarnAboutMissingCommand(command: string): boolean {
   if (warnedMissingCommands.has(command)) return false;
   warnedMissingCommands.add(command);
   return true;
+}
+
+/**
+ * Wait for post-save diagnostics: a short inline window, then a bounded
+ * deferred window only when the inline window produced nothing (timed out).
+ *
+ * An explicit empty publish (`[]`) means the server responded — the turn must
+ * not stall for a second publish that will never come. `null` means the
+ * inline window elapsed without any publish (slow server), which is the only
+ * case worth the deferred wait.
+ */
+export async function waitForFreshDiagnostics(
+  client: Pick<LspClient, "waitForDiagnostics">,
+  uri: string,
+  inlineMs = 500,
+  deferredMs = 5_000,
+): Promise<Diagnostic[] | null> {
+  const diags = await client.waitForDiagnostics(uri, inlineMs);
+  if (diags !== null) return diags;
+  const deferredSignal = AbortSignal.timeout(deferredMs);
+  return client.waitForDiagnostics(uri, deferredMs, deferredSignal);
 }
 
 export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
@@ -201,7 +222,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       renderResult(result, options, theme, context) {
         return renderToolResultText(result, options, theme, context, { collapsedLines: 10 });
       },
-      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
         const action = params.action as Action;
         if (!ACTIONS.includes(action)) {
           return fail(`Unknown action: ${action}. Valid: ${ACTIONS.join(", ")}`);
@@ -263,7 +284,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             const tryWorkspaceSymbol = async (): Promise<WorkspaceSymbol[] | null> => {
               for (let attempt = 0; attempt < 2; attempt++) {
                 try {
-                  return await client.workspaceSymbol(params.query!);
+                  return await client.workspaceSymbol(params.query!, signal);
                 } catch (err) {
                   const msg = err instanceof Error ? err.message : String(err);
                   if (msg.includes("No Project") && attempt === 0) {
@@ -288,7 +309,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           if (!doc) return fail(`Cannot open file: ${params.file}`);
           ctx.ui.setStatus("lsp", `LSP: ${doc.serverName}`.trim());
           try {
-            const result = await doc.client.textDocumentDocumentSymbol(doc.uri);
+            const result = await doc.client.textDocumentDocumentSymbol(doc.uri, signal);
             return formatDocumentSymbolsResult(params.file, result);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -298,9 +319,16 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
         // ── Position-based actions ──────────────────────────────────────
         if (!params.file) return fail(`${action} requires 'file' parameter.`);
-        if (!params.line) return fail(`${action} requires 'line' parameter.`);
+        if (typeof params.line !== "number" || !Number.isInteger(params.line) || params.line < 1) {
+          // `!params.line` would pass negative values (truthy) and reject 0
+          // with a misleading message — validate the real contract instead.
+          return fail(`${action} requires a positive integer 'line' parameter (got ${JSON.stringify(params.line)}).`);
+        }
 
         let character: number | undefined = params.character;
+        if (character !== undefined && (typeof character !== "number" || !Number.isInteger(character) || character < 0)) {
+          return fail(`${action} requires a non-negative integer 'character' parameter (got ${JSON.stringify(character)}).`);
+        }
         if (character === undefined && params.symbol) {
           const absPath = params.file.startsWith("/") ? params.file : `${ctx.cwd}/${params.file}`;
           character = resolveSymbolColumn(absPath, params.line, params.symbol, params.occurrence ?? 1);
@@ -318,30 +346,30 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         try {
           switch (action) {
             case "hover": {
-              const hover = await doc.client.textDocumentHover(doc.uri, pos);
+              const hover = await doc.client.textDocumentHover(doc.uri, pos, signal);
               return ok(formatHoverResult(hover));
             }
             case "definition": {
-              const result = await doc.client.textDocumentDefinition(doc.uri, pos);
+              const result = await doc.client.textDocumentDefinition(doc.uri, pos, signal);
               return ok(formatLocations(normalizeLocations(result), "definitions"));
             }
             case "type_definition": {
-              const result = await doc.client.textDocumentTypeDefinition(doc.uri, pos);
+              const result = await doc.client.textDocumentTypeDefinition(doc.uri, pos, signal);
               return ok(formatLocations(normalizeLocations(result), "type definitions"));
             }
             case "implementation": {
-              const result = await doc.client.textDocumentImplementation(doc.uri, pos);
+              const result = await doc.client.textDocumentImplementation(doc.uri, pos, signal);
               return ok(formatLocations(normalizeLocations(result), "implementations"));
             }
             case "references": {
-              const result = await doc.client.textDocumentReferences(doc.uri, pos);
+              const result = await doc.client.textDocumentReferences(doc.uri, pos, signal);
               return ok(formatLocations(result, "references"));
             }
             case "code_actions": {
               const diags = doc.client.getDiagnostics(doc.uri);
               const lineDiags = diags.filter((d) => d.range.start.line === pos.line);
               const context = { diagnostics: lineDiags, only: params.query ? [params.query] : undefined };
-              const actions = await doc.client.textDocumentCodeAction(doc.uri, { start: pos, end: pos }, context);
+              const actions = await doc.client.textDocumentCodeAction(doc.uri, { start: pos, end: pos }, context, signal);
               if (!actions || actions.length === 0) return ok("No code actions available at this position.");
               const lines: string[] = [];
               for (let i = 0; i < actions.length; i++) {
@@ -415,14 +443,26 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
       if (state.config?.formatOnWrite === true && allowLspFormatOnWrite()) {
         try {
+          // Snapshot the on-disk state BEFORE the server round-trip: the
+          // formatting edits are computed against the server's document view,
+          // so a file changed on disk meanwhile must not be clobbered.
+          const snapshot = statSync(absFilePath, { throwIfNoEntry: false });
           const formatOpts = resolveFormattingOptions(absFilePath);
           const edits = await client.textDocumentFormatting(uri, formatOpts);
           if (edits && edits.length > 0) {
             const currentContent = readFileSync(absFilePath, "utf8");
             const formatted = applyTextEditsToString(currentContent, edits);
             if (formatted !== currentContent) {
-              writeFileSync(absFilePath, formatted, "utf8");
-              await syncDocumentWithInstall(ctx.cwd, filePath, ctx);
+              const now = statSync(absFilePath, { throwIfNoEntry: false });
+              if (snapshot && now && now.mtimeMs !== snapshot.mtimeMs) {
+                additions.push({
+                  type: "text",
+                  text: "\n[LSP] file changed on disk during formatting; rewrite skipped to avoid clobbering external edits.",
+                });
+              } else {
+                writeFileSync(absFilePath, formatted, "utf8");
+                await syncDocumentWithInstall(ctx.cwd, filePath, ctx);
+              }
             }
           }
         } catch {
@@ -437,14 +477,11 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
       client.didSave(uri);
 
-      // Deferred diagnostics: 500ms inline, then a bounded background wait.
-      // The 5s cap keeps the turn responsive while still catching slow servers.
-      const diags = await client.waitForDiagnostics(uri, 500);
-      let finalDiags = diags;
-      if (!finalDiags || finalDiags.length === 0) {
-        const deferredSignal = AbortSignal.timeout(5_000);
-        finalDiags = await client.waitForDiagnostics(uri, 5_000, deferredSignal);
-      }
+      // Deferred diagnostics: a short inline window, then a bounded catch-up
+      // window ONLY when the inline window elapsed without a publish (null).
+      // A fast publish of [] means the server already answered — waiting
+      // another 5s for nothing would stall every clean write ~5.5s.
+      const finalDiags = await waitForFreshDiagnostics(client, uri);
 
       const diagText = formatDiagnosticsForFile(filePath, finalDiags ?? []);
       const messages = diagText.split("\n").filter(Boolean);

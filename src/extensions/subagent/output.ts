@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { rmSync } from "node:fs";
 import { getFinalOutput, isFailedResult, type SingleResult } from "./results.ts";
 
 export interface LargeOutputWriter {
@@ -8,18 +9,23 @@ export interface LargeOutputWriter {
 	tmpPrefix: string;
 }
 
+/**
+ * Spill a large file-only output to a temp dir. Returns a cleanup function
+ * that removes the temp dir (the spilled file may contain sensitive agent
+ * output — it must not accumulate in /tmp across a long session).
+ */
 export async function spillLargeFileOnlyOutput(
 	result: SingleResult,
 	agentName: string,
 	outputMode: "inline" | "file-only" | undefined,
 	byteCap: number,
 	writer: LargeOutputWriter,
-): Promise<void> {
-	if (outputMode !== "file-only" || isFailedResult(result)) return;
+): Promise<(() => void) | undefined> {
+	if (outputMode !== "file-only" || isFailedResult(result)) return undefined;
 
 	const finalOutput = getFinalOutput(result.messages);
 	const byteLength = Buffer.byteLength(finalOutput, "utf8");
-	if (byteLength <= byteCap) return;
+	if (byteLength <= byteCap) return undefined;
 
 	const tmpDir = await writer.mkdtemp(writer.tmpPrefix);
 	const safeName = agentName.replace(/[^\w.-]+/g, "_");
@@ -30,6 +36,14 @@ export async function spillLargeFileOnlyOutput(
 	const preview = finalOutput.slice(0, 2048);
 	const reference = `Output written to file (${byteLength} bytes): ${outFile}\n\n--- Preview (first 2KB) ---\n${preview}`;
 	replaceFinalAssistantText(result, reference);
+
+	return () => {
+		try {
+			rmSync(tmpDir, { recursive: true, force: true });
+		} catch {
+			// best-effort cleanup
+		}
+	};
 }
 
 export function replaceFinalAssistantText(result: SingleResult, text: string): boolean {

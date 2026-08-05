@@ -232,7 +232,9 @@ export class BuiltinMemoryProvider implements MemoryProvider {
    * a synchronous search if no cache hit.
    */
   prefetch(query: string, cwd?: string): Fact[] {
-    if (this.cachedPrefetch && this.cachedPrefetch.query === query) {
+    // Prefix match: the next turn's message usually starts with (or equals)
+    // the query that was queued, so exact equality almost never hits.
+    if (this.cachedPrefetch && (query === this.cachedPrefetch.query || query.startsWith(this.cachedPrefetch.query))) {
       const results = this.cachedPrefetch.results;
       this.cachedPrefetch = null;
       return results;

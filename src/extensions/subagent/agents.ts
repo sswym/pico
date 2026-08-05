@@ -200,7 +200,20 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			continue;
 		}
 
-		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
+		// One malformed file (tab indentation, duplicate keys) must not break
+		// the whole agent registry — skip it with a hint instead of throwing
+		// a bare YAML parse error on every subagent tool call.
+		let frontmatter: Record<string, unknown>;
+		let body: string;
+		try {
+			const parsed = parseFrontmatter<Record<string, unknown>>(content);
+			frontmatter = parsed.frontmatter;
+			body = parsed.body;
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			console.warn(`[pico subagent] skipping agent file ${filePath}: invalid frontmatter (${message})`);
+			continue;
+		}
 
 		if (typeof frontmatter.name !== "string" || typeof frontmatter.description !== "string") {
 			continue;

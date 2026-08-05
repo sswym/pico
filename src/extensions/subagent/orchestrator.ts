@@ -138,6 +138,8 @@ async function runSingleAgent(
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
+	/** Removes the spilled large-output temp dir (if any) in the finally. */
+	let spillCleanup: (() => void) | undefined;
 
 	const currentResult = createInitialResult(agent, agentName, task, step);
 
@@ -174,7 +176,7 @@ async function runSingleAgent(
 		if (processResult.wasAborted) throw new Error("Subagent was aborted");
 
 		try {
-			await spillLargeFileOnlyOutput(currentResult, agent.name, agent.outputMode, PER_TASK_OUTPUT_CAP, {
+			spillCleanup = await spillLargeFileOnlyOutput(currentResult, agent.name, agent.outputMode, PER_TASK_OUTPUT_CAP, {
 				tmpPrefix: path.join(os.tmpdir(), "pico-agent-output-"),
 				mkdtemp: (prefix) => fs.promises.mkdtemp(prefix),
 				writeFile: (filePath, content) => fs.promises.writeFile(filePath, content, { encoding: "utf-8", mode: 0o600 }),
@@ -186,6 +188,12 @@ async function runSingleAgent(
 
 		return currentResult;
 	} finally {
+		if (spillCleanup)
+			try {
+				spillCleanup();
+			} catch {
+				/* ignore */
+			}
 		if (tmpPromptPath)
 			try {
 				fs.unlinkSync(tmpPromptPath);

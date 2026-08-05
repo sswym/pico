@@ -143,6 +143,71 @@ test("loadImageFromInput refuses private-network image URLs", async () => {
   ).rejects.toThrow(/private network/i);
 });
 
+test("loadImageFromInput re-checks the private-network guard on every redirect hop", async () => {
+  // A public URL that 302s to loopback must be refused — redirect: "follow"
+  // would silently fetch the internal content and forward it to the provider.
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === "https://public.example/img.png") {
+      return new Response(null, { status: 302, headers: { location: "http://127.0.0.1:8080/secret.png" } });
+    }
+    if (url === "https://public.example/two.png") {
+      return new Response(null, { status: 302, headers: { location: "https://public.example/three.png" } });
+    }
+    if (url === "https://public.example/three.png") {
+      return new Response(null, { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data/" } });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }) as unknown as typeof fetch;
+
+  await expect(
+    loadImageFromInput({ image_url: "https://public.example/img.png" }, "/repo", { complete: undefined as never, fetchImpl }),
+  ).rejects.toThrow(/private network/i);
+
+  // Second-hop redirect into the metadata service is equally refused.
+  await expect(
+    loadImageFromInput({ image_url: "https://public.example/two.png" }, "/repo", { complete: undefined as never, fetchImpl }),
+  ).rejects.toThrow(/private network/i);
+});
+
+test("loadImageFromInput follows public redirects and caps the redirect count", async () => {
+  let hops = 0;
+  const fetchImpl = (async () => {
+    hops++;
+    if (hops <= 3) {
+      return new Response(null, { status: 302, headers: { location: `https://cdn.example/${hops}.png` } });
+    }
+    return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "image/png" } });
+  }) as unknown as typeof fetch;
+
+  const img = await loadImageFromInput({ image_url: "https://public.example/a.png" }, "/repo", {
+    complete: undefined as never,
+    fetchImpl,
+  });
+  expect(img.mimeType).toBe("image/png");
+  expect(Buffer.from(img.data, "base64").length).toBe(3);
+
+  // Unbounded loops are impossible: 6 redirects reject.
+  const endless = (async () => new Response(null, { status: 302, headers: { location: "https://cdn.example/loop.png" } })) as unknown as typeof fetch;
+  await expect(
+    loadImageFromInput({ image_url: "https://public.example/loop.png" }, "/repo", { complete: undefined as never, fetchImpl: endless }),
+  ).rejects.toThrow(/Too many redirects/);
+});
+
+test("loadImageFromInput propagates a pre-aborted caller signal without fetching", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const fetchImpl = (async () => {
+    throw new Error("must not fetch");
+  }) as unknown as typeof fetch;
+  await expect(
+    loadImageFromInput({ image_url: "https://public.example/a.png" }, "/repo", {
+      complete: undefined as never,
+      fetchImpl,
+    }, controller.signal),
+  ).rejects.toThrow();
+});
+
 test("visionAnalyze tool calls configured vision model", async () => {
   const home = configureVisionHome();
   const calls: any[] = [];

@@ -20,7 +20,11 @@ const MCP_PROTOCOL_VERSION = "2024-11-05";
 const CLIENT_NAME = "pico";
 const CLIENT_VERSION = "0.1.0";
 const REQUEST_TIMEOUT_MS = 30_000;
+/** initialize covers cold starts (`npx -y` downloads first, then launches). */
+const INITIALIZE_TIMEOUT_MS = 60_000;
 const MAX_DIAGNOSTIC_LINES = 20;
+/** Bound the unparsed stdout buffer: a chatty/broken server must not exhaust memory. */
+const MAX_STDOUT_BUFFER_BYTES = 1_048_576;
 
 function appendDiagnostic(handle: McpServerHandle, line: string): void {
   const text = line.trim();
@@ -44,6 +48,9 @@ export function spawnMcpServer(id: string, config: McpServerConfig): McpServerHa
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, ...config.env },
+    // Own process group so close can kill grandchildren (npx → node, wrappers)
+    // that would otherwise outlive the direct child and keep the pipe open.
+    detached: true,
   });
 
   // stdin is FileSink when piped
@@ -52,6 +59,7 @@ export function spawnMcpServer(id: string, config: McpServerConfig): McpServerHa
   const handle: McpServerHandle = {
     id,
     proc: {
+      pid: proc.pid,
       stdin,
       kill: (signal?: number) => proc.kill(signal),
       exited: proc.exited,
@@ -71,6 +79,12 @@ export function spawnMcpServer(id: string, config: McpServerConfig): McpServerHa
         const { done, value } = await stdoutReader.read();
         if (done) break;
         handle.buffer += decoder.decode(value, { stream: true });
+        // Drop data that never formed a line instead of growing unboundedly.
+        if (handle.buffer.length > MAX_STDOUT_BUFFER_BYTES) {
+          const lastNewline = handle.buffer.lastIndexOf("\n");
+          handle.buffer = lastNewline >= 0 ? handle.buffer.slice(lastNewline + 1) : "";
+          appendDiagnostic(handle, "[pico] MCP stdout buffer exceeded; unparsed data dropped");
+        }
         processBuffer(handle);
       }
       // Flush remaining buffer on stream end
@@ -148,14 +162,15 @@ async function sendRequest(
   handle: McpServerHandle,
   method: string,
   params: unknown,
+  timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<unknown> {
   const id = handle.nextId++;
   const { promise, resolve, reject } = Promise.withResolvers<unknown>();
 
   const timer = setTimeout(() => {
     handle.pending.delete(id);
-    reject(new Error(`MCP request "${method}" timed out after ${REQUEST_TIMEOUT_MS}ms`));
-  }, REQUEST_TIMEOUT_MS);
+    reject(new Error(`MCP request "${method}" timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
 
   handle.pending.set(id, { resolve, reject, timer });
 
@@ -181,7 +196,7 @@ export async function mcpInitialize(
     protocolVersion: MCP_PROTOCOL_VERSION,
     capabilities: {},
     clientInfo: { name: CLIENT_NAME, version: CLIENT_VERSION },
-  }) as McpInitializeResult;
+  }, INITIALIZE_TIMEOUT_MS) as McpInitializeResult;
 
   // Send initialized notification (fire-and-forget)
   const notif = JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" });
@@ -224,5 +239,27 @@ export function closeMcpServer(handle: McpServerHandle): void {
     pending.reject(new Error(`MCP server "${handle.id}" shutting down`));
   }
   handle.pending.clear();
-  handle.proc.kill();
+
+  const childPid = handle.proc.pid;
+  if (!childPid) {
+    handle.proc.kill();
+    return;
+  }
+  // Kill the whole process group (spawnMcpServer uses detached: true):
+  // npx-launched grandchildren would otherwise survive as orphans and keep
+  // the stdout pipe open. ESRCH means the group is already gone.
+  const killGroup = (signal: NodeJS.Signals) => {
+    try {
+      process.kill(-childPid, signal);
+    } catch {
+      // group already exited
+    }
+  };
+  killGroup("SIGTERM");
+  // Escalate to SIGKILL if the group ignores SIGTERM. `proc.killed` flips
+  // true on the first kill() call, so it cannot gate the escalation; the
+  // timer is cleared on exit, so firing it means the group is still alive.
+  const forceKill = setTimeout(() => killGroup("SIGKILL"), 2000);
+  forceKill.unref?.();
+  handle.proc.exited.finally(() => clearTimeout(forceKill)).catch(() => {});
 }

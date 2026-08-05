@@ -20,7 +20,7 @@ import {
 } from "./extract.ts";
 import { formatRecallBlock, systemPromptBlock } from "./prompt.ts";
 import { type MemoryWriteMetadata, type MemoryProvider } from "./provider.ts";
-import { subscribeExtensionEvent } from "../events.ts";
+import { clearSessionExtensionSubscriptions, subscribeSessionExtensionEvent } from "../events.ts";
 import { MemoryStore } from "./store.ts";
 import { CuratedMemoryStore } from "./curated-store.ts";
 import { ProviderManager, sanitizeContext, buildMemoryContextBlock } from "./provider-manager.ts";
@@ -85,7 +85,9 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   /** Expose raw MemoryStore for extract.ts when the active provider has one. */
   const rawStore = provider.getRawStore();
   // Register delegation hook for subagent completion tracking.
-  subscribeExtensionEvent("subagent_completed", (event) => {
+  // Session-scoped: /reload re-runs the factory, so the subscription must not
+  // accumulate across reloads (see clearSessionExtensionSubscriptions).
+  subscribeSessionExtensionEvent("subagent_completed", (event) => {
     manager.onDelegation(event.task, event.result, event.childSessionId);
   });
   /** Track current working directory for project-scoped memory. */
@@ -299,8 +301,14 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     }
   });
 
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (event) => {
     try {
+      // /reload re-runs every extension factory (upstream clears the extension
+      // cache and loads them again); drop the session-scoped event-bus
+      // subscriptions so handlers do not accumulate across reloads.
+      if ((event as { reason?: string }).reason === "reload") {
+        clearSessionExtensionSubscriptions();
+      }
       manager.onSessionEnd(sessionMessages);
       await manager.flushPending();
       manager.shutdown();

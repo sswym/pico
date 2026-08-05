@@ -39,3 +39,31 @@ test("shouldRewriteWithRtk still rewrites one-shot commands", () => {
   expect(shouldRewriteWithRtk("tail -n 20 app.log")).toBe(true);
   expect(shouldRewriteWithRtk("jest")).toBe(true);
 });
+
+test("shouldRewriteWithRtk skips long-running variants of extended heads", () => {
+  expect(shouldRewriteWithRtk("kubectl logs -f app")).toBe(false);
+  expect(shouldRewriteWithRtk("kubectl logs --follow")).toBe(false);
+  // Without a follow flag kubectl logs exits — safe to wrap.
+  expect(shouldRewriteWithRtk("kubectl logs app")).toBe(true);
+  expect(shouldRewriteWithRtk("docker logs -f web")).toBe(false);
+  expect(shouldRewriteWithRtk("docker compose up")).toBe(false);
+  expect(shouldRewriteWithRtk("docker compose -f dev.yml up")).toBe(false);
+  expect(shouldRewriteWithRtk("tsc --watch")).toBe(false);
+  expect(shouldRewriteWithRtk("cargo watch -x test")).toBe(false);
+  expect(shouldRewriteWithRtk("eslint --watch src")).toBe(false);
+  // Non-following docker compose builds are still wrapped.
+  expect(shouldRewriteWithRtk("docker compose build")).toBe(true);
+  expect(shouldRewriteWithRtk("kubectl get pods")).toBe(true);
+});
+
+test("isRtkAvailable caches the PATH probe result", () => {
+  const { __resetRtkAvailabilityForTests, isRtkAvailable } = require("../src/extensions/rtk/index.ts") as typeof import("../src/extensions/rtk/index.ts");
+  try {
+    // bun itself is definitely on PATH.
+    expect(isRtkAvailable("bun")).toBe(true);
+    expect(isRtkAvailable("bun")).toBe(true); // cached — no second probe
+    expect(isRtkAvailable("definitely-not-a-real-binary-xyz")).toBe(false);
+  } finally {
+    __resetRtkAvailabilityForTests();
+  }
+});

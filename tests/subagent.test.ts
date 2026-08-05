@@ -5,6 +5,7 @@
  * the right tool, and that `discoverAgents` finds the four bundled roles.
  */
 import { expect, test } from "bun:test";
+import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -51,8 +52,12 @@ import {
   type SingleResult,
 } from "../src/extensions/subagent/results.ts";
 import { tryForkSession } from "../src/extensions/subagent/session.ts";
+import { applyOverrides } from "../src/extensions/subagent/config.ts";
 import {
+  cleanupWorktrees,
+  createWorktree,
   mergeParallelWorktrees,
+  mergeWorktree,
   prepareParallelWorktrees,
   sanitizeAgentNameForWorktree,
   type WorktreeHandle,
@@ -523,7 +528,7 @@ test("runJsonProcess handles process errors, aborts, and timeouts", async () => 
     clearTimeoutFn: (() => {}) as any,
   });
   abortProc.close(null);
-  expect(await abortRun).toEqual({ exitCode: 0, wasAborted: true, timedOut: false });
+  expect(await abortRun).toEqual({ exitCode: 1, wasAborted: true, timedOut: false });
   // The mocked setTimeoutFn fires the escalation immediately (simulating a
   // process still alive 5s after SIGTERM), so the unconditional SIGKILL
   // escalation must have run.
@@ -548,6 +553,30 @@ test("runJsonProcess handles process errors, aborts, and timeouts", async () => 
   timeoutProc.close(143);
   expect(await timeoutRun).toEqual({ exitCode: 143, wasAborted: false, timedOut: true });
   expect(timeoutProc.kills).toEqual(["SIGTERM"]);
+});
+
+test("runJsonProcess maps signal-death (close with null code) to a non-zero exit", async () => {
+  // A child killed by a signal (crash, OOM killer, external kill) reports
+  // close(code = null). It must NOT be dressed up as exitCode 0 — that would
+  // present a half-finished run as success.
+  const agent = {
+    name: "worker",
+    description: "",
+    source: "user" as const,
+    filePath: "worker.md",
+    systemPrompt: "",
+  };
+
+  const proc = new FakeProcess();
+  const run = runJsonProcess({
+    command: "pico",
+    args: [],
+    cwd: "/repo",
+    result: createInitialResult(agent, "worker", "run", undefined),
+    spawn: () => proc,
+  });
+  proc.close(null);
+  expect(await run).toEqual({ exitCode: 1, wasAborted: false, timedOut: false });
 });
 
 test("buildChainTask substitutes previous and named outputs", () => {
@@ -956,6 +985,10 @@ test("mergeParallelWorktrees reports skipped, empty, merged, and conflicted work
     "task 2 (merged): merged\ndiff for c",
     "task 3 (conflict): Merge conflict on branch d. Resolve manually.",
   ]);
+  // The conflicted branch must survive cleanup for manual resolution; the
+  // merged one is safe to delete.
+  expect(handles[3]!.keepBranch).toBe(true);
+  expect(handles[2]!.keepBranch).toBeUndefined();
 });
 
 test("mergeParallelWorktrees warns when worktree changes cannot be committed", () => {
@@ -980,6 +1013,68 @@ test("mergeParallelWorktrees warns when worktree changes cannot be committed", (
 
   expect(notes[0]).toContain("could not commit worktree changes");
   expect(notes[0]).toContain("may be lost");
+});
+
+function runGit(cwd: string, args: string[]): string {
+  return execSync(`git ${args.map((a) => `"${a.replace(/"/g, '\\"')}"`).join(" ")}`, {
+    cwd,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+test("mergeWorktree detects conflicts from stdout and aborts the merge (real git)", () => {
+  const repo = mkdtempSync(join(tmpdir(), "pico-wt-conflict-"));
+  try {
+    runGit(repo, ["init", "-q", "-b", "main"]);
+    runGit(repo, ["config", "user.email", "test@example.com"]);
+    runGit(repo, ["config", "user.name", "pico test"]);
+    writeFileSync(join(repo, "f.txt"), "base\n");
+    runGit(repo, ["add", "f.txt"]);
+    runGit(repo, ["commit", "-qm", "base"]);
+
+    runGit(repo, ["checkout", "-qb", "feature"]);
+    writeFileSync(join(repo, "f.txt"), "feature change\n");
+    runGit(repo, ["commit", "-qam", "feature"]);
+    runGit(repo, ["checkout", "-q", "main"]);
+    writeFileSync(join(repo, "f.txt"), "main change\n");
+    runGit(repo, ["commit", "-qam", "main"]);
+
+    // git prints "CONFLICT (content): ..." on stdout — a stderr-only probe
+    // never fires, leaving the merge half-applied. The abort must run and
+    // the working tree must be clean afterwards.
+    const result = mergeWorktree(repo, "feature");
+    expect(result.success).toBe(false);
+    expect(result.conflict).toContain("Resolve manually");
+    expect(() => runGit(repo, ["rev-parse", "--verify", "MERGE_HEAD"])).toThrow();
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("cleanupWorktrees keeps branches marked for manual resolution (real git)", () => {
+  const repo = mkdtempSync(join(tmpdir(), "pico-wt-keep-"));
+  try {
+    runGit(repo, ["init", "-q", "-b", "main"]);
+    runGit(repo, ["config", "user.email", "test@example.com"]);
+    runGit(repo, ["config", "user.name", "pico test"]);
+    writeFileSync(join(repo, "f.txt"), "base\n");
+    runGit(repo, ["add", "f.txt"]);
+    runGit(repo, ["commit", "-qm", "base"]);
+
+    const kept = createWorktree(repo, "reviewer", 0);
+    kept.keepBranch = true;
+    const merged = createWorktree(repo, "worker", 1);
+    cleanupWorktrees([kept, merged]);
+
+    // The merged branch is gone; the kept one survives for manual resolution.
+    expect(() => runGit(repo, ["rev-parse", "--verify", merged.branchName])).toThrow();
+    expect(runGit(repo, ["rev-parse", "--verify", kept.branchName]).trim()).toBeTruthy();
+    // Worktree dirs are removed either way — only the branch survives.
+    expect(runGit(repo, ["worktree", "list"]).includes(kept.worktreeDir)).toBe(false);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 test("gate helpers summarize failures and build repair task", () => {
@@ -1170,4 +1265,117 @@ test("non-interactive runs refuse project-local agents without the opt-in env fl
     else process.env.PICO_ALLOW_UNATTENDED_PROJECT_AGENTS = oldFlag;
     rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+test("checkAcceptanceGate runs evidence asynchronously and matches exit codes exactly", async () => {
+  // exit-0 default: success only on exit 0.
+  const ok = await checkAcceptanceGate(
+    { criteria: ["c"], evidence: [{ command: "exit 0" }] },
+    process.cwd(),
+  );
+  expect(ok.passed).toBe(true);
+
+  // exit-1 expectation: 127 (command missing) is NOT a pass.
+  const missing = await checkAcceptanceGate(
+    { criteria: ["c"], evidence: [{ command: "definitely-not-a-command-xyz", expect: "exit 1" }] },
+    process.cwd(),
+  );
+  expect(missing.evidenceResults[0]!.passed).toBe(false);
+
+  // Unknown expect values fail loudly with the reason.
+  const unknownExpect = await checkAcceptanceGate(
+    { criteria: ["c"], evidence: [{ command: "exit 0", expect: "exit1" }] },
+    process.cwd(),
+  );
+  expect(unknownExpect.evidenceResults[0]!.passed).toBe(false);
+  expect(unknownExpect.evidenceResults[0]!.output).toContain("unknown expect value");
+});
+
+test("checkAcceptanceGate aborts the in-flight command when the signal fires", async () => {
+  const controller = new AbortController();
+  const gate = checkAcceptanceGate(
+    { criteria: ["c"], evidence: [{ command: "sleep 30" }] },
+    process.cwd(),
+    controller.signal,
+  );
+  // Give the spawn a moment, then cancel — the command must not run 30s.
+  await new Promise((r) => setTimeout(r, 100));
+  controller.abort();
+  const result = await gate;
+  expect(result.evidenceResults[0]!.passed).toBe(false);
+  expect(result.evidenceResults[0]!.output.length).toBeLessThanOrEqual(500);
+});
+
+test("applyOverrides ignores invalid numbers instead of forwarding them to argv", async () => {
+  const base = {
+    name: "worker",
+    description: "",
+    source: "user" as const,
+    filePath: "worker.md",
+    systemPrompt: "",
+    maxTokens: 4000,
+    maxExecutionTimeMs: 120_000,
+  };
+  const overridden = applyOverrides([base], {
+    defaults: { maxTokens: "abc", maxExecutionTimeMs: -5 } as never,
+  });
+  expect(overridden[0]!.maxTokens).toBe(4000);
+  expect(overridden[0]!.maxExecutionTimeMs).toBe(120_000);
+
+  const valid = applyOverrides([base], {
+    defaults: { maxTokens: 8000, maxExecutionTimeMs: 60_000 },
+  });
+  expect(valid[0]!.maxTokens).toBe(8000);
+  expect(valid[0]!.maxExecutionTimeMs).toBe(60_000);
+});
+
+test("discoverAgents skips malformed frontmatter files without breaking the registry", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-agents-bad-"));
+  const agentsDir = join(home, "agent", "agents");
+  mkdirSync(agentsDir, { recursive: true });
+  const savedHome = process.env.PICO_HOME;
+  const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PICO_HOME = home;
+  process.env.PI_CODING_AGENT_DIR = join(home, "agent");
+  try {
+    // Duplicate YAML keys throw in the parser (uniqueKeys).
+    writeFileSync(join(agentsDir, "broken.md"), "---\nname: broken\nname: dup\n---\nbody");
+    writeFileSync(join(agentsDir, "good.md"), "---\nname: goodone\ndescription: fine\n---\nbody");
+    const names = discoverAgents(process.cwd(), "user").agents.map((a) => a.name);
+    expect(names).toContain("goodone");
+    expect(names).not.toContain("broken");
+  } finally {
+    if (savedHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = savedHome;
+    if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("spillLargeFileOnlyOutput returns a cleanup that removes the temp dir", async () => {
+  const result: SingleResult = {
+    agent: "worker",
+    agentSource: "user",
+    task: "run",
+    exitCode: 0,
+    messages: [{ role: "assistant", content: [{ type: "text", text: "large output" }] }] as never[],
+    stderr: "",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+  };
+  const dir = mkdtempSync(join(tmpdir(), "pico-spill-"));
+  const cleanup = await spillLargeFileOnlyOutput(result, "worker", "file-only", 4, {
+    tmpPrefix: `${dir}/out-`,
+    mkdtemp: (prefix) => {
+      mkdirSync(`${prefix}dir`);
+      return Promise.resolve(`${prefix}dir`);
+    },
+    writeFile: async (filePath, content) => writeFileSync(filePath, content),
+    now: () => 123,
+  });
+  expect(cleanup).toBeFunction();
+  expect(await import("node:fs").then((fs) => fs.existsSync(`${dir}/out-dir`))).toBe(true);
+  cleanup?.();
+  expect(await import("node:fs").then((fs) => fs.existsSync(`${dir}/out-dir`))).toBe(false);
+  rmSync(dir, { recursive: true, force: true });
 });

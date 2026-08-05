@@ -70,3 +70,14 @@ test("PICO_MEMORY_DB never overrides the holographic (JSON) memory path", () => 
   process.env.PICO_HOLOGRAPHIC_MEMORY_PATH = "/tmp/holo.json";
   expect(picoHolographicMemoryPath()).toBe("/tmp/holo.json");
 });
+
+test("relative PICO_HOME resolves to an absolute path (matches env-bootstrap)", () => {
+  const saved = process.env.PICO_HOME;
+  process.env.PICO_HOME = "rel/pico-home";
+  try {
+    expect(picoHome()).toBe(resolve("rel/pico-home"));
+  } finally {
+    if (saved === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = saved;
+  }
+});

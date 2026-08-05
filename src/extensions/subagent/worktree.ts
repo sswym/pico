@@ -13,6 +13,8 @@ import { isFailedResult, type SingleResult } from "./results.ts";
 export interface WorktreeHandle {
 	worktreeDir: string;
 	branchName: string;
+	/** Set when the branch must survive cleanup (e.g. merge failed and needs manual resolution). */
+	keepBranch?: boolean;
 	cleanup: () => void;
 }
 
@@ -64,7 +66,7 @@ export interface PreparedWorktrees {
 	// Create a named branch in the worktree for easy identification
 	execSync(`git checkout -b "${branchName}"`, { cwd: worktreeDir, stdio: "pipe" });
 
-	return {
+	const handle: WorktreeHandle = {
 		worktreeDir,
 		branchName,
 		cleanup: () => {
@@ -73,11 +75,14 @@ export interface PreparedWorktrees {
 			} catch {
 				try { fs.rmSync(worktreeDir, { recursive: true, force: true }); } catch {}
 			}
-			try {
-				execSync(`git branch -D "${branchName}"`, { cwd, stdio: "pipe" });
-			} catch {}
+			// Merged branches are deleted; branches kept for manual resolution
+			// (merge failure) survive so the task's output is not destroyed.
+			if (!handle.keepBranch) {
+				try { execSync(`git branch -D "${branchName}"`, { cwd, stdio: "pipe" }); } catch {}
+			}
 		},
 	};
+	return handle;
 }
 
 export function prepareParallelWorktrees(
@@ -126,18 +131,35 @@ export function cleanupWorktrees(handles: Array<WorktreeHandle | null>): void {
  *
  * Returns true on success, false on merge conflict (leaves the branch for manual resolution).
  */
+function errorStreamText(err: unknown, key: "stdout" | "stderr"): string {
+  if (err && typeof err === "object") {
+    const value = (err as Record<string, unknown>)[key];
+    if (typeof value === "string") return value;
+    if (Buffer.isBuffer(value)) return value.toString();
+  }
+  return "";
+}
+
 export function mergeWorktree(cwd: string, branchName: string): { success: boolean; conflict?: string } {
 	try {
-		execSync(`git merge "${branchName}" --no-edit`, { cwd, stdio: "pipe" });
+		// LC_ALL=C keeps git's conflict/merge messages in English so the
+		// CONFLICT probe below is locale-independent.
+		execSync(`git merge "${branchName}" --no-edit`, { cwd, stdio: "pipe", env: { ...process.env, LC_ALL: "C" } });
 		return { success: true };
-	} catch (err: any) {
-		const stderr = err.stderr ? err.stderr.toString() : "";
-		if (/CONFLICT/.test(stderr)) {
+	} catch (err: unknown) {
+		// git prints conflict notifications ("CONFLICT (content): ...") to
+		// stdout; only the final "Automatic merge failed" summary goes to
+		// stderr. Checking stderr alone almost never fires, so the merge was
+		// left half-applied in the main tree (MERGE_HEAD + conflict markers).
+		const stderr = errorStreamText(err, "stderr");
+		const stdout = errorStreamText(err, "stdout");
+		const detail = (stdout || stderr).slice(0, 200);
+		if (/CONFLICT/.test(stderr) || /CONFLICT/.test(stdout)) {
 			// Abort the merge to leave the working tree clean
 			try { execSync("git merge --abort", { cwd, stdio: "pipe" }); } catch {}
-			return { success: false, conflict: `Merge conflict on branch ${branchName}. Resolve manually.` };
+			return { success: false, conflict: `Merge conflict on branch ${branchName}. Resolve manually. ${detail}`.trim() };
 		}
-		return { success: false, conflict: `Merge failed: ${stderr.slice(0, 200)}` };
+		return { success: false, conflict: `Merge failed: ${detail}` };
 	}
 }
 
@@ -210,6 +232,9 @@ export function mergeParallelWorktrees(
 		if (mergeResult.success) {
 			mergeNotes.push(`task ${i} (${result.agent}): merged\n${diff.trimEnd()}`);
 		} else {
+			// Keep the branch: the merge failed (conflict / dirty main tree) and
+			// cleanup must not `git branch -D` the task's only remaining copy.
+			handle.keepBranch = true;
 			mergeNotes.push(`task ${i} (${result.agent}): ${mergeResult.conflict}`);
 		}
 	}

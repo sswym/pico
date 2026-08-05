@@ -362,7 +362,8 @@ export class FactRetriever {
    */
   contradict(opts: { category?: string; threshold?: number; limit?: number; scope?: Scope; cwd?: string } = {}): ContradictionResult[] {
     const threshold = opts.threshold ?? 0.3;
-    const limit = opts.limit ?? 10;
+    // Negative/zero limits would invert or unboundedly slice the result list.
+    const limit = Math.max(1, Math.floor(opts.limit ?? 10));
     const MAX_FACTS = 500;
     const scope = scopeFilter(opts);
 
@@ -496,7 +497,11 @@ export class FactRetriever {
         const { fts_rank_raw: _, ...rest } = r;
         return { ...rest, fts_rank: Math.abs(r.fts_rank_raw) / maxRank };
       });
-    } catch {
+    } catch (err) {
+      // A failing FTS query silently returning [] reads as "no matches" —
+      // surface it so a broken index/schema is diagnosable.
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[pico memory] FTS candidate query failed: ${message}`);
       return [];
     }
   }

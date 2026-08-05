@@ -151,7 +151,10 @@ export class CuratedMemoryStore {
 
   replace(target: CuratedTarget, oldText: string, content: string): CuratedWriteResult {
     const cleanOld = oldText.trim();
-    const clean = content.trim();
+    // Same hygiene as add(): entries are joined by a delimiter, so embedded
+    // newlines / the literal delimiter would corrupt the file format and
+    // trip the drift guard on every later write.
+    const clean = clampEntry(content);
     if (!cleanOld) return this.result(target, false, undefined, "old_text cannot be empty.");
     const preflight = this.preflight(target, clean);
     if (preflight) return preflight;

@@ -85,7 +85,15 @@ if (setupExitCode !== null) {
 // In compiled-binary mode, this is handled by piConfig.name in build/package.json.
 process.title = "pico";
 
-console.clear();
+// Clear the screen only for interactive TTY sessions. `--print`/`--mode
+// rpc|json` consumers read stdout programmatically, and the brand layer just
+// printed help above — a stray clear would destroy both.
+const isHelpOrVersion =
+  rawArgs.includes("--help") || rawArgs.includes("-h") || rawArgs.includes("--version") || rawArgs.includes("-v");
+const isNonTuiMode = rawArgs.some((arg) => arg === "--print" || arg === "--mode" || arg === "-p");
+if (process.stdout.isTTY && !isHelpOrVersion && !isNonTuiMode) {
+  console.clear();
+}
 
 await main(args, {
   extensionFactories: createDefaultExtensionRegistry().factories(),

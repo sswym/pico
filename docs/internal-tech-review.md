@@ -368,14 +368,113 @@ flowchart TD
 
 ---
 
+### 4.7 第四轮整改（2026-08-05 全项目只读深度审查，4 高 / 29 中 / 37 低，全部附回归测试）
+
+**坑 36：LSP 写透传空诊断 5.5s 阻塞（高）**
+- 现象：`waitForDiagnostics` 收到快速发布的 `[]` 与超时 null 走同一分支，无条件进入 5s 二次等待；该 await 在 tool_result handler 内联执行，整轮 agent 被卡。
+- 方案：提取 `waitForFreshDiagnostics`——仅当内联窗口超时（null）才进入 deferred wait；`[]` 视为服务器已响应。回归：lsp.test.ts 空发布短路用例（calls === 1）。
+
+**坑 37：worktree 冲突检测检查错误输出流（高）**
+- 现象：git 的 CONFLICT 通知走 stdout，`/CONFLICT/.test(err.stderr)` 几乎永不命中 → `git merge --abort` 不执行，主树残留 MERGE_HEAD 与冲突标记；且合并失败分支在 cleanup 被 `git branch -D` 删除，任务产出彻底丢失。
+- 方案：stdout+stderr 双查 + `LC_ALL=C` 固定输出语言；失败合并置 `keepBranch`，cleanup 跳过分支删除。回归：真实 git 仓库冲突/保留用例（tests/subagent.test.ts）。
+
+**坑 38：子代理信号死亡伪装成功（高）**
+- 现象：close(code=null) 映射为 exitCode 0，被 OOM/段错误杀死的子代理输出当作成功交付。
+- 方案：`code ?? 1`。回归：close(null) 非 abort 路径断言 exitCode 1。
+
+**坑 39：vision image_url 重定向绕过私网防护 + 无超时（高）**
+- 现象：初始 URL 检查后 `redirect: "follow"` 默认跟随，302 到内网/元数据地址的内容经视觉模型外泄；fetch 与 body 读取无 deadline。
+- 方案：`redirect: "manual"` 逐跳复验 isPrivateHost（限 5 跳）+ 复用 web 的 withTimeoutSignal（15s，覆盖 body）。回归：vision.test.ts 重定向拒绝/跟随/上限/预中止用例。
+
+**坑 40：memory scope="project" 无 cwd 落裸 scope（中）**
+- 现象：写侧降级为裸 `project`，所有带 cwd 读路径不可见——静默数据丢失。
+- 方案：无 cwd 时显式拒绝。回归：store.add 无 cwd project scope rejects。
+
+**坑 41：curated replace() 绕过 clampEntry（中）**
+- 现象：replace 只 trim，含 `\n§\n`/换行条目破坏文件格式并触发 drift 永久拒写（add 已修而 replace 漏修）。
+- 方案：replace 复用 clampEntry。回归：replace 钳制 + 后续写入不被 drift 卡住。
+
+**坑 42：MCP 工具 isError 返回字段残留（中）**
+- 现象：execute 返回对象带 `isError: result.isError ?? false`——上游只认 throw，服务器报错渲染为成功（坑 32 唯一漏网点）。
+- 方案：`result.isError === true` 时 throw。回归：mock callTool isError 拒绝用例。
+
+**坑 43：MCP connect 串行 + 30s 硬超时 + 失败不重试（中）**
+- 现象：逐 server await，单个坏 server N×30s 阻塞启动；connectedCwd 置位后同 cwd 内不重试。
+- 方案：`Promise.allSettled` 并行；initialize 单独 60s 超时（npx 冷启动）；failedServerIds 在后续 session_start 重试；注册中途失败回滚 activeTools/toolRefHolders。
+- 回归：重试/回滚/isError/关闭后 fail-fast 用例。
+
+**坑 44：MCP 关闭只杀直接子进程（中）**
+- 现象：npx 孙进程成孤儿并持有 stdout 管道。
+- 方案：spawn `detached: true`，close 走进程组 SIGTERM→2s SIGKILL；stdout buffer 1MiB 上限。
+
+**坑 45：MCP 配置零校验静默吞错（中）**
+- 方案：逐 server 校验 command/args/env，非法项 warnOnce 带名跳过。回归：坏配置不影响好配置加载。
+
+**坑 46：events 总线订阅跨会话累积（中）**
+- 现象：/reload 清缓存重跑全部扩展 factory（resource-loader.reload 已核实），subscribeExtensionEvent 退订函数被丢弃，handler 翻倍。
+- 方案：新增 `subscribeSessionExtensionEvent` + `clearSessionExtensionSubscriptions`，memory/todo 改用并在 `session_shutdown(reason:"reload")` 清理。回归：events.test.ts 三代订阅只留一代。
+
+**坑 47：hooks/acceptance evidence execSync 阻塞主循环（中）**
+- 现象：60s/条同步阻塞，UI/其他工具/MCP 在途请求全冻结，AbortSignal 无法中断。
+- 方案：gates.ts 改异步 spawn（detached 进程组 + 超时/中止清理）；`expect:"exit 1"` 精确匹配 status===1，未知 expect 值显式报配置错误。回归：异步/中止/精确判定用例。
+
+**坑 48：subagent stdout 按 chunk 独立解码（中低）**
+- 现象：多字节 UTF-8 跨 chunk 边界变 U+FFFD，事件内容损坏。
+- 方案：TextDecoder 流式解码（构造不带 stream 选项，decode 时传 {stream:true}），close 时 flush。
+
+**坑 49：webFetch charset 硬编码 / 二进制无防护 / 3xx 无 Location 误缓存 / single-flight 丢 signal（中）**
+- 方案：Content-Type charset 解析（gbk/shift_jis 等，Bun 运行时支持）→ 对应 TextDecoder；非文本类型返回 `Binary content (…), skipped`；缓存条件收紧为 2xx，3xx 无 Location 抛错；single-flight 等待者自己的 signal 生效。回归：web.test.ts 5 个新用例。
+
+**坑 50：webSearch SSE 等 EOF 才解析（中）**
+- 方案：增量读取，首个可解析 data 事件即返回；parseExaResponse 兼容 `data:` 无空格与多行拼接。回归：keep-alive 流 + 无空格/multiline 解析用例。
+
+**坑 51：rtk 无运行期可用性检测（中）**
+- 方案：spawnHook 前按命令名缓存探测 PATH；缺失时不改写并在 session_start 提示。回归：PATH 探测与缓存用例。
+- 同批：长驻命令按 head 扩展（kubectl logs -f / docker compose up / tsc --watch / cargo watch / eslint --watch），`-f` 仅在有 follow 语义处判定。
+
+**坑 52：hybrid URL 去重不归一 / 单源失败静默（中低）**
+- 方案：`new URL` 归一化（去 fragment/默认端口/尾斜杠）做 key；单源失败 console.warn。
+
+**坑 53：settings.json 损坏后全量覆写（中）**
+- 现象：readSettings catch 返回 {}，/language 读改写把损坏文件替换为仅 language 对象，API keys/safety 全丢。
+- 方案：settings.ts 增加 `isSettingsDamaged()`（文件存在但解析失败）；language.ts 重构为复用共享助手并拒绝写损坏文件。回归：损坏文件 + 拒绝写入。
+
+**坑 54：plan 状态先置/原子写/ExitPlanMode 无门（中低）**
+- 方案：EnterPlanMode 先建文件成功再置状态（失败不复位锁死）；SubmitPlan tmp+rename 原子写；ExitPlanMode 非激活直接报错。回归：只读目录进入失败/非激活 ExitPlanMode 用例。
+
+**坑 55：todo 面板 plan 退出不恢复（中）**
+- 方案：widget 增加 restoreTodoWidget；plan_mode_changed(false) 恢复面板。回归：collapse/restore 状态机用例。
+
+**坑 56：/init 审计无代码级确认门（中）**
+- 方案：AGENTS.md 已存在时交互模式先 `ui.confirm` 再注入审计提示词。
+
+**坑 57：崩溃 marker 并发实例误报/互删（中）**
+- 方案：isStaleMarker 先做 pid 存活探测（kill 0），存活即并发实例不提示；quit 只清 pid 匹配自己的 marker。回归：guidance 测试。
+
+**坑 58：tool-render ANSI 终端注入（中）**
+- 现象：MCP/文件/记忆内容含 ESC 序列直达终端（OSC 52 覆写剪贴板、伪造 UI）。
+- 方案：ui/rendering.ts 新增 `sanitizeTerminalText`（OSC/CSI/C0 剥离），tool-render 调用/结果渲染前统一消毒。回归：渲染无 ESC 残留用例。
+
+**坑 59：logo 每帧渲染同步磁盘 IO（中）**
+- 方案：会话信息 5s TTL 缓存（session_start 失效）；label 只读文件头 4KB（openSync+readSync）。回归：logo 测试通过。
+
+**坑 60：前端低危批量（低）**
+- truncateWithEllipsis 改码点截断（不劈代理对）；footer git 超时结果不缓存（下次渲染重试）；input-history trim 加 mkdir 锁串行化 + 30s 残留恢复；ActivityTracker 在 session_shutdown 复位。
+
+**坑 61：入口/配置低危批量（低）**
+- bin/pico.ts console.clear 仅限交互 TTY 非帮助/非 --mode 场景；setup 安装命令 `set -o pipefail`（curl|sh 退出码遮蔽）+ 安装失败/跳过不再落盘 enabled=true；--reset 清理 lsp/hooks/mcp 文件；未知 section 显式报错；/doctor 非交互输出到 stdout；models.yml 扫描按 `providers:` 实际缩进推导 provider 深度（兼容 4 空格）；env-bootstrap 与 paths.ts 的 PICO_HOME 归一化统一（~ 展开 + resolve）；memory ftsCandidates 失败告警。
+
+**坑 62：其余低危（低）**
+- 子代理 frontmatter 逐文件 try/catch（坏 YAML 不再拖垮整个工具）；subagent.json overrides 复用 >0 数值校验；file-only 大输出 tmp 目录返回清理函数（orchestrator finally 调用）；cache-optimizer DISABLE 补 PI_ 别名、prompt_cache_key 仅注入 openai-completions；todo schema 长度约束；/language 校验（64 字符、禁换行）；ask 重复 question 拒绝；LSP 负值 line/character 校验、execute signal 透传、applyEdit 应答 `{applied:false}`、file:// URI 编解码、idle 回收等待在途关闭、formatOnWrite mtime 新鲜度校验、installServer 异步化（进程组超时）、typescript-native 探针按 (command,cwd) 缓存。
+
 ## 5. 当前版本现状与已知局限
 
 ### 5.1 现状
 
-- 功能面完整：20 扩展、447 用例全绿、`bun run verify`（tsc + 全量测试）通过；
+- 功能面完整：20 扩展、497 用例全绿、`bun run verify`（tsc + 全量测试）通过；
 - 第三轮 UX 整改（2026-08-05，依据 `docs/ux-walkthrough-review.md`）：离线 `/help` 与无模型/推理 400/崩溃恢复引导（guidance 扩展）、config.yml 双轨冲突检测、`<inline:N>` 启动噪音消除（InlineExtension hidden）、LSP 缺失命令警告去重与可执行建议、生成阶段动态反馈、计划模式挂起 todo 面板、CLI 品牌统一、MCP 状态可读化、logo 首启文案与真实会话、`/memory status` 类别分布、rtk 启用提示；全部附回归测试；
 - 安全默认值：项目 hooks/MCP 默认关、非交互项目代理默认拒、LSP 写动作默认阻断、计划自动批准默认关；
-- 工具错误语义对齐上游：失败一律 throw（agent loop 仅以异常判定 isError）。
+- 工具错误语义对齐上游：失败一律 throw（agent loop 仅以异常判定 isError）；第四轮整改（2026-08-05，依据深度技术分析报告）修复 4 高 / 29 中 / 37 低，覆盖 LSP 写透传短路、worktree 冲突与分支保留、子代理退出码、vision SSRF、MCP 并行连接与进程组、事件订阅生命周期、异步化 gate、ANSI 终端注入等；
 
 ### 5.2 已知局限（客观记录）
 
@@ -390,6 +489,12 @@ flowchart TD
 | L7 | 私网防护仅 hostname 字符串级，`*.nip.io`/DNS rebinding 可绕过 | SSRF 边界缺口（本地代理影响有限） | 待 DNS 解析复检 |
 | L8 | worktree 合并按任务序串行，冲突仅报错不自动处理 | 冲突时需人工 | 已知 |
 | L12 | 记忆库无归档/衰减策略（facts 无限增长，contradict 仅分析最近 500 条） | 库膨胀 | 待迭代 |
+| L13 | **LSP 写透传空诊断短路的残余**：诊断等待仍为 500ms 内联 + 5s 轮询窗口（非事件驱动），慢服务器偶发取空 | 延迟/偶发取空 | 待改 publishDiagnostics 事件驱动 |
+| L14 | **子代理超时只杀直接子进程**（detached 进程组未用于 subagent 进程；MCP/hooks 已修） | 孙进程孤儿 | 待对齐进程组清理 |
+| L15 | **todo 重复 id 重分配的新 id 映射仅在 details**，模型可见性取决于 provider 序列化 | 重复 id 时 id 不稳定 | 待把映射写入 content |
+| L16 | **plan 同批 ExitPlanMode+write 时序矛盾**：并行工具执行下 tool_call 阻断先于批准生效 | 批准后同批写仍被拒，需重发 | 受上游执行序约束，待同批放行 |
+| L17 | **cache-optimizer 对 responses/codex 未知字段行为**（已改为不注入，记录原始风险） | 严格网关 400 风险已消除 | 已修 |
+| L18 | **agent_end 全量重抽取**可能重复写入 | 记忆重复 | 待增量/去重 |
 
 ### 5.3 待优化项与迭代规划（建议排序）
 
@@ -482,4 +587,4 @@ bun test tests/<feature>.test.ts  # 单文件测试
 
 ---
 
-*归档说明：本文随整改提交（`fd04fff` frontend / `10fba51` backend）同步维护；后续迭代请同步更新 §5 局限清单与 §6 运维要点。*
+*归档说明：本文随整改提交（`fd04fff` / `10fba51` / `2891708` 及第四轮 backend/frontend 提交）同步维护；后续迭代请同步更新 §5 局限清单与 §6 运维要点。*

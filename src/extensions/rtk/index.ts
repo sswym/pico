@@ -34,11 +34,36 @@ const SKIP_PREFIXES = [
   "bun --hot",
 ];
 
-/** Commands that tend to run indefinitely (followers, watchers, dev servers). */
-const LONG_RUNNING_COMMANDS = ["tail", "jest", "vitest", "playwright", "bun", "npm", "pnpm", "watch"];
+/**
+ * Flags that make a supported head long-running. Keyed by head so `-f` is
+ * only treated as "follow" where it actually means that (kubectl logs,
+ * docker logs) and never misclassifies e.g. `docker compose -f file up`.
+ */
+const LONG_RUNNING_FLAGS: Record<string, string[]> = {
+  tail: ["-f", "--follow"],
+  tsc: ["--watch"],
+  cargo: ["watch"],
+  eslint: ["--watch"],
+  jest: ["--watch"],
+  vitest: ["--watch", "watch"],
+  playwright: ["--watch"],
+  bun: ["--hot", "--watch"],
+};
 
-/** Flags/args that turn a supported command into a long-running process. */
-const LONG_RUNNING_FLAGS = ["--watch", "--follow", "-f", "--hot", "watch"];
+/** Head-specific subcommand sequences that run forever. */
+const LONG_RUNNING_PATTERNS: Array<{ head: string; matches: (args: string[]) => boolean }> = [
+  {
+    head: "kubectl",
+    matches: (args) => args.includes("logs") && (args.includes("-f") || args.includes("--follow")),
+  },
+  {
+    head: "docker",
+    matches: (args) =>
+      (args.includes("logs") && (args.includes("-f") || args.includes("--follow"))) ||
+      args.includes("up") ||
+      args.includes("watch"),
+  },
+];
 
 const SUPPORTED_PREFIXES = [
   "ls",
@@ -93,14 +118,47 @@ export function shouldRewriteWithRtk(command: string): boolean {
 function isLongRunningCommand(command: string): boolean {
   const tokens = command.split(" ");
   const head = tokens[0];
-  if (!head || !LONG_RUNNING_COMMANDS.includes(head)) return false;
+  if (!head) return false;
   const args = tokens.slice(1);
-  if (args.some((arg) => LONG_RUNNING_FLAGS.includes(arg))) return true;
+  const flags = LONG_RUNNING_FLAGS[head];
+  if (flags && flags.some((flag) => args.includes(flag))) return true;
+  for (const pattern of LONG_RUNNING_PATTERNS) {
+    if (pattern.head === head && pattern.matches(args)) return true;
+  }
   // npm/pnpm/bun run dev-* or run start spawn dev servers / watch mode.
   for (let i = 0; i < args.length - 1; i++) {
     if (args[i] === "run" && (args[i + 1]!.startsWith("dev") || args[i + 1] === "start")) return true;
   }
   return false;
+}
+
+/**
+ * Whether the configured rtk binary is actually reachable, probed once per
+ * command name and cached. Enabling the integration in settings while rtk is
+ * not installed would otherwise turn every supported bash command into an
+ * `rtk: command not found` hard failure with no hint.
+ */
+const rtkAvailabilityCache = new Map<string, boolean>();
+
+export function __resetRtkAvailabilityForTests(): void {
+  rtkAvailabilityCache.clear();
+}
+
+export function isRtkAvailable(command: string): boolean {
+  const cached = rtkAvailabilityCache.get(command);
+  if (cached !== undefined) return cached;
+  const safeCommand = command.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  let available = false;
+  try {
+    const probe = Bun.spawnSync(["sh", "-c", `command -v "${safeCommand}" >/dev/null 2>&1`], {
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    available = probe.exitCode === 0;
+  } catch {
+    available = false;
+  }
+  rtkAvailabilityCache.set(command, available);
+  return available;
 }
 
 export function rewriteRtkCommand(command: string, rtkCommand = "rtk"): string {
@@ -121,17 +179,25 @@ export const rtkExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     if (noticeShown || !ctx.hasUI) return;
     noticeShown = true;
     try {
-      ctx.ui.notify(
-        "rtk 输出压缩已启用：受支持的 bash 命令将通过 rtk 执行以节省 token，" +
-          "输出可能与原命令不同。可在 settings.json 的 integrations.rtk.enabled 关闭。",
-        "info",
-      );
+      if (isRtkAvailable(config.command)) {
+        ctx.ui.notify(
+          "rtk 输出压缩已启用：受支持的 bash 命令将通过 rtk 执行以节省 token，" +
+            "输出可能与原命令不同。可在 settings.json 的 integrations.rtk.enabled 关闭。",
+          "info",
+        );
+      } else {
+        ctx.ui.notify(
+          `rtk 已启用但找不到可执行文件 "${config.command}" — 命令将原样执行，未做压缩。` +
+            "请安装 rtk 或修正 settings.json 的 integrations.rtk.command。",
+          "warning",
+        );
+      }
     } catch {}
   });
 
   const bashTool = createBashTool(process.cwd(), {
     spawnHook: ({ command, cwd, env }) => ({
-      command: rewriteRtkCommand(command, config.command),
+      command: isRtkAvailable(config.command) ? rewriteRtkCommand(command, config.command) : command,
       cwd,
       env,
     }),

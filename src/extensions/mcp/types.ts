@@ -89,6 +89,7 @@ export interface McpServerHandle {
   id: string;
   /** The spawned subprocess. */
   proc: {
+    pid?: number;
     stdin: {
       write(data: string | Uint8Array): number;
       /** Flush buffered writes to the child process (Bun FileSink). */

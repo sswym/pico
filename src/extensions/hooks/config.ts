@@ -75,13 +75,23 @@ function normalize(raw: unknown, sourcePath: string): Hook[] {
     return [];
   }
   const out: Hook[] = [];
-  for (const item of list) {
-    if (!item || typeof item !== "object") continue;
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    if (!item || typeof item !== "object") {
+      warnOnce(`${sourcePath}#${i}`, new Error(`hook entry ${i} is not an object; skipped`));
+      continue;
+    }
     const obj = item as Record<string, unknown>;
     const event = obj.event;
-    if (typeof event !== "string" || !VALID_EVENTS.has(event as HookEvent)) continue;
+    if (typeof event !== "string" || !VALID_EVENTS.has(event as HookEvent)) {
+      warnOnce(`${sourcePath}#${i}`, new Error(`hook entry ${i} has invalid event; skipped`));
+      continue;
+    }
     const command = obj.command;
-    if (typeof command !== "string" || command.trim().length === 0) continue;
+    if (typeof command !== "string" || command.trim().length === 0) {
+      warnOnce(`${sourcePath}#${i}`, new Error(`hook entry ${i} has no valid command; skipped`));
+      continue;
+    }
     const hook: Hook = { event: event as HookEvent, command };
     if (typeof obj.tool === "string" && obj.tool.length > 0) hook.tool = obj.tool;
     if (typeof obj.timeoutMs === "number" && Number.isFinite(obj.timeoutMs) && obj.timeoutMs > 0) {

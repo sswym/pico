@@ -266,7 +266,9 @@ test("MCP tools from a previous cwd stop using closed handles after reconnect", 
   expect(calls).toEqual([]);
 
   const newResult = await pi.tools.get("mcp__two__new").execute("tc-new", {});
-  expect(newResult.isError).toBe(false);
+  // Success results carry no isError field — the agent loop derives it from
+  // thrown errors only, and this is a success path.
+  expect(newResult.isError).toBeUndefined();
   expect(calls).toEqual([{ handle: "two", toolName: "new" }]);
 });
 
@@ -346,5 +348,157 @@ test("MCP client requests reach a real subprocess (stdin flush regression)", asy
     expect(tools.map((t) => t.name)).toEqual(["ping"]);
   } finally {
     closeMcpServer(handle);
+  }
+});
+
+// ---- Fourth-round regression tests: isError throw / parallel+retry / shutdown holders ----
+
+test("MCP execute throws when the server reports isError (dead return field)", async () => {
+  const pi = makeFakePi();
+  const extension = createMcpExtension({
+    load: () => ({ srv: { command: "fake" } }),
+    spawn: (id) => makeHandle(id),
+    initialize: async () => ({
+      protocolVersion: "test",
+      capabilities: {},
+      serverInfo: { name: "S", version: "1" },
+    }),
+    listTools: async () => [{ name: "boom", inputSchema: { type: "object", properties: {} } }],
+    callTool: async (): Promise<McpToolCallResult> => ({
+      content: [{ type: "text", text: "server-side failure detail" }],
+      isError: true,
+    }),
+    close: () => {},
+  });
+  extension(pi as never);
+  await pi.handlers["session_start"]![0]!({}, { cwd: "/repo" });
+  await expect(
+    pi.tools.get("mcp__srv__boom").execute("tc1", {}),
+  ).rejects.toThrow(/server-side failure detail/);
+});
+
+test("MCP connect retries failed servers on the next session_start with the same cwd", async () => {
+  const pi = makeFakePi();
+  let failing = true;
+  const extension = createMcpExtension({
+    load: () => ({ flaky: { command: "fake" } }),
+    spawn: (id) => makeHandle(id),
+    initialize: async () => {
+      if (failing) throw new Error("not ready yet");
+      return { protocolVersion: "test", capabilities: {}, serverInfo: { name: "F", version: "1" } };
+    },
+    listTools: async () => [{ name: "ok", inputSchema: { type: "object", properties: {} } }],
+    callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    close: () => {},
+  });
+  extension(pi as never);
+
+  await pi.handlers["session_start"]![0]!({}, { cwd: "/repo" });
+  expect(pi.tools.has("mcp__flaky__ok")).toBe(false);
+
+  // Server recovers; the next session_start for the same cwd must retry it.
+  failing = false;
+  await pi.handlers["session_start"]![0]!({}, { cwd: "/repo" });
+  expect(pi.tools.has("mcp__flaky__ok")).toBe(true);
+});
+
+test("MCP session_shutdown nulls holder refs so stale tools fail fast", async () => {
+  const pi = makeFakePi();
+  const extension = createMcpExtension({
+    load: () => ({ srv: { command: "fake" } }),
+    spawn: (id) => makeHandle(id),
+    initialize: async () => ({
+      protocolVersion: "test",
+      capabilities: {},
+      serverInfo: { name: "S", version: "1" },
+    }),
+    listTools: async () => [{ name: "ok", inputSchema: { type: "object", properties: {} } }],
+    callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    close: () => {},
+  });
+  extension(pi as never);
+  await pi.handlers["session_start"]![0]!({}, { cwd: "/repo" });
+  const tool = pi.tools.get("mcp__srv__ok");
+  await tool.execute("tc1", {});
+  await pi.handlers["session_shutdown"]![0]!({}, {});
+  // Between shutdown and the next connect the tool must throw "not active",
+  // not write to the closed handle and hang for the request timeout.
+  await expect(tool.execute("tc2", {})).rejects.toThrow(/not active/);
+});
+
+test("MCP registration rollback leaves no dangling active tools when registration fails mid-server", async () => {
+  const tools = new Map<string, unknown>();
+  const commands = new Map<string, unknown>();
+  const handlers: Record<string, Array<(event: unknown, ctx: unknown) => unknown>> = {};
+  const pi = {
+    tools,
+    commands,
+    handlers,
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+      (handlers[event] ??= []).push(handler);
+    },
+    registerTool: (tool: { name: string }) => {
+      // Simulate the upstream unique-name validation: duplicate tool names throw.
+      if (tools.has(tool.name)) throw new Error("duplicate tool name");
+      tools.set(tool.name, tool);
+    },
+    registerCommand: (name: string, opts: unknown) => {
+      commands.set(name, opts);
+    },
+  };
+
+  const extension = createMcpExtension({
+    load: () => ({ dup: { command: "fake" } }),
+    spawn: (id) => makeHandle(id),
+    initialize: async () => ({
+      protocolVersion: "test",
+      capabilities: {},
+      serverInfo: { name: "D", version: "1" },
+    }),
+    listTools: async () => [
+      { name: "a", inputSchema: { type: "object", properties: {} } },
+      { name: "b", inputSchema: { type: "object", properties: {} } },
+    ],
+    callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    close: () => {},
+  });
+  // Simulate the upstream unique-name validation throwing mid-server (after
+  // "a" was already registered): "a" must not stay active.
+  const throwingPi = {
+    ...pi,
+    registerTool: (tool: { name: string }) => {
+      if (tool.name === "mcp__dup__b") throw new Error("duplicate tool name");
+      tools.set(tool.name, tool);
+    },
+  };
+  extension(throwingPi as never);
+  await pi.handlers["session_start"]![0]!({}, { cwd: "/repo" });
+
+  // The failed server leaves no half-registered state: tool "a" is not active.
+  await expect(
+    (tools.get("mcp__dup__a") as { execute: (id: string, p: unknown) => Promise<unknown> }).execute("tc1", {}),
+  ).rejects.toThrow(/not active/);
+});
+
+test("loadMcpConfig validates server entries and keeps valid ones from a broken file", () => {
+  pushEnv();
+  const home = mkdtempSync(join(tmpdir(), "pico-mcp-home-"));
+  process.env.PICO_HOME = home;
+  const { __resetMcpConfigWarningsForTests } = require("../src/extensions/mcp/config.ts") as typeof import("../src/extensions/mcp/config.ts");
+  try {
+    writeFileSync(join(home, "mcp-servers.json"), JSON.stringify({
+      mcpServers: {
+        good: { command: "npx", args: ["-y", "server"], env: { TOKEN: "abc" } },
+        badCommand: { command: 123 },
+        badEnv: { command: "x", env: "nope" },
+        badArgs: { command: "x", args: "nope" },
+      },
+    }));
+    const loaded = loadMcpConfig(process.cwd());
+    expect(Object.keys(loaded)).toEqual(["good"]);
+    expect(loaded.good).toEqual({ command: "npx", args: ["-y", "server"], env: { TOKEN: "abc" } });
+  } finally {
+    __resetMcpConfigWarningsForTests();
+    rmSync(home, { recursive: true, force: true });
   }
 });

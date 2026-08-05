@@ -171,6 +171,10 @@ export function scanModelsYml(raw: string): ProviderScan[] {
 
   const providerIndent = (line: string): number => line.length - line.trimStart().length;
   const topLevel = lines.findIndex((l) => l.trim() === "providers:");
+  // YAML indent is not mandated to be 2 spaces — derive the provider block
+  // depth from the actual `providers:` line so 4-space files are scanned too.
+  const topLevelIndent = topLevel >= 0 ? providerIndent(lines[topLevel]!) : 0;
+  const providerDepth = topLevelIndent + 2;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
@@ -181,11 +185,11 @@ export function scanModelsYml(raw: string): ProviderScan[] {
     const indent = providerIndent(line);
     if (indent === 0) continue;
 
-    // Provider block: exactly the standard 2-space nesting directly under
-    // `providers:` — deeper keys (compat/models/baseUrl) are subkeys, not
-    // providers, and must never reset the current block.
+    // Provider block: exactly one nesting level under `providers:` — deeper
+    // keys (compat/models/baseUrl) are subkeys, not providers, and must never
+    // reset the current block.
     const providerMatch = /^([A-Za-z0-9_-]+)\s*:\s*$/.exec(trimmed);
-    if (providerMatch && indent === 2 && !MODEL_FILE_SUBKEYS.has(providerMatch[1]!.toLowerCase())) {
+    if (providerMatch && indent === providerDepth && !MODEL_FILE_SUBKEYS.has(providerMatch[1]!.toLowerCase())) {
       current = { name: providerMatch[1]!, reasoningModels: [], compatLine: null };
       providers.push(current);
       continue;

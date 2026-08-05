@@ -52,7 +52,7 @@ function matches(hook: Hook, event: Hook["event"], toolName: string | undefined)
  */
 export function createHooksExtension(deps: {
   load: (cwd: string) => Hook[];
-  run: (hook: Hook, vars: HookVars) => Promise<{
+  run: (hook: Hook, vars: HookVars, cwd?: string) => Promise<{
     exitCode: number;
     stdout: string;
     stderr: string;
@@ -100,7 +100,7 @@ export function createHooksExtension(deps: {
       };
 
       for (const hook of matching) {
-        const res = await run(hook, vars);
+        const res = await run(hook, vars, cwdFn());
         const blocking = hook.blocking ?? true;
         const failed = res.timedOut || res.exitCode !== 0;
         if (failed && blocking) {
@@ -130,7 +130,7 @@ export function createHooksExtension(deps: {
       };
 
       for (const hook of matching) {
-        const res = await run(hook, vars);
+        const res = await run(hook, vars, cwdFn());
         if (res.timedOut || res.exitCode !== 0) {
           const why = res.timedOut ? "timeout" : `exit ${res.exitCode}`;
           warn(`PostToolUse hook \`${hook.command}\` ${why}`);
@@ -148,7 +148,7 @@ export function createHooksExtension(deps: {
       };
 
       for (const hook of matching) {
-        const res = await run(hook, vars);
+        const res = await run(hook, vars, cwdFn());
         if (res.timedOut || res.exitCode !== 0) {
           const why = res.timedOut ? "timeout" : `exit ${res.exitCode}`;
           warn(`PostUserMessage hook \`${hook.command}\` ${why}`);
@@ -165,7 +165,7 @@ export function createHooksExtension(deps: {
       const budgetMs = 30_000;
       const work = Promise.allSettled(
         matching.map(async (hook) => {
-          const res = await run(hook, {});
+          const res = await run(hook, {}, cwdFn());
           if (res.timedOut || res.exitCode !== 0) {
             // Session is going away — sendMessage may not deliver anywhere
             // useful, so just log to stderr.
@@ -176,10 +176,20 @@ export function createHooksExtension(deps: {
           }
         }),
       );
+      // The race's own timer must be cleared once work settles, or the event
+      // loop stays alive for the full budget after a fast teardown.
+      let raceTimer: ReturnType<typeof setTimeout> | undefined;
       const budget = setTimeout(() => {}, budgetMs);
       budget.unref?.();
-      await Promise.race([work, new Promise<void>((resolve) => setTimeout(resolve, budgetMs))]);
+      await Promise.race([
+        work,
+        new Promise<void>((resolve) => {
+          raceTimer = setTimeout(resolve, budgetMs);
+          raceTimer.unref?.();
+        }),
+      ]);
       clearTimeout(budget);
+      if (raceTimer) clearTimeout(raceTimer);
     });
   };
 }

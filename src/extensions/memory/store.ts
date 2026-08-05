@@ -112,6 +112,9 @@ export class MemoryStore {
     this.db = new Database(dbPath);
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
+    // Concurrent pico instances sharing one memory DB must wait for the lock
+    // instead of failing with SQLITE_BUSY.
+    this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec(SCHEMA);
     this.migrate();
   }
@@ -153,6 +156,11 @@ export class MemoryStore {
     const tags = (opts.tags ?? "").trim();
 
     // Resolve scope: project-scoped if scope="project" and cwd provided.
+    // A bare "project" scope would be invisible to every read path (they all
+    // query project:<cwd>) — refuse instead of silently losing the fact.
+    if (opts.scope === SCOPE_PROJECT && !opts.cwd) {
+      throw new Error("memory.add: scope 'project' requires a cwd (missing session project context)");
+    }
     const scopeKey = opts.scope === SCOPE_PROJECT && opts.cwd
       ? projectScopeKey(opts.cwd)
       : opts.scope ?? SCOPE_GLOBAL;
@@ -172,10 +180,12 @@ export class MemoryStore {
       .get(trimmed);
     if (existing) return existing.fact_id;
 
-    // Correction penalty + insert must be atomic: if the insert fails we must
-    // not leave the original fact penalised without a replacement.
-    let trust = clampTrust(opts.trust ?? this.defaultTrust);
-    const insertFact = this.db.transaction(() => {
+    // Correction penalty + insert + entity/TF-IDF post-processing must be
+    // atomic: a failure mid-way must not leave an orphan fact committed
+    // without its derived rows (or the original fact penalised without a
+    // replacement).
+    const runAdd = this.db.transaction((): number => {
+      let trust = clampTrust(opts.trust ?? this.defaultTrust);
       if (correctionOf !== null) {
         const original = this.get(correctionOf);
         if (!original) throw new Error(`memory.add: correction_of #${correctionOf} not found`);
@@ -190,17 +200,17 @@ export class MemoryStore {
         )
         .get(trimmed, category, tags, trust, scopeKey, correctionOf, source);
       if (!row) throw new Error("memory.add: insert returned no row");
-      return row.fact_id;
+      const factId = row.fact_id;
+
+      // Post-insert: extract entities and link
+      this._linkEntities(factId, trimmed);
+
+      // Post-insert: compute TF-IDF vector
+      this._computeTfIdf(factId, trimmed);
+
+      return factId;
     });
-    const factId = insertFact();
-
-    // Post-insert: extract entities and link
-    this._linkEntities(factId, trimmed);
-
-    // Post-insert: compute TF-IDF vector
-    this._computeTfIdf(factId, trimmed);
-
-    return factId;
+    return runAdd();
   }
 
   update(fact_id: number, opts: UpdateOptions): boolean {
@@ -475,7 +485,7 @@ export class MemoryStore {
            WHERE facts_fts MATCH ? AND f.trust_score >= ? AND f.scope = ?
            ORDER BY f.trust_score DESC, f.fact_id DESC LIMIT ?`,
         )
-        .all(phrase, minTrust, opts.scope ?? SCOPE_GLOBAL, opts.limit ?? 10) as unknown as Fact[];
+        .all(phrase, minTrust, opts.scope ?? SCOPE_GLOBAL, limit) as unknown as Fact[];
     }
 
     // Use entity table for structural lookup

@@ -5,20 +5,41 @@
  * (or $PICO_HOME/agent/settings.json). Callers should tolerate malformed
  * or missing settings and fall back to safe defaults.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { picoSettingsPath } from "./paths.ts";
 
 export type Settings = Record<string, unknown>;
 
+/** Set when settings.json exists but failed to parse. */
+let settingsDamaged = false;
+
+export function __resetSettingsDamagedForTests(): void {
+  settingsDamaged = false;
+}
+
+/** True when settings.json exists but is unreadable — writes must be refused. */
+export function isSettingsDamaged(): boolean {
+  return settingsDamaged;
+}
+
 export function readSettings(): Settings {
   try {
     const parsed = JSON.parse(readFileSync(picoSettingsPath(), "utf-8"));
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      settingsDamaged = false;
       return parsed as Settings;
     }
   } catch {
     // Missing or malformed settings should never break startup.
+  }
+  // Distinguish "file missing" (fresh install) from "file damaged": a
+  // read-modify-write path must never silently overwrite a damaged file —
+  // that would wipe API keys / safety config permanently.
+  try {
+    if (existsSync(picoSettingsPath())) settingsDamaged = true;
+  } catch {
+    // ignore
   }
   return {};
 }

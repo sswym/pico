@@ -4,11 +4,13 @@ import { createHash } from "node:crypto";
 import { completeSimple, type Api, type ImageContent, type Model, type TextContent } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readSettingsObject } from "../settings.ts";
-import { isPrivateHost } from "../web/fetch.ts";
+import { isPrivateHost, withTimeoutSignal } from "../web/fetch.ts";
 
 const DEFAULT_PROMPT =
-  "Describe everything visible in this image in thorough detail. Include any text, code, UI, data, objects, layout, colors, and notable visual information.";
+  "Describe everything visible in this image in thorough detail. Include any text, code, UI, data, objects, layouts, colors, and notable visual information.";
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const IMAGE_FETCH_TIMEOUT_MS = 15_000;
+const MAX_IMAGE_REDIRECTS = 5;
 
 export interface VisionConfig {
   provider: string;
@@ -99,19 +101,42 @@ function normalizeBase64(data: string): { data: string; mimeType?: string } {
 }
 
 async function imageFromUrl(url: string, deps: VisionAnalyzeDeps, signal?: AbortSignal): Promise<ImageContent> {
-  const parsed = new URL(url);
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new Error("image_url must use http or https");
-  }
-  // Mirror webFetch's private-network guard: a URL pointing at loopback or
-  // cloud metadata must not be fetched (the fetched content is forwarded to
-  // the vision provider and could leak through the analysis text).
-  if (isPrivateHost(parsed.hostname)) {
-    throw new Error("Refusing to fetch image from localhost or private network address");
-  }
+  // Bound the whole fetch (headers + body) — a server that accepts the
+  // connection and then stalls must not hang the agent loop forever.
+  const timeout = withTimeoutSignal(signal, IMAGE_FETCH_TIMEOUT_MS);
+  try {
+    let currentUrl = url;
+    for (let hop = 0; ; hop++) {
+      const parsed = new URL(currentUrl);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+        throw new Error("image_url must use http or https");
+      }
+      // Mirror webFetch's private-network guard on EVERY hop: a public URL
+      // that 302s to loopback or cloud metadata must not be fetched (the
+      // content is forwarded to the vision provider and could leak through
+      // the analysis text). `redirect: "manual"` below is what makes the
+      // per-hop re-check possible.
+      if (isPrivateHost(parsed.hostname)) {
+        throw new Error("Refusing to fetch image from localhost or private network address");
+      }
 
-  const response = await deps.fetchImpl(url, { signal });
-  if (!response.ok) throw new Error(`image_url fetch failed: HTTP ${response.status}`);
+      const response = await deps.fetchImpl(currentUrl, { signal: timeout.signal, redirect: "manual" });
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        if (!location) throw new Error(`image_url redirect (${response.status}) without Location`);
+        if (hop >= MAX_IMAGE_REDIRECTS) throw new Error("Too many redirects fetching image_url");
+        currentUrl = new URL(location, currentUrl).toString();
+        continue;
+      }
+      if (!response.ok) throw new Error(`image_url fetch failed: HTTP ${response.status}`);
+      return await readImageResponse(response);
+    }
+  } finally {
+    timeout.cleanup();
+  }
+}
+
+async function readImageResponse(response: Response): Promise<ImageContent> {
   if (!response.body) {
     const bytes = Buffer.from(await response.arrayBuffer());
     if (bytes.length > MAX_IMAGE_BYTES) throw new Error(`image is too large (${bytes.length} bytes)`);

@@ -88,7 +88,7 @@ test("doctor extension registers /doctor and sends a visible report", async () =
   };
 
   doctorExtension(fakePi as any);
-  await commands.get("doctor").handler("", { cwd: "/repo/app" });
+  await commands.get("doctor").handler("", { cwd: "/repo/app", hasUI: true });
 
   expect(messages).toHaveLength(1);
   expect(messages[0].customType).toBe("pico.doctor");

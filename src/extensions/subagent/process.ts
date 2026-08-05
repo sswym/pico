@@ -146,22 +146,36 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 			if (applyJsonModeLine(options.result, line)) options.onMessage?.();
 		};
 
+		// Chunks can split a multi-byte UTF-8 character; decoding each chunk
+		// with String(data) would replace the split character with U+FFFD and
+		// corrupt the parsed output. A streaming decoder keeps the state across
+		// chunk boundaries (flushed on close).
+		const stdoutDecoder = new TextDecoder("utf-8");
+		const stderrDecoder = new TextDecoder("utf-8");
+
 		proc.stdout.on("data", (data) => {
-			buffer += String(data);
+			const text = typeof data === "string" ? data : stdoutDecoder.decode(data as Uint8Array, { stream: true });
+			buffer += text;
 			const lines = buffer.split("\n");
 			buffer = lines.pop() || "";
 			for (const line of lines) processLine(line);
 		});
 
 		proc.stderr.on("data", (data) => {
-			options.result.stderr += String(data);
+			options.result.stderr += typeof data === "string" ? data : stderrDecoder.decode(data as Uint8Array, { stream: true });
 		});
 
 		proc.on("close", (code) => {
 			if (timeoutHandle) clearTimer(timeoutHandle);
 			if (killTimer) clearTimer(killTimer);
+			// Flush any trailing bytes held by the streaming decoders.
+			buffer += stdoutDecoder.decode();
+			options.result.stderr += stderrDecoder.decode();
 			if (buffer.trim()) processLine(buffer);
-			resolve(code ?? 0);
+			// `code` is null when the child was killed by a signal (crash, OOM
+			// killer, external kill). Mapping that to 0 would dress a half-finished
+			// run as success; the abort/timeout paths carry their own flags.
+			resolve(code ?? 1);
 		});
 
 		proc.on("error", () => {

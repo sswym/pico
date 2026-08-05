@@ -6,9 +6,12 @@
  * fails and `selfRepair` is enabled, the agent is re-invoked with failure
  * details appended to its task.
  */
-import { execSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import type { AcceptanceConfig } from "./agents.ts";
 import { isFailedResult, type SingleResult } from "./results.ts";
+
+const EVIDENCE_TIMEOUT_MS = 60_000;
+const EVIDENCE_OUTPUT_CAP = 500;
 
 export interface GateResult {
 	passed: boolean;
@@ -94,6 +97,91 @@ export async function runGateAfterSuccess<TContext>(
 	);
 }
 
+interface EvidenceRun {
+	exitCode: number | null;
+	output: string;
+	timedOut: boolean;
+	aborted: boolean;
+}
+
+/**
+ * Run one evidence command asynchronously. The agent loop must never block
+ * on an evidence command: `execSync` would freeze the whole pico (UI, other
+ * tools, MCP in-flight requests) for up to 60s per command, and an AbortSignal
+ * could not interrupt an in-flight sync command. Async spawn keeps the event
+ * loop responsive and lets cancellation land immediately.
+ */
+function runEvidenceCommand(command: string, cwd: string, signal?: AbortSignal): Promise<EvidenceRun> {
+	return new Promise((resolve) => {
+		const child = spawn("sh", ["-c", command], {
+			cwd,
+			stdio: ["ignore", "pipe", "pipe"],
+			// Own process group so a timeout/abort kills grandchildren too
+			// (npm/node subprocesses would otherwise outlive the shell and
+			// hold the pipes open).
+			detached: true,
+		});
+		let stdout = "";
+		let stderr = "";
+		let done = false;
+		let killed = false;
+
+		const killGroup = (sig: NodeJS.Signals) => {
+			if (killed) return;
+			killed = true;
+			try {
+				process.kill(-child.pid!, sig);
+			} catch {
+				try { child.kill(sig); } catch { /* already gone */ }
+			}
+		};
+
+		const finish = (partial: Partial<EvidenceRun>) => {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+			resolve({
+				exitCode: child.exitCode ?? null,
+				output: (stdout + stderr).slice(0, EVIDENCE_OUTPUT_CAP),
+				timedOut: false,
+				aborted: false,
+				...partial,
+			});
+		};
+
+		const escalate = () => {
+			// SIGKILL upgrade if the group ignores SIGTERM. `killed` (proc.killed
+			// semantics) flips on the first kill call, so the timer must not be
+			// gated on it; it is cleared on close, so firing means still alive.
+			const k2 = setTimeout(() => killGroup("SIGKILL"), 2000);
+			k2.unref?.();
+			child.once("close", () => clearTimeout(k2));
+		};
+
+		const onAbort = () => {
+			killGroup("SIGTERM");
+			escalate();
+			finish({ aborted: true });
+		};
+
+		const timer = setTimeout(() => {
+			killGroup("SIGTERM");
+			escalate();
+			finish({ timedOut: true });
+		}, EVIDENCE_TIMEOUT_MS);
+		timer.unref?.();
+
+		child.stdout.on("data", (d) => { stdout += String(d); });
+		child.stderr.on("data", (d) => { stderr += String(d); });
+		child.on("close", () => finish({}));
+		child.on("error", () => finish({ exitCode: 127 }));
+
+		if (signal?.aborted) onAbort();
+		else signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
 /**
  * Execute evidence commands and evaluate the acceptance gate.
  *
@@ -104,30 +192,30 @@ export async function runGateAfterSuccess<TContext>(
 export async function checkAcceptanceGate(
 	acceptance: AcceptanceConfig,
 	cwd: string,
-	_signal?: AbortSignal,
+	signal?: AbortSignal,
 ): Promise<GateResult> {
 	const evidenceResults: GateResult["evidenceResults"] = [];
 
 	for (const ev of acceptance.evidence ?? []) {
-		if (_signal?.aborted) break;
-		try {
-			const output = execSync(ev.command, {
-				cwd,
-				timeout: 60_000,
-				encoding: "utf-8",
-				stdio: ["pipe", "pipe", "pipe"],
-			});
-			const expectExit0 = ev.expect !== "exit 1";
-			evidenceResults.push({ command: ev.command, output: output.slice(0, 500), passed: expectExit0 });
-		} catch (err: any) {
-			const output = (err.stdout || "") + (err.stderr || "");
-			const expectExit1 = err.status !== 0 && ev.expect === "exit 1";
-			evidenceResults.push({
-				command: ev.command,
-				output: output.slice(0, 500),
-				passed: expectExit1,
-			});
+		if (signal?.aborted) break;
+		const run = await runEvidenceCommand(ev.command, cwd, signal);
+
+		let passed: boolean;
+		if (run.timedOut || run.aborted || run.exitCode === null) {
+			// A timed-out / killed command is never a passing check — exit 127,
+			// missing binaries and signal deaths are failures, not "exit 1".
+			passed = false;
+		} else if (ev.expect === "exit 1") {
+			passed = run.exitCode === 1;
+		} else if (ev.expect === undefined || ev.expect === "exit 0") {
+			passed = run.exitCode === 0;
+		} else {
+			// Unknown expect value is a configuration error — fail loudly with
+			// the reason instead of silently treating it as exit-0.
+			passed = false;
+			run.output = `${run.output}\n[acceptance] unknown expect value: ${ev.expect}`.trim();
 		}
+		evidenceResults.push({ command: ev.command, output: run.output, passed });
 	}
 
 	// Criteria without a matching evidence entry are considered failed.

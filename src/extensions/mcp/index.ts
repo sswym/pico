@@ -141,6 +141,10 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
     /** Tool names registered this process — reconnect must not re-register. */
     const registeredTools = new Set<string>();
     let connectedCwd: string | null = null;
+    /** Servers connected successfully for the current cwd. */
+    const connectedServerIds = new Set<string>();
+    /** Servers that failed this connect pass; retried on the next session_start. */
+    const failedServerIds = new Set<string>();
     /** Bumped per connect; stale generations close their own handles and stop. */
     let connectGeneration = 0;
 
@@ -157,23 +161,37 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
   // ── Connect to MCP servers once the session cwd is known ────────────────
 
     async function connect(cwd: string): Promise<void> {
-      if (connectedCwd === cwd) return;
       const generation = ++connectGeneration;
-      // Invalidate every active tool ref so in-flight closures fail fast
-      // instead of calling a server that is about to be closed. The
-      // toolRefHolders get repointed to the new generation below.
-      for (const ref of activeTools.values()) ref.handle = null;
-      for (const entry of entries) {
-        if (entry.handle) deps.close(entry.handle);
+      if (connectedCwd !== cwd) {
+        // Invalidate every active tool ref so in-flight closures fail fast
+        // instead of calling a server that is about to be closed. The
+        // toolRefHolders get repointed to the new generation below.
+        for (const ref of activeTools.values()) ref.handle = null;
+        for (const entry of entries) {
+          if (entry.handle) deps.close(entry.handle);
+        }
+        entries.length = 0;
+        activeTools.clear();
+        connectedCwd = cwd;
+        failedServerIds.clear();
+        connectedServerIds.clear();
       }
-      entries.length = 0;
-      activeTools.clear();
-      connectedCwd = cwd;
 
       const servers = deps.load(cwd);
 
-      for (const [id, config] of Object.entries(servers)) {
+      // Only servers not yet connected for this cwd are attempted; previously
+      // failed ones are retried on every later session_start instead of being
+      // given up silently for the rest of the session.
+      const targets = Object.entries(servers).filter(
+        ([id]) => !connectedServerIds.has(id),
+      );
+      if (targets.length === 0) return;
+
+      // Connect servers in parallel: a slow/hung server must not delay the
+      // healthy ones (previously serial, one 30s timeout per server).
+      await Promise.allSettled(targets.map(async ([id, config]) => {
         let handle: McpServerHandle | undefined;
+        const registeredThisServer: string[] = [];
         try {
           handle = deps.spawn(id, config);
           const initResult = await deps.initialize(handle);
@@ -199,6 +217,7 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
             const schema = tool.inputSchema ?? { type: "object" as const, properties: {} };
             const ref: ActiveTool = { handle, toolName: tool.name };
             activeTools.set(piToolName, ref);
+            registeredThisServer.push(piToolName);
 
             let holder = toolRefHolders.get(piToolName);
             if (!holder) {
@@ -240,6 +259,17 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
                   }
                   try {
                     const result = await deps.callTool(current.handle, current.toolName, params as Record<string, unknown>);
+                    // The agent loop derives isError ONLY from thrown errors —
+                    // a returned isError field is dropped, so a server-side
+                    // tool failure must throw to render as an error.
+                    if (result.isError === true) {
+                      const text = result.content
+                        .filter((c) => c.type === "text")
+                        .map((c) => c.text)
+                        .join("\n")
+                        .trim();
+                      throw new Error(text || `MCP tool "${tool.name}" failed (server reported isError)`);
+                    }
                     return {
                       content: result.content.map((c) => {
                         if (c.type === "text") return { type: "text" as const, text: c.text };
@@ -257,7 +287,6 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
                         };
                       }),
                       details: { server: id, tool: tool.name },
-                      isError: result.isError ?? false,
                     };
                   } catch (e) {
                     const msg = e instanceof Error ? e.message : String(e);
@@ -271,12 +300,22 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
           }
 
           entries.push({ id, serverName, serverVersion, toolCount: tools.length, toolNames, handle });
+          connectedServerIds.add(id);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           if (handle) deps.close(handle);
+          // Roll back this server's own registrations so a half-connected
+          // server leaves no dangling active tools behind.
+          for (const name of registeredThisServer) {
+            const ref = activeTools.get(name);
+            if (ref) ref.handle = null;
+            activeTools.delete(name);
+            toolRefHolders.delete(name);
+          }
+          failedServerIds.add(id);
           entries.push({ id, error: msg });
         }
-      }
+      }));
       updateMcpStatus(lastCtx, entries);
     }
 
@@ -288,12 +327,18 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
 
   // Cleanup on shutdown
     pi.on("session_shutdown", () => {
+      // Null every holder ref first: tools invoked between shutdown and the
+      // next connect must fail fast ("not active") instead of writing to a
+      // closed handle and hanging for the request timeout.
+      for (const ref of activeTools.values()) ref.handle = null;
       for (const entry of entries) {
         if (entry.handle) deps.close(entry.handle);
       }
       entries.length = 0;
       activeTools.clear();
       connectedCwd = null;
+      connectedServerIds.clear();
+      failedServerIds.clear();
       updateMcpStatus(lastCtx, entries);
       lastCtx = undefined;
     });
