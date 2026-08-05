@@ -13,11 +13,13 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
+import { subscribeExtensionEvent } from "../events.ts";
 import { formatTodoList, TODO_DESCRIPTION, TODO_PROMPT } from "./prompt.ts";
 import { TodoWriteParams } from "./schema.ts";
 import { TodoStore } from "./store.ts";
 import {
   clearTodoWidget,
+  collapseTodoWidget,
   ensureTodoWidget,
   registerTodoShortcut,
   removeTodoWidgetState,
@@ -26,6 +28,10 @@ import {
 } from "./widget.ts";
 
 const SESSION_FALLBACK = "__default__";
+
+/** Last session_start ctx — used by the plan_mode_changed subscriber to
+ * collapse the panel of the active session. */
+let lastSessionCtx: ExtensionContext | null = null;
 
 function sessionKey(ctx: { sessionManager?: { getSessionId?: () => string | undefined } }): string {
   try {
@@ -130,8 +136,17 @@ export const todoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   });
 
   pi.on("session_start", (_event, ctx) => {
+    lastSessionCtx = ctx;
     ensureTodoWidget(ctx, (session) => store.get(session));
     syncTodoWidget(ctx, (session) => store.get(session));
+  });
+
+  // Plan mode suspends the todo panel: entering plan mode collapses it so
+  // the stale in-flight task list does not sit above the plan discussion,
+  // and exiting restores it for the execution phase.
+  subscribeExtensionEvent("plan_mode_changed", ({ active }) => {
+    if (!active || !lastSessionCtx) return;
+    collapseTodoWidget(lastSessionCtx);
   });
 
   // Switching/forking sessions clears only the active session's transient list.

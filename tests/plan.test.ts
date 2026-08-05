@@ -281,3 +281,59 @@ test("/plan command flips planActive=true", async () => {
     join(tmpRoot, "plans", "via-cmd.md"),
   );
 });
+
+// ---- plan_mode_changed event publishing (P1) ------------------------------
+
+import { __resetExtensionEventsForTests, subscribeExtensionEvent } from "../src/extensions/events.ts";
+
+function collectPlanModeEvents(): Array<{ active: boolean }> {
+  const events: Array<{ active: boolean }> = [];
+  subscribeExtensionEvent("plan_mode_changed", (event) => events.push(event));
+  return events;
+}
+
+test("EnterPlanMode publishes plan_mode_changed active=true", async () => {
+  __resetExtensionEventsForTests();
+  const pi = makeFakePi();
+  planExtension(pi as any);
+  const events = collectPlanModeEvents();
+
+  const tool = pi.tools.get("EnterPlanMode");
+  await tool.execute("id", {}, new AbortController().signal, () => {}, { cwd: "/repo", sessionManager: { getSessionId: () => "s1" } });
+
+  expect(events).toEqual([{ active: true }]);
+  __resetExtensionEventsForTests();
+});
+
+test("ExitPlanMode approval publishes plan_mode_changed active=false", async () => {
+  __resetExtensionEventsForTests();
+  const pi = makeFakePi();
+  planExtension(pi as any);
+  const events = collectPlanModeEvents();
+
+  const enter = pi.tools.get("EnterPlanMode");
+  await enter.execute("id", {}, new AbortController().signal, () => {}, { cwd: "/repo", sessionManager: { getSessionId: () => "s1" } });
+
+  const exit = pi.tools.get("ExitPlanMode");
+  await exit.execute("id", {}, new AbortController().signal, () => {}, {
+    cwd: "/repo",
+    sessionManager: { getSessionId: () => "s1" },
+    hasUI: true,
+    ui: { confirm: async () => true },
+  });
+
+  expect(events).toEqual([{ active: true }, { active: false }]);
+  __resetExtensionEventsForTests();
+});
+
+test("/plan command publishes plan_mode_changed active=true", async () => {
+  __resetExtensionEventsForTests();
+  const pi = makeFakePi();
+  planExtension(pi as any);
+  const events = collectPlanModeEvents();
+
+  await pi.commands.get("plan").handler("", { cwd: "/repo", ui: { notify: () => {} } });
+
+  expect(events).toEqual([{ active: true }]);
+  __resetExtensionEventsForTests();
+});

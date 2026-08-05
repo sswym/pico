@@ -180,6 +180,9 @@ export interface MemoryProvider {
   clear(): void;
   count(): number;
 
+  /** Facts per category; optional (only builtin backend implements it). */
+  countByCategory?(): Array<{ category: string; n: number }>;
+
   search(query: string, opts?: SearchOptions): Fact[];
   probe(entity: string, opts?: SearchOptions): Fact[];
   list(opts?: SearchOptions): Fact[];

@@ -111,6 +111,13 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
         lines.push(`Memory provider: ${info.name}`);
         lines.push(`Available: ${info.available ? "yes" : "no"}`);
         lines.push(`Facts: ${info.factCount}`);
+        if (info.categoryCounts && info.categoryCounts.length > 0) {
+          const byCategory = info.categoryCounts.map((c) => `${c.category} ${c.n}`).join(", ");
+          lines.push(`By category: ${byCategory}`);
+        }
+        if (info.dbPath) {
+          lines.push(`Database: ${info.dbPath}`);
+        }
         lines.push(`Curated notes: ${curated.count()}`);
         const providers = ProviderManager.availableProviders()
           .map((p) => (p === "holographic" ? `${p} (demo stub — use builtin)` : p))

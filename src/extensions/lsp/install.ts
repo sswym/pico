@@ -205,11 +205,24 @@ export function getInstallHint(command: string): InstallHint | null {
   return { command: cmd, packageName: entry.pkg, manager: entry.manager };
 }
 
+/**
+ * Known commands without a registry entry still deserve an actionable hint.
+ * `tsc` is the common one — bun projects (pico's own runtime) never need a
+ * global tsc, so suggest the project-local install.
+ */
+const FALLBACK_INSTALL_HINTS: Record<string, string> = {
+  tsc: "bun add -d typescript (or: npm install -g typescript)",
+};
+
 /** Get a user-friendly description of an install hint for display. */
 export function formatInstallHint(command: string): string {
   const hint = getInstallHint(command);
   if (!hint) {
-    return `Command "${command}" not found. Please install it manually and try again.`;
+    const fallback = FALLBACK_INSTALL_HINTS[command];
+    if (fallback) {
+      return `Command "${command}" not found. Install it with:\n  ${fallback}`;
+    }
+    return `Command "${command}" not found. Install it with your package manager, or disable the server in ~/.pico/lsp.json.`;
   }
   return `Command "${command}" not found. Install it with:\n  ${hint.command}`;
 }

@@ -107,7 +107,7 @@
 
 ## 2. 子代理（`subagent` 工具 + 工作流斜杠命令）
 
-**内置角色**（`src/prompts/agents/*.md`，共 6 个）：
+**内置角色**（`src/prompts/agents/*.md`，共 16 个，全部可直接按名调用）：
 
 | 角色 | 用途 |
 | --- | --- |
@@ -117,6 +117,16 @@
 | `reviewer` | 只读质量/安全审查 |
 | `oracle` | 独立视角咨询、第二意见 |
 | `researcher` | 调研类任务 |
+| `executor` | 按既定计划专注实现/重构/测试 |
+| `editor` | 定向编辑与修复 |
+| `debugger` | 根因分析与回归定位 |
+| `architect` | 架构与设计建议（只读） |
+| `consultant` | 领域咨询（只读） |
+| `director` | 多代理编排视角 |
+| `product` | 需求拆解与验收视角 |
+| `quick` | 轻量快捷任务 |
+| `verifier` | 验证策略与完成度检查（只读） |
+| `consensus` | 多视角共识评审 |
 
 每个角色的提示词都指示其行动前先查询 `memory(action="search", ...)`，并将持久化发现写回，使子代理运行能共享主会话的项目上下文。
 
@@ -243,6 +253,16 @@ subagent(chain=[
 ```
 
 注意：钩子配置按工作目录加载并缓存，切换项目后自动重新加载；钩子输出超过 4 KiB 会被截断。
+
+---
+
+## 9.5 离线帮助、故障引导与崩溃恢复（`guidance` 扩展）
+
+- **`/help`**（别名 `/commands`）：离线命令与快捷键速查，无需模型即可查看；全新用户不再因 `/help` 被当消息发送而撞上 API key 报错。
+- **无模型引导**：交互会话启动时若未配置模型，会发送中文引导消息（指向 `pico setup`），替代仅指向 node_modules 的上游报错。
+- **推理模型 400 引导**：当多轮工具调用被代理以 `reasoning_content must be passed back` 拒绝时，自动追加中文修复指引（降低思考级别 → 在 `models.yml` 的 provider `compat` 加 `requiresReasoningContentOnAssistantMessages: true` → 切换非推理模型）。
+- **崩溃恢复**：会话启动写 `~/.pico/last-session.json` 标记，正常退出（`quit`）清除；若上次会话被强杀（SIGKILL/崩溃），下次启动提示用 `pico -c` / `pico -r` 续接。
+- **生成阶段反馈**：长生成期间工作区显示 `thinking Ns` / `streaming Ns` / `tool <name> Ns` 动态状态，替代无信息的 "Working..."。
 
 ---
 
@@ -406,6 +426,7 @@ bun test tests/<feature>.test.ts
 - `/vibe` 斜杠命令，用于即时切换系统提示词块。
 - 子代理：可选共享单个 SQLite WAL 与主会话，使子进程的 `memory(add)` 立即可见。
 - 成本追踪器（v0.2 跳过——pi 已显示上下文百分比）。
-- LSP 增强：事件驱动诊断（替代固定等待窗口）、references 重试机制、诊断版本跟踪、多服务器并发诊断合并。
+- LSP 增强：事件驱动诊断（替代固定等待窗口）、references 重试机制、诊断版本跟踪、多服务器并发诊断合并；独立的 LSP 写权限层级（放开受信任项目的 `apply=true`/`rename`，与系统提示词一致）。
 - 记忆归档与衰减策略（控制 facts 库膨胀）。
 - 子代理输出上限（stderr 截断、会话消息封顶）。
+- 上下文缓存命中率展示（需上游 ContextUsage 提供缓存数据）。

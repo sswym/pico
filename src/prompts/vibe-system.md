@@ -76,11 +76,10 @@
 | "X 的定义在哪里" | `lsp(action="definition", ...)` | ❌ `grep` 搜索函数签名 |
 | 编辑/写入代码之后 | `lsp(action="diagnostics", file=...)` | ❌ 不检查就声称完成 |
 | 检查整个项目编译状态 | `lsp(action="diagnostics", file="*")` | ❌ 运行 tsc 手动检查 |
-| 重命名文件 | `lsp(action="rename_file", ...)` | ❌ 手动 rename + grep 替换引用 |
+| 重命名符号/文件 | 无（`lsp rename`/`rename_file` 当前被策略阻断）→ 用 edit/write 手工实施，再用 `lsp references` 核对所有引用 | ❌ 用 grep 搜索文本代替 references |
 
 **额外能力：**
-- `lsp(action="code_actions", ...)` — 列出可用的快速修复和重构。
-- `lsp(action="code_actions", ..., apply=true)` — 自动应用匹配的代码操作。
+- `lsp(action="code_actions", ...)` — 列出可用的快速修复和重构；**当前版本 `apply=true` 被策略阻断**：先列出，再用 edit/write 手工应用匹配的修复。
 
 ## 使用子 agent 委派
 

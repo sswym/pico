@@ -48,7 +48,7 @@ test("renderClaudeLikeFooterLine includes pico, statuses, context bar, model, an
 
   expect(line).toContain("dir pico");
   expect(line).toContain("think:med");
-  expect(line).toContain("MCP 1");
+  expect(line).toContain("MCP 1 ok");
   expect(line).toContain("LSP: typescript");
   expect(line).toContain("◫ 19k/200k (9.5%)");
   expect(line).not.toContain("↑");
@@ -156,7 +156,8 @@ test("footer git helpers parse and format dirty status", () => {
     untracked: 1,
   });
   expect(__test.compactStatus("LSP: typescript-language-server")).toBe("LSP: typescript");
-  expect(__test.compactStatus("MCP: 1 connected")).toBe("MCP 1");
+  expect(__test.compactStatus("MCP: 1 connected")).toBe("MCP 1 ok");
+  expect(__test.compactStatus("MCP: 2 ok, 1 failed")).toBe("MCP 2 ok 1 failed");
   expect(__test.compactThinkingLevel("medium")).toBe("think:med");
 });
 

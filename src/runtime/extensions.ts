@@ -1,7 +1,8 @@
-import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { ExtensionFactory, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { askExtension } from "../extensions/ask/index.ts";
 import { cacheOptimizerExtension } from "../extensions/cache-optimizer/index.ts";
 import { doctorExtension } from "../extensions/doctor/index.ts";
+import { guidanceExtension } from "../extensions/guidance/index.ts";
 import { hooksExtension } from "../extensions/hooks/index.ts";
 import { initExtension } from "../extensions/init/index.ts";
 import { inputHistoryExtension } from "../extensions/input-history/index.ts";
@@ -41,8 +42,19 @@ export class ExtensionRegistry {
     this.validate();
   }
 
-  factories(): ExtensionFactory[] {
-    return this.extensions.map((extension) => extension.factory);
+  /**
+   * Return named inline extensions so the upstream startup "Extensions"
+   * listing shows nothing for pico's built-ins. Names still identify the
+   * extension internally; `hidden: true` keeps the noisy `<inline:N>`
+   * placeholder rows out of the startup panel (upstream renders hidden
+   * inline extensions as `<inline:name>` otherwise).
+   */
+  factories(): InlineExtension[] {
+    return this.extensions.map((extension) => ({
+      name: extension.name,
+      factory: extension.factory,
+      hidden: true,
+    }));
   }
 
   names(): string[] {
@@ -127,6 +139,7 @@ export const defaultExtensions = [
     safety: { touchesFilesystem: true, spawnsProcess: true },
   },
   { name: "doctor", factory: doctorExtension, phase: "diagnostics" },
+  { name: "guidance", factory: guidanceExtension, phase: "diagnostics" },
 ] satisfies readonly PicoExtension[];
 
 export function createDefaultExtensionRegistry(): ExtensionRegistry {

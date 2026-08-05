@@ -34,7 +34,7 @@ bun test tests/memory.test.ts  # 运行单个测试文件
 
 ## 架构
 
-pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 19 个 ExtensionFactory 插件注入功能。
+pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 20 个 ExtensionFactory 插件注入功能。
 
 ### 入口链
 
@@ -56,7 +56,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）→ main
 ### 关键目录
 
 ```
-src/extensions/    — 19 个功能扩展（memory、subagent、lsp、plan 等）
+src/extensions/    — 20 个功能扩展（memory、subagent、lsp、plan、guidance 等）
 src/prompts/       — 系统提示词模板（.md）
 src/skills/        — 内置技能（verify、recap、agents-init）
 scripts/build.ts   — 唯一构建脚本

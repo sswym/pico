@@ -28,5 +28,5 @@ AGENTS.md 只包含 "移除后 pico 会犯错" 的内容：
 </directives>
 
 <output>
-分析后在项目根目录写入 AGENTS.md。
+分析后在项目根目录写入 AGENTS.md。流程较长时用户需要看到进度：每个阶段开始时输出一行中文标记（如 `[init 1/3] 扫描项目结构与配置…`、`[init 2/3] 综合分析…`、`[init 3/3] 写入 AGENTS.md…`），避免用户误以为卡死。
 </output>

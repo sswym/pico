@@ -36,6 +36,10 @@ export interface ProviderInfo {
   writable: boolean;
   searchable: boolean;
   factCount: number;
+  /** Facts per category, when the provider supports it. */
+  categoryCounts?: Array<{ category: string; n: number }>;
+  /** Backend database path, when known. */
+  dbPath?: string;
 }
 
 export interface MemoryProviderFactory {
@@ -188,6 +192,8 @@ export class ProviderManager {
       writable: true,
       searchable: true,
       factCount: this.provider.count(),
+      categoryCounts: this.provider.countByCategory?.(),
+      dbPath: this.provider.name === "builtin" ? resolveDbPath() : undefined,
     };
   }
 

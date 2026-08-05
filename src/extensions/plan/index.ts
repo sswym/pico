@@ -28,9 +28,15 @@ import {
 import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
 import { picoHome } from "../paths.ts";
 import { allowUnattendedPlanApproval } from "../policy.ts";
+import { publishExtensionEvent } from "../events.ts";
 import { PLAN_MODE_BLOCK } from "./prompt.ts";
 
 const PLAN_ALLOWED_TOOLS = new Set(["read", "grep", "find", "ls", "EnterPlanMode", "SubmitPlan", "ExitPlanMode"]);
+
+/** Keep other extensions (e.g. the todo panel) in sync with plan mode. */
+function publishPlanMode(active: boolean): void {
+  publishExtensionEvent("plan_mode_changed", { active });
+}
 
 const SESSION_FALLBACK = "default";
 
@@ -112,6 +118,7 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         planActive = true;
         planFile = resolvePlanFile(ctx);
         await ensurePlanFile(planFile);
+        publishPlanMode(true);
         const text =
           `Plan mode enabled. Plan file: ${planFile}\n` +
           `Use read/grep/find/ls only. Call SubmitPlan with the complete plan, then call ExitPlanMode.`;
@@ -193,6 +200,7 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
         if (approved) {
           planActive = false;
+          publishPlanMode(false);
         }
 
         const text = approved
@@ -216,6 +224,7 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       planActive = true;
       planFile = resolvePlanFile(ctx);
       await ensurePlanFile(planFile);
+      publishPlanMode(true);
       try {
         ctx.ui.notify(`Plan mode enabled. Plan file: ${planFile}`, "info");
       } catch {}
@@ -225,11 +234,13 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // Leaving a session must not carry plan mode (or its stale plan file) into
   // the next session — writes would stay blocked against the wrong file.
   pi.on("session_before_switch", () => {
+    if (planActive) publishPlanMode(false);
     planActive = false;
     planFile = null;
     return {};
   });
   pi.on("session_before_fork", () => {
+    if (planActive) publishPlanMode(false);
     planActive = false;
     planFile = null;
     return {};

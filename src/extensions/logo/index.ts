@@ -24,8 +24,11 @@ import type {
   ExtensionAPI,
   ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { basename, join } from "node:path";
 import { Spacer, Text, Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import pkg from "../../../package.json" with { type: "json" };
+import { picoSessionDir } from "../paths.ts";
 
 // 5-line ASCII logo. Kept in a const so tests can pin it. We use plain
 // string literals with doubled backslashes — `String.raw\`...\\\`` would
@@ -65,22 +68,67 @@ function modelIdFromCtx(ctx?: { model?: { id?: string; provider?: string } }): s
   return ctx?.model?.id ?? "no-model";
 }
 
+export interface SessionSummary {
+  /** Short human label: "<cwd-basename> · <MM-DD HH:mm>" (local time). */
+  label: string;
+  /** Absolute path of the session file. */
+  path: string;
+}
+
+function sessionLabelFromFile(file: string, dir: string): string {
+  try {
+    const firstLine = readFileSync(join(dir, file), "utf-8").split("\n")[0];
+    if (firstLine) {
+      const parsed = JSON.parse(firstLine) as { cwd?: string };
+      if (typeof parsed?.cwd === "string" && parsed.cwd.length > 0) {
+        return basename(parsed.cwd);
+      }
+    }
+  } catch {
+    // Unreadable/empty session file: fall back to the timestamp prefix.
+  }
+  return file.replace(/^\d{4}-\d{2}-\d{2}T[\d-]+Z?_/, "").replace(/\.jsonl$/, "").slice(0, 24);
+}
+
+/** Newest session files under the pico session dir, most recent first. */
+export function recentSessions(limit = 2, dir = picoSessionDir()): SessionSummary[] {
+  try {
+    const files = readdirSync(dir)
+      .filter((file) => file.endsWith(".jsonl"))
+      .map((file) => ({ file, mtime: statSync(join(dir, file)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, limit);
+    return files.map(({ file }) => ({ label: sessionLabelFromFile(file, dir), path: join(dir, file) }));
+  } catch {
+    return [];
+  }
+}
+
+/** True when any session file exists (first-run detection). */
+export function hasAnySession(dir = picoSessionDir()): boolean {
+  try {
+    return readdirSync(dir).some((file) => file.endsWith(".jsonl"));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Build the rendered header string. Exposed for testing — the live
  * extension wraps this in a Text component via setHeader().
- *
- * Format:
- *   ✻ pico v<pico-version>
- *   / commands · ! bash · F7 todos
- *
- * Colours degrade gracefully — the upstream `theme.fg` is a no-op when the
- * terminal can't render ANSI.
  */
-export function renderLogoHeader(theme: {
-  fg: (color: string, text: string) => string;
-  bold: (text: string) => string;
-}, width = 96, ctx?: { model?: { id?: string; provider?: string } }): string {
+export function renderLogoHeader(
+  theme: {
+    fg: (color: string, text: string) => string;
+    bold: (text: string) => string;
+  },
+  width = 96,
+  ctx?: { model?: { id?: string; provider?: string } },
+  options: { firstRun?: boolean; recent?: SessionSummary[] } = {},
+): string {
   const picoVersion = (pkg as { version?: string }).version ?? "0.0.0";
+  const firstRun = options.firstRun ?? false;
+  const recent = options.recent ?? [];
   if (width < 72) {
     const brand =
       theme.fg("accent", "✻ ") +
@@ -96,7 +144,7 @@ export function renderLogoHeader(theme: {
   const rightWidth = innerWidth - leftWidth - 1;
   const leftRows = [
     "",
-    theme.bold(theme.fg("accent", "Welcome back!")),
+    theme.bold(theme.fg("accent", firstRun ? "Welcome to pico!" : "Welcome back!")),
     "",
     ...BLOCK_LOGO.map((line) => theme.fg("accent", line)),
     "",
@@ -104,6 +152,9 @@ export function renderLogoHeader(theme: {
     theme.fg("dim", ctx?.model?.provider ?? ""),
     "",
   ];
+  const recentRows = recent.length > 0
+    ? recent.map((session) => theme.fg("text", `• ${session.label}`))
+    : [theme.fg("dim", "no sessions yet — say hi!")];
   const rightRows = [
     theme.bold(theme.fg("accent", "Tips")),
     theme.fg("text", "/ for commands"),
@@ -116,7 +167,7 @@ export function renderLogoHeader(theme: {
     theme.fg("text", "- status in footer"),
     theme.fg("muted", "─".repeat(Math.max(0, rightWidth - 2))),
     theme.bold(theme.fg("accent", "Recent sessions")),
-    theme.fg("text", "• pico"),
+    ...recentRows,
     "",
   ];
   const rowCount = Math.max(leftRows.length, rightRows.length);
@@ -146,7 +197,16 @@ export const logoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           const container = new Container();
           const effectiveWidth =
             (tui as { terminal?: { columns?: number } } | undefined)?.terminal?.columns ?? width;
-          container.addChild(new Text(renderLogoHeader(theme, effectiveWidth, currentCtx), 1, 0));
+          container.addChild(
+            new Text(
+              renderLogoHeader(theme, effectiveWidth, currentCtx, {
+                firstRun: !hasAnySession(),
+                recent: recentSessions(2),
+              }),
+              1,
+              0,
+            ),
+          );
           container.addChild(new Spacer(1));
           return container.render(effectiveWidth);
         },

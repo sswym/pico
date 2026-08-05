@@ -88,6 +88,25 @@ const LspParams = Type.Object({
 
 // ── Extension factory ─────────────────────────────────────────────────────
 
+// A missing server binary is warned/prompted once per command per process.
+// Module-level (not closure) on purpose: upstream can re-run inline extension
+// factories on startup reloads, and a closure set would start empty again —
+// duplicating the warning. Startup warmup + every write of a matching file
+// would otherwise re-fire the notification (and re-ask the install dialog
+// after a decline).
+const warnedMissingCommands = new Set<string>();
+
+/** Test hook: clear the once-per-command warning cache. */
+export function __resetWarnedMissingCommandsForTests(): void {
+  warnedMissingCommands.clear();
+}
+
+function shouldWarnAboutMissingCommand(command: string): boolean {
+  if (warnedMissingCommands.has(command)) return false;
+  warnedMissingCommands.add(command);
+  return true;
+}
+
 export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   const state: LspManagerState = createLspManager();
   const ledger = new DiagnosticsLedger();
@@ -95,11 +114,17 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   /**
    * Try to start an LSP server. If the binary is missing (ENOENT),
    * prompt the user to auto-install and retry once.
+   *
+   * `quietMissingCommand` suppresses the missing-command warning/install
+   * dialog entirely — used for the startup warmup, which must not nag while
+   * the user has not asked for LSP yet (and which upstream's early UI frame
+   * would render twice). Real tool/write paths stay loud.
    */
   async function withMissingServerInstall<T>(
     workspaceRoot: string,
     ctx: ExtensionContext,
     start: () => Promise<T | null>,
+    opts?: { quietMissingCommand?: boolean },
   ): Promise<T | null> {
     try {
       return await start();
@@ -107,11 +132,16 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       if (!(err instanceof LspError) || err.errorCode !== COMMAND_NOT_FOUND) throw err;
       const fullCmd = err.message.match(/"(.+?)"/)?.[1];
       const cmd = fullCmd ? basename(fullCmd) : null;
+      const warnKey = cmd ?? fullCmd ?? "unknown";
+      if (!shouldWarnAboutMissingCommand(warnKey)) return null;
       const hint = cmd ? getInstallHint(cmd) : null;
       if (!hint) {
-        ctx.ui.notify(formatInstallHint(fullCmd ?? "unknown"), "warning");
+        if (!opts?.quietMissingCommand) {
+          ctx.ui.notify(formatInstallHint(fullCmd ?? "unknown"), "warning");
+        }
         return null;
       }
+      if (opts?.quietMissingCommand) return null;
       const doInstall = await ctx.ui.confirm(
         `Install LSP server "${cmd}"?`,
         `Command "${cmd}" not found. Install with:\n  ${hint.command}\n\nProceed?`,
@@ -142,8 +172,9 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   async function ensureServerWithInstall(
     workspaceRoot: string,
     ctx: ExtensionContext,
+    opts?: { quietMissingCommand?: boolean },
   ) {
-    return await withMissingServerInstall(workspaceRoot, ctx, () => ensureServer(state, workspaceRoot));
+    return await withMissingServerInstall(workspaceRoot, ctx, () => ensureServer(state, workspaceRoot), opts);
   }
 
   async function syncDocumentWithInstall(
@@ -437,7 +468,10 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.on("session_start", async (_event, ctx) => {
     ledger.clear();
     try {
-      const client = await ensureServerWithInstall(ctx.cwd, ctx);
+      // Startup warmup is quiet: no missing-command nagging (and no
+      // double-rendered early-frame warning) until the user actually
+      // triggers LSP or writes a matching file.
+      const client = await ensureServerWithInstall(ctx.cwd, ctx, { quietMissingCommand: true });
       if (client) {
         ctx.ui.setStatus("lsp", `LSP: ${client.serverName} ${client.displayVersion}`.trim());
       }

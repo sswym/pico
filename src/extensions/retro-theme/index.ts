@@ -13,13 +13,27 @@ import { join } from "node:path";
 import type {
   ExtensionAPI,
   ExtensionFactory,
+  ToolExecutionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import retroTheme from "../../theme/retro-terminal.json" with { type: "json" };
 import { picoAgentHome } from "../paths.ts";
 import { installClaudeLikeFooter } from "./footer.ts";
+import { ActivityTracker } from "./activity.ts";
 
 export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
+  // Generation-phase feedback: replace the bare "Working..." row with a
+  // live status (thinking Ns / streaming Ns / tool <name> Ns). Driven by
+  // lifecycle events so long silent phases stay self-explanatory.
+  const activity = new ActivityTracker();
+
+  pi.on("turn_start", () => activity.beginThinking());
+  pi.on("message_update", () => activity.beginStreaming());
+  pi.on("tool_execution_start", (event: ToolExecutionStartEvent) => activity.beginTool(event.toolName));
+  pi.on("tool_execution_end", () => activity.endTool());
+  pi.on("agent_end", () => activity.finish());
+
   pi.on("session_start", async (_event, ctx) => {
+    activity.attach((message) => ctx.ui.setWorkingMessage(message));
     // ── Sync theme to filesystem so discovery finds it ───────────────
     // ctx.ui.setTheme() checks instanceof Theme for objects, but we can
     // only pass a plain JSON import. So we write the file to the custom

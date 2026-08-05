@@ -64,7 +64,7 @@ test("buildRuntimeArgs does not duplicate existing bundled paths", () => {
   })).toEqual(["--prompt-template", promptsDir, "--skill", skillsDir]);
 });
 
-test("ExtensionRegistry returns factories in registration order", () => {
+test("ExtensionRegistry returns named hidden inline extensions in order", () => {
   const first: ExtensionFactory = () => {};
   const second: ExtensionFactory = () => {};
 
@@ -74,7 +74,12 @@ test("ExtensionRegistry returns factories in registration order", () => {
   ]);
 
   expect(registry.names()).toEqual(["first", "second"]);
-  expect(registry.factories()).toEqual([first, second]);
+  // Named + hidden inline extensions: upstream then shows no <inline:N>
+  // placeholder rows in the startup Extensions listing.
+  expect(registry.factories()).toEqual([
+    { name: "first", factory: first, hidden: true },
+    { name: "second", factory: second, hidden: true },
+  ]);
 });
 
 test("ExtensionRegistry rejects duplicates and unmet ordered dependencies", () => {

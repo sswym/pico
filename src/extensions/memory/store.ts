@@ -534,6 +534,15 @@ export class MemoryStore {
     return row?.n ?? 0;
   }
 
+  /** Facts per category, for /memory status. */
+  countByCategory(): Array<{ category: string; n: number }> {
+    return this.db
+      .query<{ category: string; n: number }, []>(
+        "SELECT category, COUNT(*) AS n FROM facts GROUP BY category ORDER BY n DESC, category ASC",
+      )
+      .all();
+  }
+
   /** Wipe everything. Used by /memory clear and tests. */
   clear(): void {
     this.db.exec("DELETE FROM fact_entities");

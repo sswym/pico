@@ -170,7 +170,8 @@ function cleanStatus(status: string): string {
 function compactStatus(status: string): string {
   return cleanStatus(status)
     .replace(/^LSP:\s*typescript-language-server\b/i, "LSP: typescript")
-    .replace(/^MCP:\s*(\d+)\s+connected\b/i, "MCP $1")
+    .replace(/^MCP:\s*(\d+)\s+connected\b/i, "MCP $1 ok")
+    .replace(/^MCP:\s*(\d+)\s+ok,\s*(\d+)\s+failed\b/i, "MCP $1 ok $2 failed")
     .replace(/^todos\s+/i, "todo ");
 }
 

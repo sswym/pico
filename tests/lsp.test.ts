@@ -712,3 +712,22 @@ describe("LSP writethrough diagnostics freshness", () => {
     expect(state.servers.has("fake-crash")).toBe(false);
   });
 });
+
+// ---- missing-server hints (P1) -------------------------------------------
+
+import { formatInstallHint } from "../src/extensions/lsp/install.ts";
+
+test("formatInstallHint suggests a project-local tsc install", () => {
+  const hint = formatInstallHint("tsc");
+  expect(hint).toContain("bun add -d typescript");
+});
+
+test("formatInstallHint fallback points at lsp.json for unknown commands", () => {
+  const hint = formatInstallHint("some-unknown-server");
+  expect(hint).toContain("~/.pico/lsp.json");
+});
+
+test("formatInstallHint keeps registry install commands for known servers", () => {
+  const hint = formatInstallHint("pyright");
+  expect(hint).toContain("npm install -g pyright");
+});

@@ -1249,3 +1249,24 @@ test("CuratedMemoryStore rejects add when the file drifted out of round-trip", (
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- category distribution + db path in /memory status (P2) ---------------
+
+test("MemoryStore.countByCategory groups facts per category", () => {
+  const store = new MemoryStore(":memory:");
+  try {
+    store.add("prefer bun over npm", { category: "user_pref" });
+    store.add("use kebab-case", { category: "convention" });
+    store.add("migrate to Postgres", { category: "project" });
+    store.add("tavily key in settings", { category: "tool" });
+
+    const byCategory = store.countByCategory();
+    expect(byCategory).toContainEqual({ category: "user_pref", n: 1 });
+    expect(byCategory).toContainEqual({ category: "convention", n: 1 });
+    expect(byCategory).toContainEqual({ category: "project", n: 1 });
+    expect(byCategory).toContainEqual({ category: "tool", n: 1 });
+    expect(byCategory.reduce((sum, c) => sum + c.n, 0)).toBe(4);
+  } finally {
+    store.close();
+  }
+});

@@ -40,7 +40,7 @@ flowchart TD
     U[用户终端] --> BIN[bin/pico.ts]
     BIN --> BOOT[bin/env-bootstrap.ts<br/>副作用: 目录/环境水合, 必须先于上游导入]
     BOOT --> MAIN[pi main<br/>agent loop / tool runtime / session / TUI]
-    MAIN --> REG[ExtensionRegistry<br/>19 个扩展工厂, 按序注册]
+    MAIN --> REG[ExtensionRegistry<br/>20 个扩展工厂, 按序注册]
     REG --> E1[prompt 层<br/>vibe / cache-optimizer / language]
     REG --> E2[ui 层<br/>retro-theme / input-history / logo]
     REG --> E3[tools 层<br/>todo / memory / subagent / vision / ask / init / plan / web / lsp / rtk]
@@ -64,7 +64,7 @@ bin/pico.ts
 
 ### 1.4 扩展注册顺序与依赖约束
 
-注册顺序：`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → doctor`（**19 个**；AGENTS.md 写"18 个"，存在文档漂移，见 §5.2）。
+注册顺序：`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → doctor → guidance`（**20 个**）。
 
 `ExtensionRegistry.validate()` 强制：名称唯一、`dependsOn` 只能引用已注册扩展（目前仅 logo → retro-theme）。`before_agent_start` 等事件处理器按注册顺序链式合并返回值，因此 **cache-optimizer 先于 memory 改写 systemPrompt**，动态回忆块不会被静态化到缓存前缀。
 
@@ -372,8 +372,8 @@ flowchart TD
 
 ### 5.1 现状
 
-- 功能面完整：19 扩展、415 用例全绿、`bun run verify`（tsc + 全量测试）通过；
-- 第二轮整改（2026-08-03）覆盖 3 高 / 15 中 / 21 低问题，全部附回归测试；
+- 功能面完整：20 扩展、447 用例全绿、`bun run verify`（tsc + 全量测试）通过；
+- 第三轮 UX 整改（2026-08-05，依据 `docs/ux-walkthrough-review.md`）：离线 `/help` 与无模型/推理 400/崩溃恢复引导（guidance 扩展）、config.yml 双轨冲突检测、`<inline:N>` 启动噪音消除（InlineExtension hidden）、LSP 缺失命令警告去重与可执行建议、生成阶段动态反馈、计划模式挂起 todo 面板、CLI 品牌统一、MCP 状态可读化、logo 首启文案与真实会话、`/memory status` 类别分布、rtk 启用提示；全部附回归测试；
 - 安全默认值：项目 hooks/MCP 默认关、非交互项目代理默认拒、LSP 写动作默认阻断、计划自动批准默认关；
 - 工具错误语义对齐上游：失败一律 throw（agent loop 仅以异常判定 isError）。
 

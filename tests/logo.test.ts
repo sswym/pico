@@ -148,3 +148,57 @@ test("model_select updates the header model and triggers a re-render", () => {
   expect(fresh).toContain("new-provider");
   expect(fresh).not.toContain("old-model");
 });
+
+// ---- first-run copy + real recent sessions (P2) --------------------------
+
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { hasAnySession, recentSessions } from "../src/extensions/logo/index.ts";
+
+test("renderLogoHeader greets first-run users differently from returning users", () => {
+  const theme = stubTheme;
+  expect(renderLogoHeader(theme, 96, undefined, { firstRun: true })).toContain("Welcome to pico!");
+  expect(renderLogoHeader(theme, 96, undefined, { firstRun: false })).toContain("Welcome back!");
+  expect(renderLogoHeader(theme, 96, undefined, { firstRun: true })).not.toContain("Welcome back!");
+});
+
+test("renderLogoHeader shows real recent sessions or a first-run hint", () => {
+  const theme = stubTheme;
+  const header = renderLogoHeader(theme, 96, undefined, {
+    recent: [{ label: "demo-app", path: "/x" }],
+  });
+  expect(header).toContain("• demo-app");
+  expect(header).not.toContain("• pico");
+
+  const empty = renderLogoHeader(theme, 96, undefined, { recent: [] });
+  expect(empty).toContain("no sessions yet");
+});
+
+test("recentSessions lists newest session files with cwd labels", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pico-logo-sessions-"));
+  try {
+    const older = join(dir, "2026-01-01T00-00-00-000Z_old.jsonl");
+    const newer = join(dir, "2026-02-01T00-00-00-000Z_new.jsonl");
+    writeFileSync(older, JSON.stringify({ type: "session", cwd: "/home/user/old-app" }) + "\n");
+    writeFileSync(newer, JSON.stringify({ type: "session", cwd: "/home/user/new-app" }) + "\n");
+    writeFileSync(join(dir, "not-a-session.txt"), "x");
+
+    const sessions = recentSessions(2, dir);
+    expect(sessions.map((s) => s.label)).toEqual(["new-app", "old-app"]);
+    expect(hasAnySession(dir)).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("recentSessions and hasAnySession tolerate an empty or missing dir", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pico-logo-empty-"));
+  try {
+    expect(recentSessions(2, dir)).toEqual([]);
+    expect(hasAnySession(dir)).toBe(false);
+    expect(recentSessions(2, join(dir, "missing"))).toEqual([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

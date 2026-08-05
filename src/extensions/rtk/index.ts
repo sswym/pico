@@ -116,6 +116,19 @@ export const rtkExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   const config = readRtkConfig();
   if (!config.enabled || config.mode !== "spawnHook" || process.env.PICO_RTK === "0") return;
 
+  let noticeShown = false;
+  pi.on("session_start", (_event, ctx) => {
+    if (noticeShown || !ctx.hasUI) return;
+    noticeShown = true;
+    try {
+      ctx.ui.notify(
+        "rtk 输出压缩已启用：受支持的 bash 命令将通过 rtk 执行以节省 token，" +
+          "输出可能与原命令不同。可在 settings.json 的 integrations.rtk.enabled 关闭。",
+        "info",
+      );
+    } catch {}
+  });
+
   const bashTool = createBashTool(process.cwd(), {
     spawnHook: ({ command, cwd, env }) => ({
       command: rewriteRtkCommand(command, config.command),

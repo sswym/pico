@@ -147,6 +147,11 @@ export class BuiltinMemoryProvider implements MemoryProvider {
     return this.store.count();
   }
 
+  /** Facts per category (builtin backend only). */
+  countByCategory(): Array<{ category: string; n: number }> {
+    return this.store.countByCategory();
+  }
+
   search(query: string, opts: SearchOptions = {}): Fact[] {
     return this.store.search(query, {
       category: opts.category,

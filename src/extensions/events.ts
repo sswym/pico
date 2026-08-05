@@ -4,8 +4,13 @@ export interface SubagentCompletedEvent {
   childSessionId?: string;
 }
 
+export interface PlanModeChangedEvent {
+  active: boolean;
+}
+
 export interface ExtensionEvents {
   subagent_completed: SubagentCompletedEvent;
+  plan_mode_changed: PlanModeChangedEvent;
 }
 
 type Handler<K extends keyof ExtensionEvents> = (event: ExtensionEvents[K]) => void;

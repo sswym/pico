@@ -59,7 +59,10 @@ export const languageExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       const value = args.trim();
 
       if (!value) {
-        ctx.ui.notify(`Language: ${readLanguage()}`, "info");
+        ctx.ui.notify(
+          `Language: ${readLanguage()}\nChange it with: /language English（或任意语言名）`,
+          "info",
+        );
         return;
       }
 

@@ -22,7 +22,8 @@
 // before pi-coding-agent's config module evaluates them at top level.
 import "./env-bootstrap.ts";
 
-import { main } from "@earendil-works/pi-coding-agent";
+import { main, VERSION as UPSTREAM_VERSION } from "@earendil-works/pi-coding-agent";
+import picoPkg from "../package.json" with { type: "json" };
 import { buildRuntimeArgs } from "../src/runtime/args.ts";
 import { isBunBinaryRuntime, prepareEmbeddedRuntime } from "../src/runtime/embedded-runtime.ts";
 import { createDefaultExtensionRegistry } from "../src/runtime/extensions.ts";
@@ -32,6 +33,39 @@ import { runSetupCommandIfRequested } from "../src/runtime/setup.ts";
 const isBunBinary = isBunBinaryRuntime(import.meta.url);
 const embeddedDirs = prepareEmbeddedRuntime(isBunBinary);
 const rawArgs = process.argv.slice(2);
+
+// ── Brand layer for --version / --help ──────────────────────────────────
+// Upstream prints its own "pi" brand and version; pico prefixes its own
+// identity so users and scripts see a consistent product name/version.
+function printBrandedVersion(): void {
+  const picoVersion = (picoPkg as { version?: string }).version ?? "0.0.0";
+  console.log(`pico ${picoVersion} (upstream pi ${UPSTREAM_VERSION})`);
+}
+
+function printBrandedHelpHeader(): void {
+  console.log(
+    [
+      `pico v${(picoPkg as { version?: string }).version ?? "?"} — vibe coding agent`,
+      "",
+      "pico 特有命令（交互内 /help 可看全部）：",
+      "  pico setup       交互式初始化向导（模型/工具/安全/界面等）",
+      "  /init            生成或审计 AGENTS.md（绝不写 CLAUDE.md）",
+      "  /doctor          查看安全开关、能力边界与配置冲突",
+      "  /help            离线命令与快捷键速查",
+      "",
+      "以下为上游 pi 的完整参数：",
+      "",
+    ].join("\n"),
+  );
+}
+
+if (rawArgs.includes("--version") || rawArgs.includes("-v")) {
+  printBrandedVersion();
+  process.exit(0);
+}
+if (rawArgs.includes("--help") || rawArgs.includes("-h")) {
+  printBrandedHelpHeader();
+}
 
 const args = buildRuntimeArgs({
   rawArgs,
