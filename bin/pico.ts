@@ -34,12 +34,30 @@ const isBunBinary = isBunBinaryRuntime(import.meta.url);
 const embeddedDirs = prepareEmbeddedRuntime(isBunBinary);
 const rawArgs = process.argv.slice(2);
 
+// ── Hook recursion guard (2.5.8) ─────────────────────────────────────────
+// A hooks.json PreToolUse/PostToolUse command that calls `pico` itself would
+// nest agent-in-hook-in-agent forever. runner.ts marks every hook subprocess
+// with PICO_HOOK_RECURSION_GUARD; refuse to start under it.
+if (process.env.PICO_HOOK_RECURSION_GUARD === "1") {
+  console.error(
+    "[pico] refusing to start: pico was invoked from inside a pico hook (PICO_HOOK_RECURSION_GUARD is set). " +
+      "Hooks must not call the pico CLI — use direct commands instead.",
+  );
+  process.exit(1);
+}
+
 // ── Brand layer for --version / --help ──────────────────────────────────
 // Upstream prints its own "pi" brand and version; pico prefixes its own
 // identity so users and scripts see a consistent product name/version.
 function printBrandedVersion(): void {
+  // 2.7.2: the upstream version is noise for normal users — plain "pico X";
+  // `--verbose` adds the upstream detail for diagnostics.
   const picoVersion = (picoPkg as { version?: string }).version ?? "0.0.0";
-  console.log(`pico ${picoVersion} (upstream pi ${UPSTREAM_VERSION})`);
+  if (rawArgs.includes("--verbose")) {
+    console.log(`pico ${picoVersion} (upstream pi ${UPSTREAM_VERSION})`);
+  } else {
+    console.log(`pico ${picoVersion}`);
+  }
 }
 
 function printBrandedHelpHeader(): void {
@@ -63,7 +81,9 @@ if (rawArgs.includes("--version") || rawArgs.includes("-v")) {
   printBrandedVersion();
   process.exit(0);
 }
-if (rawArgs.includes("--help") || rawArgs.includes("-h")) {
+// 2.2.4: `pico setup --help` shows the setup wizard's own help — the pico
+// brand header would duplicate the pico-specific command list. Skip it.
+if ((rawArgs.includes("--help") || rawArgs.includes("-h")) && !rawArgs.includes("setup")) {
   printBrandedHelpHeader();
 }
 

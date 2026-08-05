@@ -58,8 +58,10 @@ export interface GateAfterSuccessRequest<TContext> {
 	runCwd: string;
 	context: TContext;
 	signal?: AbortSignal;
-	checkGate?: (acceptance: AcceptanceConfig, cwd: string, signal?: AbortSignal) => Promise<GateResult>;
+	checkGate?: (acceptance: AcceptanceConfig, cwd: string, signal?: AbortSignal, onEvidence?: (index: number, total: number, command: string) => void) => Promise<GateResult>;
 	runRepair: (agentName: string, repairTask: string, context: TContext) => Promise<SingleResult>;
+	/** Per-evidence progress callback, surfaced to the UI (2.4.8). */
+	onEvidence?: (index: number, total: number, command: string) => void;
 }
 
 export async function runGateAfterSuccess<TContext>(
@@ -70,8 +72,18 @@ export async function runGateAfterSuccess<TContext>(
 
 	const checkGate = request.checkGate ?? checkAcceptanceGate;
 	const acceptance = agent.acceptance;
-	const gateResult = await checkGate(acceptance, runCwd, signal);
+	const gateResult = await checkGate(acceptance, runCwd, signal, request.onEvidence);
 	if (gateResult.passed) return result;
+
+	// 2.4.5: a user interrupt during gate evidence is an abort, not a
+	// failed acceptance gate — reporting "Acceptance gate failed" here
+	// misattributes a deliberate stop as a task defect.
+	if (signal?.aborted) {
+		result.stopReason = "aborted";
+		result.errorMessage = "Acceptance gate interrupted by user";
+		return result;
+	}
+
 	const failureSummary = summarizeGateFailure(gateResult);
 
 	if (!acceptance.selfRepair) {
@@ -86,8 +98,9 @@ export async function runGateAfterSuccess<TContext>(
 		const repairResult = await request.runRepair(agent.name, repairTask, context);
 		lastResult = repairResult;
 		if (!isFailedResult(repairResult)) {
-			const recheck = await checkGate(acceptance, runCwd, signal);
+			const recheck = await checkGate(acceptance, runCwd, signal, request.onEvidence);
 			if (recheck.passed) return repairResult;
+			if (signal?.aborted) break;
 		}
 	}
 
@@ -193,11 +206,17 @@ export async function checkAcceptanceGate(
 	acceptance: AcceptanceConfig,
 	cwd: string,
 	signal?: AbortSignal,
+	onEvidence?: (index: number, total: number, command: string) => void,
 ): Promise<GateResult> {
 	const evidenceResults: GateResult["evidenceResults"] = [];
+	const evidence = acceptance.evidence ?? [];
+	const total = evidence.length;
 
-	for (const ev of acceptance.evidence ?? []) {
+	for (const [i, ev] of evidence.entries()) {
 		if (signal?.aborted) break;
+		// 2.4.8: serial 60s-max commands previously ran with zero UI feedback
+		// — surface each one as it starts so the tool never looks dead.
+		onEvidence?.(i, total, ev.command);
 		const run = await runEvidenceCommand(ev.command, cwd, signal);
 
 		let passed: boolean;

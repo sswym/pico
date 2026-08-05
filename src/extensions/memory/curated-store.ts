@@ -9,7 +9,7 @@
  * writes update disk and live entries, but do not mutate the snapshot; the next
  * session start refreshes it. This preserves prompt-cache stability.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { picoHome } from "../paths.ts";
 import { scanSecrets } from "./secrets.ts";
@@ -64,9 +64,30 @@ function clampEntry(content: string): string {
   return content.replace(/\s+/g, " ").trim().slice(0, 400);
 }
 
-function unique(entries: string[]): string[] {
-  return Array.from(new Set(entries));
+/** Normalized identity for dedupe: punctuation/whitespace-insensitive (2.3.13). */
+function dedupeKey(entry: string): string {
+  return clampEntry(entry).toLowerCase();
 }
+
+/**
+ * Dedupe by normalized key, keeping the first occurrence — punctuation or
+ * whitespace micro-differences ("we use bun" vs "we use  bun") must not each
+ * consume a character-limit slot.
+ */
+function unique(entries: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of entries) {
+    const key = dedupeKey(entry);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+  }
+  return out;
+}
+
+/** Stale-bak cleanup window: backups older than 7 days are dropped. */
+const BACKUP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface CuratedWriteResult {
   success: boolean;
@@ -96,6 +117,7 @@ export class CuratedMemoryStore {
 
   loadFromDisk(): void {
     mkdirSync(this.dir, { recursive: true });
+    this.cleanupStaleBackups();
     this.memoryEntries = unique(this.read(pathFor(this.dir, "memory")));
     this.userEntries = unique(this.read(pathFor(this.dir, "user")));
     this.snapshot = {
@@ -122,6 +144,14 @@ export class CuratedMemoryStore {
     if (target === "memory") return this.memoryEntries.length;
     if (target === "user") return this.userEntries.length;
     return this.memoryEntries.length + this.userEntries.length;
+  }
+
+  /** Character usage "used/limit" for a target — surfaced by /memory status. */
+  usageOf(target: CuratedTarget): string {
+    const limit = this.charLimit(target);
+    const entries = this.entriesFor(target);
+    const used = entries.length === 0 ? 0 : entries.join(ENTRY_DELIMITER).length;
+    return `${used}/${limit}`;
   }
 
   add(target: CuratedTarget, content: string): CuratedWriteResult {
@@ -237,6 +267,21 @@ export class CuratedMemoryStore {
   private setEntries(target: CuratedTarget, entries: string[]): void {
     if (target === "user") this.userEntries = entries;
     else this.memoryEntries = entries;
+  }
+
+  /** Purge stale .bak/.tmp spill files older than the retention window. */
+  private cleanupStaleBackups(): void {
+    try {
+      const cutoff = Date.now() - BACKUP_RETENTION_MS;
+      for (const name of readdirSync(this.dir)) {
+        if (!/\.(?:bak|tmp)\.[^/]*$/.test(name)) continue;
+        const full = join(this.dir, name);
+        const stat = statSync(full);
+        if (stat.mtimeMs < cutoff) rmSync(full, { force: true });
+      }
+    } catch {
+      // best-effort cleanup
+    }
   }
 
   private charLimit(target: CuratedTarget): number {

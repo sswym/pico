@@ -67,3 +67,17 @@ test("isRtkAvailable caches the PATH probe result", () => {
     __resetRtkAvailabilityForTests();
   }
 });
+
+test("rtk skips pipelines, redirections, and chains (2.5.10)", () => {
+  expect(shouldRewriteWithRtk("git log | head -20")).toBe(false);
+  expect(shouldRewriteWithRtk("git diff > /tmp/x")).toBe(false);
+  expect(shouldRewriteWithRtk("git add . && git commit -m x")).toBe(false);
+  expect(shouldRewriteWithRtk("ls -la || true")).toBe(false);
+  expect(shouldRewriteWithRtk("grep foo src/x.ts")).toBe(true);
+});
+
+test("rtk skips long-running run commands (2.5.10)", () => {
+  expect(shouldRewriteWithRtk("cargo run")).toBe(false);
+  expect(shouldRewriteWithRtk("cargo build")).toBe(true);
+  expect(shouldRewriteWithRtk("go run server.go")).toBe(false);
+});

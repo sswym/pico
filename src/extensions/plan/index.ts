@@ -214,13 +214,23 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         if (approved) {
           planActive = false;
           publishPlanMode(false);
+        } else if (!ctx.hasUI) {
+          // 2.5.6: non-interactive runs without PICO_ALLOW_UNATTENDED_PLAN_APPROVAL
+          // used to deadlock — ExitPlanMode always answered "needs interactive
+          // approval" and the model was stuck in read-only plan mode forever,
+          // only killable by killing the process. Auto-release the lock:
+          // the batch run gets an explicit "not approved" and writes are
+          // re-enabled; the model may re-enter plan mode if it needs to.
+          planActive = false;
+          publishPlanMode(false);
         }
 
         const text = approved
           ? `Plan approved. Plan mode disabled.\n\n${summary}`
-          : ctx.hasUI
-            ? `Plan rejected. Stay in plan mode and refine ${path}.`
-            : `Plan requires interactive approval. Stay in plan mode and refine ${path}, or set PICO_ALLOW_UNATTENDED_PLAN_APPROVAL=1 for batch runs.`;
+          : !ctx.hasUI
+            ? `Plan NOT approved (non-interactive). Plan mode disabled and write tools re-enabled. ` +
+              `For automatic approval in batch runs, set PICO_ALLOW_UNATTENDED_PLAN_APPROVAL=1.`
+            : `Plan rejected. Stay in plan mode and refine ${path}.`;
 
         return {
           content: [{ type: "text" as const, text }],
@@ -232,8 +242,23 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
   // ---- /plan command (user-initiated equivalent of EnterPlanMode) -------
   pi.registerCommand("plan", {
-    description: "Enter plan mode (read-only research; ExitPlanMode to resume writes)",
-    handler: async (_args, ctx) => {
+    description: "Enter plan mode (read-only research; ExitPlanMode to resume writes). /plan off exits plan mode.",
+    handler: async (args, ctx) => {
+      // 2.5.6: `/plan` could previously only ENTER plan mode — a user who
+      // wanted out had no command (only /reload). `/plan off` now exits.
+      if (args.trim().toLowerCase() === "off" || args.trim().toLowerCase() === "exit") {
+        if (!planActive) {
+          try { ctx.ui.notify("Plan mode is not active.", "info"); } catch {}
+          return;
+        }
+        planActive = false;
+        planFile = null;
+        publishPlanMode(false);
+        try {
+          ctx.ui.notify("Plan mode disabled. Write tools re-enabled.", "info");
+        } catch {}
+        return;
+      }
       const path = resolvePlanFile(ctx);
       await ensurePlanFile(path);
       planActive = true;

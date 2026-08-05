@@ -22,6 +22,8 @@
  * Format:
  *   { "mcpServers": { "name": { "command": "npx", "args": [...], "env": {} } } }
  */
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
   defineTool,
@@ -30,6 +32,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
 import { loadMcpConfig } from "./config.ts";
+import { allowProjectMcp } from "../policy.ts";
 import {
   spawnMcpServer,
   mcpInitialize,
@@ -115,14 +118,36 @@ export function formatMcpReport(entries: ServerEntry[]): { text: string; level: 
   return { text: lines.join("\n"), level: failed.length > 0 ? "warning" : "info" };
 }
 
-function updateMcpStatus(ctx: unknown, entries: ServerEntry[]): void {
-  const ui = (ctx as { ui?: { setStatus?: (key: string, value: string | undefined) => void } }).ui;
-  ui?.setStatus?.(MCP_STATUS_KEY, formatMcpStatus(entries));
-}
+    function updateMcpStatus(ctx: unknown, entries: ServerEntry[]): void {
+      const ui = (ctx as { ui?: { setStatus?: (key: string, value: string | undefined) => void } }).ui;
+      ui?.setStatus?.(MCP_STATUS_KEY, formatMcpStatus(entries));
+    }
 
 interface ActiveTool {
   handle: McpServerHandle | null;
   toolName: string;
+}
+
+/** Handles whose process has exited — detected for auto-reconnect (2.5.7). */
+const deadHandles = new WeakSet<McpServerHandle>();
+const reconnectState = new Map<string, { nextAttemptAt: number; backoffMs: number }>();
+
+/** Mark a handle dead once its process exits. */
+function watchHandleDeath(handle: McpServerHandle): void {
+  handle.proc.exited
+    .then(() => deadHandles.add(handle))
+    .catch(() => deadHandles.add(handle));
+}
+
+function isHandleDead(handle: McpServerHandle): boolean {
+  return deadHandles.has(handle);
+}
+
+/** Sanitize a server id for use inside a tool name (2.5.7): ids containing
+ *  `__` or spaces would make `mcp__<id>__<tool>` ambiguous. */
+function toolNameFor(serverId: string, toolName: string): string {
+  const safeId = serverId.replace(/[^A-Za-z0-9_.-]+/g, "_");
+  return `mcp__${safeId}__${toolName}`;
 }
 
 export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
@@ -194,6 +219,7 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
         const registeredThisServer: string[] = [];
         try {
           handle = deps.spawn(id, config);
+          watchHandleDeath(handle);
           const initResult = await deps.initialize(handle);
           // A newer connect superseded this one mid-initialization: close
           // this process and stop publishing its tools (its entries/refs
@@ -212,7 +238,7 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
 
           const toolNames: string[] = [];
           for (const tool of tools) {
-            const piToolName = `mcp__${id}__${tool.name}`;
+            const piToolName = toolNameFor(id, tool.name);
             toolNames.push(piToolName);
             const schema = tool.inputSchema ?? { type: "object" as const, properties: {} };
             const ref: ActiveTool = { handle, toolName: tool.name };
@@ -238,9 +264,10 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
               defineTool({
                 name: piToolName,
                 label: `MCP: ${id} › ${tool.name}`,
-                description: tool.description ?? `MCP tool "${tool.name}" from server "${id}"`,
+                description: tool.description ?? `MCP tool "${tool.name}" from server "${id}"` +
+                  " Note: if the call times out, the server may still be executing it server-side — a retry can duplicate side effects.",
                 promptSnippet:
-                  `${piToolName} — call "${tool.name}" on MCP server "${id}"`,
+                  `${piToolName} — call "${tool.name}" on MCP server "${id}" (timeout does not cancel server-side execution)`,
                 parameters: Type.Unsafe(schema),
                 renderCall(args, theme, context) {
                   return renderToolCallText(piToolName, args, theme, context);
@@ -250,7 +277,23 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
                 },
                 async execute(_tcId, params, _signal) {
                   const current = holder!.ref;
-                  if (!current || current.handle === null) {
+                  // 2.5.7: a server that crashed mid-session must recover
+                  // without a /reload — detect the dead process and reconnect
+                  // (with backoff) instead of failing permanently.
+                  if (current?.handle && isHandleDead(current.handle)) {
+                    const state = reconnectState.get(id) ?? { nextAttemptAt: 0, backoffMs: 5_000 };
+                    if (Date.now() >= state.nextAttemptAt) {
+                      await reconnectServer(id, state);
+                    } else {
+                      const wait = Math.ceil((state.nextAttemptAt - Date.now()) / 1000);
+                      throw new Error(
+                        `MCP server "${id}" crashed and is reconnecting (retry in ${wait}s). ` +
+                        `Note: a timed-out MCP call does NOT cancel server-side execution — avoid blind retries of mutating calls.`,
+                      );
+                    }
+                  }
+                  const currentAfterReconnect = holder!.ref;
+                  if (!currentAfterReconnect || currentAfterReconnect.handle === null) {
                     // Throw so the failure is marked as an error upstream (a
                     // returned isError flag is dropped by the agent loop).
                     throw new Error(
@@ -258,7 +301,7 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
                     );
                   }
                   try {
-                    const result = await deps.callTool(current.handle, current.toolName, params as Record<string, unknown>);
+                    const result = await deps.callTool(currentAfterReconnect.handle, currentAfterReconnect.toolName, params as Record<string, unknown>);
                     // The agent loop derives isError ONLY from thrown errors —
                     // a returned isError field is dropped, so a server-side
                     // tool failure must throw to render as an error.
@@ -320,8 +363,48 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
     }
 
     let lastCtx: unknown;
+
+    /**
+     * Drop a dead server and reconnect it with exponential backoff (2.5.7).
+     * The tool that triggered this is retried transparently by the caller.
+     */
+    async function reconnectServer(id: string, state: { nextAttemptAt: number; backoffMs: number }): Promise<void> {
+      state.nextAttemptAt = Date.now() + state.backoffMs;
+      state.backoffMs = Math.min(state.backoffMs * 2, 60_000);
+      reconnectState.set(id, state);
+
+      const idx = entries.findIndex((e) => e.id === id);
+      const entry = entries[idx];
+      if (entry?.handle) {
+        for (const ref of activeTools.values()) {
+          if (ref.handle === entry.handle) ref.handle = null;
+        }
+        entries.splice(idx, 1);
+        connectedServerIds.delete(id);
+      }
+      if (!connectedCwd) return;
+      await connect(connectedCwd);
+      if (connectedServerIds.has(id)) {
+        reconnectState.set(id, { nextAttemptAt: 0, backoffMs: 5_000 });
+      }
+    }
+
     pi.on("session_start", async (_event, ctx) => {
       lastCtx = ctx;
+      // 2.2.3: a project MCP config that is silently ignored looks like a
+      // broken tool — tell the user the safety switch is off and how to
+      // enable it.
+      try {
+        const projectPath = join(ctx.cwd ?? "", ".pico", "mcp-servers.json");
+        if (existsSync(projectPath) && !allowProjectMcp()) {
+          ctx.ui.notify(
+            "检测到项目 MCP 配置（.pico/mcp-servers.json），但当前被安全策略禁用。运行 /doctor 查看如何开启（PICO_ENABLE_PROJECT_MCP）。",
+            "warning",
+          );
+        }
+      } catch {
+        // best-effort hint
+      }
       await connect(ctx.cwd);
     });
 
@@ -339,6 +422,7 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
       connectedCwd = null;
       connectedServerIds.clear();
       failedServerIds.clear();
+      reconnectState.clear();
       updateMcpStatus(lastCtx, entries);
       lastCtx = undefined;
     });

@@ -324,10 +324,10 @@ describe("askExtension execute()", () => {
     ]);
   });
 
-  test("user cancels (select returns undefined) → throws", async () => {
+  test("user cancels → returns cancelled marker instead of throwing (2.5.9)", async () => {
     const tool = await loadAskTool();
     const { ctx } = makeUi({ selectQueue: [undefined] });
-    const run = tool.execute(
+    const res = await tool.execute(
       "id",
       {
         questions: [
@@ -345,7 +345,13 @@ describe("askExtension execute()", () => {
       undefined,
       ctx,
     );
-    await expect(run).rejects.toThrow(/cancelled/i);
+    // A thrown error reads as "tool failed" and models retry the dialog —
+    // return an explicit cancelled marker with a do-not-retry instruction.
+    expect(res.isError).toBeUndefined();
+    const details = JSON.parse((res as any).content[0].text);
+    expect(details.cancelled).toBe(true);
+    expect(details.cancelledQuestion).toBe("A?");
+    expect(details.message).toContain("Do NOT re-ask");
   });
 });
 

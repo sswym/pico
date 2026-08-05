@@ -8,7 +8,7 @@
  *   2. Calling ctx.ui.setTheme("claude-code-dark") which loads it via the theme
  *      discovery system (getCustomThemeInfos → loadThemeJson).
  */
-import { writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
   ExtensionAPI,
@@ -19,6 +19,29 @@ import claudeCodeDarkTheme from "../../theme/claude-code-dark.json" with { type:
 import { picoAgentHome } from "../paths.ts";
 import { installClaudeLikeFooter } from "./footer.ts";
 import { ActivityTracker } from "./activity.ts";
+
+/**
+ * True when settings.json contains an explicit theme selection — in that
+ * case the user's choice wins and pico must not force its own theme
+ * (2.1.1: the upstream setTheme persists, silently overriding /theme picks
+ * on every restart).
+ */
+function userConfiguredTheme(agentDir: string): boolean {
+  try {
+    const raw = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+    if (!raw || typeof raw !== "object") return false;
+    const settings = raw as Record<string, unknown>;
+    if (typeof settings.theme === "string" && settings.theme.trim()) return true;
+    const ui = settings.ui;
+    if (ui && typeof ui === "object") {
+      const theme = (ui as Record<string, unknown>).theme;
+      if (typeof theme === "string" && theme.trim()) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // Generation-phase feedback: replace the bare "Working..." row with a
@@ -42,16 +65,15 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     // ctx.ui.setTheme() checks instanceof Theme for objects, but we can
     // only pass a plain JSON import. So we write the file to the custom
     // themes dir (~/.pico/agent/themes/) and load it by name instead.
-    // We always overwrite so edits to the JSON are picked up on restart.
+    // 2.1.1: only OUR file is overwritten — hand-authored theme files
+    // (carbon.json, titanium.json, …) were previously deleted on every
+    // startup and the user's theme choice silently overridden.
     const agentDir =
       process.env.PI_CODING_AGENT_DIR ?? picoAgentHome();
     const themeDir = join(agentDir, "themes");
     try {
       if (!existsSync(themeDir)) {
         mkdirSync(themeDir, { recursive: true });
-      }
-      for (const staleTheme of ["carbon.json", "titanium.json", "retro-terminal.json", "quiet-slate.json"]) {
-        rmSync(join(themeDir, staleTheme), { force: true });
       }
       writeFileSync(
         join(themeDir, "claude-code-dark.json"),
@@ -65,12 +87,15 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     }
 
     // ── Apply the Claude Code dark theme by name ──────────────────────
-    // Now the file is in place, pi's loadTheme("claude-code-dark") will find it
-    // via getCustomThemeInfos scan.
-    const result = ctx.ui.setTheme("claude-code-dark");
-    if (!result.success) {
-      // Edge case: first run race with extension init. Retry once.
-      ctx.ui.setTheme("claude-code-dark");
+    // Only when the user has NOT configured a theme of their own: the
+    // upstream setTheme() persists its choice into settings, so forcing it
+    // here would override a deliberate `/theme` selection on every launch.
+    if (!userConfiguredTheme(agentDir)) {
+      const result = ctx.ui.setTheme("claude-code-dark");
+      if (!result.success) {
+        // Edge case: first run race with extension init. Retry once.
+        ctx.ui.setTheme("claude-code-dark");
+      }
     }
 
     // ── Custom working indicator: subtle pulse ───────────────────────

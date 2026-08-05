@@ -195,7 +195,7 @@ test("SubmitPlan fails outside plan mode", async () => {
   await expect(run).rejects.toThrow("not active");
 });
 
-test("ExitPlanMode in non-UI mode requires explicit unattended opt-in", async () => {
+test("ExitPlanMode in non-UI mode auto-releases plan mode instead of deadlocking", async () => {
   const pi = makeFakePi();
   planExtension(pi as any);
   const ctx = makeCtx({ sessionId: "exit-test", hasUI: false });
@@ -207,8 +207,11 @@ test("ExitPlanMode in non-UI mode requires explicit unattended opt-in", async ()
 
   expect(result.details.approved).toBe(false);
   expect(result.details.plan).toMatch(/# Plan/);
+  // 2.5.6: non-interactive runs must not stay locked in read-only plan mode
+  // forever — the batch run gets "not approved" and writes are re-enabled.
+  expect(result.content[0].text).toContain("NOT approved (non-interactive)");
   expect(result.content[0].text).toContain("PICO_ALLOW_UNATTENDED_PLAN_APPROVAL");
-  expect(__getPlanStateForTests().planActive).toBe(true);
+  expect(__getPlanStateForTests().planActive).toBe(false);
 });
 
 test("ExitPlanMode in non-UI mode can be explicitly approved by env", async () => {
@@ -372,4 +375,16 @@ test("ExitPlanMode outside plan mode fails without popping the approval dialog",
   });
   await expect(exit.execute("t1", {}, undefined, undefined, ctx)).rejects.toThrow(/not active/);
   expect(confirmCalls).toBe(0);
+});
+
+test("/plan off exits plan mode", async () => {
+  const pi = makeFakePi();
+  planExtension(pi as any);
+  const ctx = makeCtx({ sessionId: "plan-off-test" });
+  const handler = pi.commands.get("plan")!.handler;
+  await handler("", ctx);
+  expect(__getPlanStateForTests().planActive).toBe(true);
+  await handler("off", ctx);
+  expect(__getPlanStateForTests().planActive).toBe(false);
+  expect(__getPlanStateForTests().planFile).toBeNull();
 });

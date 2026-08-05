@@ -7,7 +7,7 @@
  * - Hybrid retrieval via FactRetriever
  */
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   CORRECTED_BOOST,
@@ -90,6 +90,39 @@ function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
+/** Negation words that flip a fact's assertion about a nearby term. */
+const NEGATION_RE = /(?:不|没|别|无|非|莫|never|not\b|no\b|without|instead\s+of)/i;
+
+/** True when a negation word sits within 4 chars before / 2 chars after a match. */
+function negationNear(text: string, idx: number, token: string): boolean {
+  const before = text.slice(Math.max(0, idx - 4), idx);
+  const after = text.slice(idx + token.length, idx + token.length + 2);
+  return NEGATION_RE.test(before) || NEGATION_RE.test(after);
+}
+
+/** PICO_MEMORY_DENY keywords (comma-separated env). */
+function denyKeywords(): string[] {
+  const raw = process.env.PICO_MEMORY_DENY ?? "";
+  return raw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * Gate shared by add/update: refuses content (or tags) that matches the
+ * PICO_MEMORY_DENY keyword list. Enforced here at the store layer so every
+ * write path (tool, auto-extract, turn_end correction, providers) hits it —
+ * the tool-level check alone was a bypass for automatic writes.
+ */
+function denyBlocked(content: string): string | null {
+  const denies = denyKeywords();
+  if (denies.length === 0) return null;
+  const haystack = content.toLowerCase();
+  const hit = denies.find((kw) => haystack.includes(kw));
+  return hit ?? null;
+}
+
 function normaliseFtsQuery(raw: string): string {
   const cleaned = raw
     .replace(/["'()*:^-]/g, " ")
@@ -104,19 +137,57 @@ export class MemoryStore {
   readonly dbPath: string;
   readonly db: Database;
   private readonly defaultTrust: number;
+  /** Set when the DB was corrupt and had to be rebuilt from a backup. */
+  recoveryNotice: string | null = null;
+  /** Throttle map for retrieval_count bumps: fact_id -> last bump epoch ms. */
+  private readonly _lastBump = new Map<number, number>();
 
   constructor(dbPath: string, opts: { defaultTrust?: number } = {}) {
     this.dbPath = dbPath;
     this.defaultTrust = clampTrust(opts.defaultTrust ?? 0.5);
     mkdirSync(dirname(dbPath), { recursive: true });
-    this.db = new Database(dbPath);
+    try {
+      this.db = new Database(dbPath);
+      this._configureDb();
+    } catch (err) {
+      // SQLITE_CORRUPT (or any open/init failure) must never block startup:
+      // back the damaged file up, rebuild an empty store, and surface a
+      // visible notice (2.3.3).
+      this.recoveryNotice = this._backupCorrupt(err);
+      this.db = new Database(dbPath);
+      this._configureDb();
+    }
+    this.migrate();
+  }
+
+  private _configureDb(): void {
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
     // Concurrent pico instances sharing one memory DB must wait for the lock
     // instead of failing with SQLITE_BUSY.
     this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec(SCHEMA);
-    this.migrate();
+  }
+
+  private _backupCorrupt(err: unknown): string {
+    const backup = `${this.dbPath}.corrupt-${Date.now()}`;
+    let notice = `Memory database is corrupt (${err instanceof Error ? err.message : String(err)}). `;
+    try {
+      renameSync(this.dbPath, backup);
+      // The WAL/SHM sidecar files can carry the corruption too.
+      for (const sidecar of ["-wal", "-shm"]) {
+        try {
+          renameSync(`${this.dbPath}${sidecar}`, `${backup}${sidecar}`);
+        } catch {
+          // no sidecar file — fine
+        }
+      }
+      notice += `Backed up to ${backup} and started with an empty memory.`;
+    } catch {
+      notice += "Backup failed; started with an empty memory.";
+    }
+    console.warn(`[pico memory] ${notice}`);
+    return notice;
   }
 
   private migrate(): void {
@@ -145,15 +216,22 @@ export class MemoryStore {
     const trimmed = content.trim();
     if (!trimmed) throw new Error("memory.add: content is empty");
 
-    // Secret scanning — block before any DB interaction.
-    const scan = scanSecrets(trimmed);
+    const tags = (opts.tags ?? "").trim();
+
+    // Deny-list gate (PICO_MEMORY_DENY) — enforced at the store layer so
+    // auto-extract / turn_end paths cannot bypass it.
+    const denied = denyBlocked(trimmed) ?? denyBlocked(tags);
+    if (denied) throw new Error(`memory.add: write denied: contains blocked keyword '${denied}'`);
+
+    // Secret scanning — covers content AND tags (a key smuggled into tags
+    // must not bypass the scan); block before any DB interaction.
+    const scan = scanSecrets(`${trimmed} ${tags}`);
     if (scan.blocked) throw new Error(`memory.add: ${scan.reason}`);
 
     const category: Category = opts.category ?? "general";
     if (!VALID_CATEGORIES.includes(category)) {
       throw new Error(`memory.add: invalid category '${category}'`);
     }
-    const tags = (opts.tags ?? "").trim();
 
     // Resolve scope: project-scoped if scope="project" and cwd provided.
     // A bare "project" scope would be invisible to every read path (they all
@@ -219,7 +297,9 @@ export class MemoryStore {
 
     const nextContent = opts.content?.trim() ?? fact.content;
     if (opts.content !== undefined) {
-      const scan = scanSecrets(nextContent);
+      const denied = denyBlocked(nextContent) ?? denyBlocked(opts.tags?.trim() ?? "");
+      if (denied) throw new Error(`memory.update: write denied: contains blocked keyword '${denied}'`);
+      const scan = scanSecrets(`${nextContent} ${opts.tags?.trim() ?? ""}`);
       if (scan.blocked) throw new Error(`memory.update: ${scan.reason}`);
     }
 
@@ -350,78 +430,85 @@ export class MemoryStore {
     const limit = Math.max(1, opts.limit ?? 10);
     if (!fts) return this._fallbackSearch(query, opts, minTrust, limit);
 
-    if (opts.scope === SCOPE_PROJECT && opts.cwd) {
-      const pKey = projectScopeKey(opts.cwd);
-      if (opts.category) {
-        const rows = this.db
-          .query<Fact, [string, number, string, string, string, string, number]>(
-            `SELECT f.* FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
-             WHERE facts_fts MATCH ? AND f.trust_score >= ?
-             AND (f.scope = ? OR f.scope = ?) AND f.category = ?
-             ORDER BY (CASE WHEN f.scope = ? THEN 1.5 ELSE 1.0 END) * (-bm25(facts_fts)) * f.trust_score DESC,
-                      f.trust_score DESC, f.fact_id DESC
-             LIMIT ?`,
-          )
-          .all(fts, minTrust, SCOPE_GLOBAL, pKey, opts.category, pKey, limit);
-        this._bumpRetrieval(rows);
-        return rows.length > 0 ? rows : this._fallbackSearch(query, opts, minTrust, limit);
-      }
-      const rows = this.db
-        .query<Fact, [string, number, string, string, string, number]>(
-          `SELECT f.* FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
-           WHERE facts_fts MATCH ? AND f.trust_score >= ?
-           AND (f.scope = ? OR f.scope = ?)
-           ORDER BY (CASE WHEN f.scope = ? THEN 1.5 ELSE 1.0 END) * (-bm25(facts_fts)) * f.trust_score DESC,
-                    f.trust_score DESC, f.fact_id DESC
-          LIMIT ?`,
-        )
-        .all(fts, minTrust, SCOPE_GLOBAL, pKey, pKey, limit);
-      this._bumpRetrieval(rows);
-      return rows.length > 0 ? rows : this._fallbackSearch(query, opts, minTrust, limit);
-    }
+    const rows = this._ftsRows(fts, opts, minTrust, limit);
+    if (rows.length === 0) return this._fallbackSearch(query, opts, minTrust, limit);
 
-    const scopeVal = opts.scope ?? SCOPE_GLOBAL;
-    if (opts.category) {
-      const rows = this.db
-        .query<Fact, [string, number, string, string, number]>(
-          `SELECT f.* FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
-           WHERE facts_fts MATCH ? AND f.trust_score >= ?
-           AND f.scope = ? AND f.category = ?
-           ORDER BY (-bm25(facts_fts)) * f.trust_score DESC,
-                    f.trust_score DESC, f.fact_id DESC
-          LIMIT ?`,
-        )
-        .all(fts, minTrust, scopeVal, opts.category, limit);
-      this._bumpRetrieval(rows);
-      return rows.length > 0 ? rows : this._fallbackSearch(query, opts, minTrust, limit);
-    }
-    const rows = this.db
-      .query<Fact, [string, number, string, number]>(
-        `SELECT f.* FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
-         WHERE facts_fts MATCH ? AND f.trust_score >= ?
-         AND f.scope = ?
-         ORDER BY (-bm25(facts_fts)) * f.trust_score DESC,
-                  f.trust_score DESC, f.fact_id DESC
-         LIMIT ?`,
-      )
-      .all(fts, minTrust, scopeVal, limit);
-    this._bumpRetrieval(rows);
-    return rows.length > 0 ? rows : this._fallbackSearch(query, opts, minTrust, limit);
+    // Negation re-rank: "我不用 bun" must not outrank "we use bun" for a
+    // "bun" query just because its trust is higher (2.3.2).
+    const terms = expandQuery(filterStopwords(tokenize(query))).map((e) => normalizeTerm(e.term));
+    const ranked = this._applyNegationPenalty(rows, terms, opts);
+    this._bumpRetrieval(ranked);
+    return ranked;
   }
 
-  /** Bump retrieval_count on matched rows. */
+  private _ftsRows(fts: string, opts: SearchOptions, minTrust: number, limit: number): Array<Fact & { _rank: number }> {
+    const projectKey = opts.scope === SCOPE_PROJECT && opts.cwd ? projectScopeKey(opts.cwd) : null;
+    const scopeClause = projectKey ? `(f.scope = ? OR f.scope = ?)` : `f.scope = ?`;
+    const scopeParams: string[] = projectKey ? [SCOPE_GLOBAL, projectKey] : [opts.scope ?? SCOPE_GLOBAL];
+    const scopeBoost = projectKey ? `(CASE WHEN f.scope = ? THEN 1.5 ELSE 1.0 END)` : "1.0";
+    const boostParams: string[] = projectKey ? [projectKey] : [];
+    const catClause = opts.category ? `AND f.category = ?` : "";
+    const catParams: string[] = opts.category ? [opts.category] : [];
+
+    const rows = this.db
+      .query<Fact & { _rank: number }, Array<string | number>>(
+        `SELECT f.*, (-bm25(facts_fts)) AS _rank FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
+         WHERE facts_fts MATCH ? AND f.trust_score >= ?
+         AND ${scopeClause} ${catClause}
+         ORDER BY ${scopeBoost} * (-bm25(facts_fts)) * f.trust_score DESC, f.fact_id DESC
+         LIMIT ?`,
+      )
+      .all(fts, minTrust, ...scopeParams, ...catParams, ...boostParams, limit) as Array<Fact & { _rank: number }>;
+    return rows;
+  }
+
+  /** Apply the negation penalty to FTS-ranked rows and re-sort. */
+  private _applyNegationPenalty(
+    rows: Array<Fact & { _rank: number }>,
+    terms: string[],
+    opts: SearchOptions,
+  ): Fact[] {
+    const projectKey = opts.scope === SCOPE_PROJECT && opts.cwd ? projectScopeKey(opts.cwd) : null;
+    const scored = rows
+      .map((row) => {
+        const content = `${row.content} ${row.tags}`.toLowerCase();
+        let negated = false;
+        for (const term of terms) {
+          if (!term) continue;
+          let idx = content.indexOf(term);
+          while (idx >= 0) {
+            if (negationNear(content, idx, term)) { negated = true; break; }
+            idx = content.indexOf(term, idx + Math.max(1, term.length));
+          }
+          if (negated) break;
+        }
+        const boost = projectKey && row.scope === projectKey ? 1.5 : 1.0;
+        const score = row._rank * row.trust_score * boost * (negated ? 0.2 : 1);
+        return { row, score, negated };
+      })
+      .sort((a, b) => b.score - a.score || b.row.fact_id - a.row.fact_id);
+    return scored.map((s) => s.row);
+  }
+
+  /** Bump retrieval_count on matched rows — throttled to once per fact per
+   *  5 minutes so read-heavy sessions don't turn every retrieval into a write
+   *  amplification (the previous behaviour polluted retrieval_count and
+   *  added per-turn write cost). */
   private _bumpRetrieval(rows: Fact[]): void {
-    if (rows.length > 0) {
-      const ids = rows.map((r) => r.fact_id);
-      const placeholders = ids.map(() => "?").join(",");
-      this.db
-        .query(
-          `UPDATE facts
-              SET retrieval_count = retrieval_count + 1
-            WHERE fact_id IN (${placeholders})`,
-        )
-        .run(...ids);
-    }
+    const now = Date.now();
+    const BUMP_INTERVAL_MS = 5 * 60 * 1000;
+    const due = rows.filter((r) => (this._lastBump.get(r.fact_id) ?? 0) + BUMP_INTERVAL_MS <= now);
+    if (due.length === 0) return;
+    for (const r of due) this._lastBump.set(r.fact_id, now);
+    const ids = due.map((r) => r.fact_id);
+    const placeholders = ids.map(() => "?").join(",");
+    this.db
+      .query(
+        `UPDATE facts
+            SET retrieval_count = retrieval_count + 1
+          WHERE fact_id IN (${placeholders})`,
+      )
+      .run(...ids);
   }
 
   /**
@@ -645,13 +732,34 @@ export class MemoryStore {
 
     const scored = candidates
       .map((fact) => {
-        const content = `${fact.content} ${fact.tags}`.toLowerCase();
+        const raw = `${fact.content} ${fact.tags}`;
+        const content = raw.toLowerCase();
+        // Canonical term set: "TS" normalizes to "typescript", so a query for
+        // "typescript" recalls facts stored as "TS" (alias normalization was
+        // one-directional before: query side expanded, store side didn't).
+        const canonical = new Set(filterStopwords(tokenize(raw)).map(normalizeTerm));
         let score = 0;
+        let negatedHit = false;
         for (const token of tokens) {
           if (!token) continue;
-          if (content.includes(token)) score += token.length >= 4 ? 2 : 1;
+          if (canonical.has(token) || content.includes(token)) {
+            score += token.length >= 4 ? 2 : 1;
+          }
+          // Negation guard: a fact asserting "我不用 bun" / "never use bun"
+          // must not rank as positive recall for a "bun" query.
+          if (!negatedHit) {
+            let idx = content.indexOf(token);
+            while (idx >= 0) {
+              if (negationNear(content, idx, token)) {
+                negatedHit = true;
+                break;
+              }
+              idx = content.indexOf(token, idx + Math.max(1, token.length));
+            }
+          }
         }
         if (score === 0) return null;
+        if (negatedHit) score *= 0.2;
         return { fact, score: score * fact.trust_score };
       })
       .filter((row): row is { fact: Fact; score: number } => row !== null)

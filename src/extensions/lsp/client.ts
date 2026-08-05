@@ -90,6 +90,10 @@ class FramedReader {
 // ── LspClient ─────────────────────────────────────────────────────────────
 
 const REQUEST_TIMEOUT_MS = 30_000;
+/** initialize() gets a much longer budget (2.5.1): cold starts (first
+ *  project index for rust-analyzer etc.) regularly exceed 30s, and a
+ *  too-short window condemns the server to a failure backoff. */
+const INITIALIZE_TIMEOUT_MS = 90_000;
 
 export type DiagnosticsHandler = (uri: string, diagnostics: Diagnostic[]) => void;
 
@@ -280,7 +284,7 @@ export class LspClient {
       initializationOptions: this.config.initializationOptions,
     };
 
-    const result = await this.request<InitializeResult>("initialize", params);
+    const result = await this.request<InitializeResult>("initialize", params, undefined, INITIALIZE_TIMEOUT_MS);
     this.capabilities = result.capabilities;
     this.serverInfo = result.serverInfo ?? {};
 
@@ -458,7 +462,7 @@ export class LspClient {
 
   // ── JSON-RPC transport ────────────────────────────────────────────────
 
-  private request<T>(method: string, params: unknown, signal?: AbortSignal): Promise<T> {
+  private request<T>(method: string, params: unknown, signal?: AbortSignal, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (!this.process?.stdin) {
         return reject(new LspError("Server not running"));
@@ -470,7 +474,7 @@ export class LspClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new LspError(`Request ${method} timed out`, -1));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
 
       const onAbort = () => {
         clearTimeout(timer);

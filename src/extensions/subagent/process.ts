@@ -9,6 +9,7 @@ export interface SpawnedProcessLike {
 	on(event: "error", handler: (error: unknown) => void): void;
 	kill(signal: "SIGTERM" | "SIGKILL"): void;
 	killed: boolean;
+	pid?: number;
 }
 
 export interface RunJsonProcessOptions {
@@ -18,7 +19,7 @@ export interface RunJsonProcessOptions {
 	result: SingleResult;
 	signal?: AbortSignal;
 	timeoutMs?: number;
-	spawn: (command: string, args: string[], options: { cwd: string; shell: false; stdio: ["ignore", "pipe", "pipe"] }) => SpawnedProcessLike;
+	spawn: (command: string, args: string[], options: { cwd: string; shell: false; stdio: ["ignore", "pipe", "pipe"]; detached: true }) => SpawnedProcessLike;
 	onMessage?: () => void;
 	setTimeoutFn?: typeof setTimeout;
 	clearTimeoutFn?: typeof clearTimeout;
@@ -28,6 +29,52 @@ export interface RunJsonProcessResult {
 	exitCode: number;
 	wasAborted: boolean;
 	timedOut: boolean;
+}
+
+/** 2.6.3: stderr accumulates unboundedly and floods failed-result messages. */
+const STDERR_CAP_BYTES = 256 * 1024;
+const STDERR_OVERFLOW_MARKER = "[stderr truncated — head dropped]\n";
+
+function appendStderr(result: SingleResult, chunk: string): void {
+	result.stderr += chunk;
+	const bytes = Buffer.byteLength(result.stderr, "utf8");
+	if (bytes <= STDERR_CAP_BYTES) return;
+	if (result.stderr.startsWith(STDERR_OVERFLOW_MARKER)) {
+		// Already capped — drop further chunks instead of re-trimming.
+		if (bytes > STDERR_CAP_BYTES * 2) {
+			result.stderr = result.stderr.slice(0, STDERR_CAP_BYTES * 2);
+		}
+		return;
+	}
+	let tail = result.stderr;
+	while (Buffer.byteLength(tail, "utf8") > STDERR_CAP_BYTES) {
+		tail = tail.slice(Math.max(1, Math.floor(tail.length / 2)));
+	}
+	result.stderr = `${STDERR_OVERFLOW_MARKER}${tail.trimStart()}`;
+}
+
+/**
+ * Kill the child and its whole process group (2.4.1). `detached: true` puts
+ * the child in its own process group; grandchildren (bun test, npm install)
+ * would otherwise survive the abort and keep running in the background —
+ * holding locks and possibly writing into a worktree that is already being
+ * cleaned up. Falls back to the direct kill when the pid is unavailable
+ * (fake spawns in tests).
+ */
+export function killProcessGroup(proc: SpawnedProcessLike, sig: "SIGTERM" | "SIGKILL"): void {
+	if (proc.pid) {
+		try {
+			process.kill(-proc.pid, sig);
+			return;
+		} catch {
+			// Group already gone — try the direct kill for safety.
+		}
+	}
+	try {
+		proc.kill(sig);
+	} catch {
+		// already dead
+	}
 }
 
 export function createInitialResult(
@@ -118,29 +165,30 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 	let timedOut = false;
 	let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
-	const exitCode = await new Promise<number>((resolve) => {
-		const proc = options.spawn(options.command, options.args, {
-			cwd: options.cwd,
-			shell: false,
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-		let buffer = "";
-		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		const exitCode = await new Promise<number>((resolve) => {
+			const proc = options.spawn(options.command, options.args, {
+				cwd: options.cwd,
+				shell: false,
+				stdio: ["ignore", "pipe", "pipe"],
+				detached: true,
+			});
+			let buffer = "";
+			let killTimer: ReturnType<typeof setTimeout> | undefined;
 
-		const killProc = (reason: "abort" | "timeout") => {
-			if (reason === "abort") wasAborted = true;
-			else timedOut = true;
-			proc.kill("SIGTERM");
-			// Escalate to SIGKILL if the child ignores SIGTERM. `proc.killed`
-			// flips true on the first kill() call, so it cannot gate the
-			// escalation; the timer is cleared on close, so firing it means the
-			// process is still alive. Tracked so it can be cleared once the
-			// process exits — otherwise this timer keeps the event loop alive
-			// for up to 5s after an otherwise clean exit.
-			killTimer = setTimer(() => {
-				proc.kill("SIGKILL");
-			}, 5000);
-		};
+			const killProc = (reason: "abort" | "timeout") => {
+				if (reason === "abort") wasAborted = true;
+				else timedOut = true;
+				killProcessGroup(proc, "SIGTERM");
+				// Escalate to SIGKILL if the child ignores SIGTERM. `proc.killed`
+				// flips true on the first kill() call, so it cannot gate the
+				// escalation; the timer is cleared on close, so firing it means the
+				// process is still alive. Tracked so it can be cleared once the
+				// process exits — otherwise this timer keeps the event loop alive
+				// for up to 5s after an otherwise clean exit.
+				killTimer = setTimer(() => {
+					killProcessGroup(proc, "SIGKILL");
+				}, 5000);
+			};
 
 		const processLine = (line: string) => {
 			if (applyJsonModeLine(options.result, line)) options.onMessage?.();
@@ -162,7 +210,7 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 		});
 
 		proc.stderr.on("data", (data) => {
-			options.result.stderr += typeof data === "string" ? data : stderrDecoder.decode(data as Uint8Array, { stream: true });
+			appendStderr(options.result, typeof data === "string" ? data : stderrDecoder.decode(data as Uint8Array, { stream: true }));
 		});
 
 		proc.on("close", (code) => {
@@ -178,9 +226,15 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 			resolve(code ?? 1);
 		});
 
-		proc.on("error", () => {
+		proc.on("error", (error) => {
+			// 2.4.3: a spawn failure (ENOENT, EACCES, bad PATH) must not
+			// degrade to a bare "Agent failed: (no output)" — the reason is
+			// what lets the user actually diagnose it.
 			if (timeoutHandle) clearTimer(timeoutHandle);
 			if (killTimer) clearTimer(killTimer);
+			const detail = error instanceof Error ? error.message : String(error);
+			options.result.stopReason = "error";
+			options.result.errorMessage = `Failed to spawn ${options.command}: ${detail} — check PATH and permissions.`;
 			resolve(1);
 		});
 

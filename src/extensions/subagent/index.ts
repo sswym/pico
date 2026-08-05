@@ -10,6 +10,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { runSubagentRequest, type SubagentRequest, type SubagentRunContext } from "./orchestrator.ts";
 import { renderSubagentCall, renderSubagentResult } from "./renderer.ts";
+import { cleanupSpillDirs } from "./output.ts";
+import { loadSubagentConfig, drainSubagentConfigErrors } from "./config.ts";
 
 const TaskItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
@@ -50,6 +52,23 @@ const SubagentParams = Type.Object({
 });
 
 export default function (pi: ExtensionAPI) {
+	// Spilled subagent output files must not accumulate across a long
+	// session — but they must survive until the session ends (2.4.7).
+	pi.on("session_shutdown", () => {
+		cleanupSpillDirs();
+	});
+	// 2.2.2: surface subagent.json parse errors in the TUI (console.warn
+	// only reached stderr, so overrides silently didn't apply).
+	pi.on("session_start", (_event, ctx) => {
+		loadSubagentConfig();
+		for (const message of drainSubagentConfigErrors()) {
+			try {
+				ctx.ui.notify(message, "warning");
+			} catch {
+				// non-TUI mode may drop notify
+			}
+		}
+	});
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
@@ -69,12 +88,12 @@ export default function (pi: ExtensionAPI) {
 			"- Trivial edits, single-line fixes, or simple Q&A",
 			"",
 			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} and {outputs.name} placeholders).",
-			"Built-in agents: scout, planner, worker, reviewer, oracle, researcher.",
-			"Agent frontmatter supports: model, tools, thinking, maxExecutionTimeMs, maxTokens, fallbackModels, systemPromptMode, inheritProjectContext, inheritSkills, acceptance.",
+			"16 built-in agents (scout, planner, worker, reviewer, oracle, researcher, verifier, debugger, architect, consensus, consultant, director, editor, quick, product, executor) — run /help for the full list.",
+			"Agent frontmatter supports: model, tools, thinking, maxExecutionTimeMs (default 30 min if unset), maxTokens, fallbackModels, systemPromptMode, inheritProjectContext, inheritSkills, acceptance.",
 			"User-level overrides may live in ~/.pico/agent/agents/<name>.md (same name = replaces built-in) or ~/.pico/subagent.json (partial field overrides).",
 			'Project-local agents in .pico/agents are opt-in: set agentScope: "both" (or "project").',
 			"Project agents are repo-controlled; interactive sessions confirm before running them, and non-interactive runs refuse them unless PICO_ALLOW_UNATTENDED_PROJECT_AGENTS=1 is set.",
-			"Do NOT shell out to `ls` to discover agents - call this tool with an obviously wrong agent name to get the authoritative list, or just trust the six built-ins above.",
+			"Do NOT shell out to `ls` to discover agents - call this tool with an obviously wrong agent name to get the authoritative list, or use /help.",
 		].join(" "),
 		parameters: SubagentParams,
 

@@ -35,6 +35,11 @@ export function sanitizeTerminalText(text: string): string {
   return text
     // OSC sequences: ESC ] ... (BEL | ESC \) — titles, clipboard, hyperlinks
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    // DCS sequences: ESC P ... ESC \ (kitty graphics protocol, Sixel probes) —
+    // can trigger image rendering or garbage in the terminal (2.1.8).
+    .replace(/\x1bP[^\x1b]*(?:\x1b\\)/gs, "")
+    // APC sequences: ESC _ ... ESC \ (application command protocol).
+    .replace(/\x1b_[^\x1b]*(?:\x1b\\)/gs, "")
     // CSI sequences: ESC [ params intermediates final — colors, cursor, modes
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
     // Remaining C0 controls (incl. lone ESC) and DEL

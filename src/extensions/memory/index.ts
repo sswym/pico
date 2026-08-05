@@ -14,7 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   autoExtractFromMessages,
-  CORRECTION_PATTERNS,
+  isLikelyCorrection,
   extractText,
   type ExtractableMessage,
 } from "./extract.ts";
@@ -56,7 +56,7 @@ const MemoryParams = Type.Object({
   helpful: Type.Optional(Type.Boolean({ description: "feedback: true=helpful, false=unhelpful." })),
   min_trust: Type.Optional(Type.Number({ description: "Minimum trust filter (default 0.3)." })),
   limit: Type.Optional(Type.Number({ description: "Max results (default 10)." })),
-  scope: Type.Optional(Type.String({ description: "Scope: global | project. Default: global. Project-scoped facts are isolated to the current working directory." })),
+  scope: Type.Optional(Type.String({ description: "Scope: global | project. Default for reads: current project (project + global); default for add: global unless you omit scope in a project session." })),
   correction_of: Type.Optional(Type.Number({ description: "If this fact corrects a previous one, provide the original fact_id. The original's trust drops and this fact starts with high trust." })),
   target: Type.Optional(Type.String({ description: "Curated target: memory | user. Default: memory." })),
   old_text: Type.Optional(Type.String({ description: "Substring used to replace/remove a curated entry." })),
@@ -78,12 +78,30 @@ function parseJsonDetails(text: string): unknown {
 
 // --------------------------------------------------------------------------
 
+/**
+ * Provider construction must never take down the whole extension (2.3.3):
+ * a corrupt DB / bad settings file currently throws in the factory top level.
+ * Fall back to a bare builtin provider on any failure so the session still
+ * starts with a working (if empty) memory.
+ */
+function createManager(): ProviderManager {
+  try {
+    return new ProviderManager();
+  } catch (err) {
+    console.warn(`[pico memory] ProviderManager failed to construct: ${err instanceof Error ? err.message : String(err)}`);
+    return new ProviderManager({ backend: "builtin" });
+  }
+}
+
 export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
-  const manager = new ProviderManager();
+  const manager = createManager();
   const provider: MemoryProvider = manager.provider;
   const curated = new CuratedMemoryStore();
   /** Expose raw MemoryStore for extract.ts when the active provider has one. */
   const rawStore = provider.getRawStore();
+  // A corrupt memory DB must not block startup silently: surface the
+  // recovery notice to the user on the first session_start.
+  let recoveryNoticeShown = false;
   // Register delegation hook for subagent completion tracking.
   // Session-scoped: /reload re-runs the factory, so the subscription must not
   // accumulate across reloads (see clearSessionExtensionSubscriptions).
@@ -99,6 +117,17 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       const sessionId = ctx.sessionManager?.getSessionId?.() ?? "default";
       curated.loadFromDisk();
       manager.initialize(sessionId, { cwd: ctx.cwd, sessionReason: (_event as { reason?: string })?.reason });
+      // Surface a memory-DB corruption recovery notice once per session.
+      const store = rawStore as { recoveryNotice?: string | null } | null;
+      const notice = store?.recoveryNotice;
+      if (notice && !recoveryNoticeShown) {
+        recoveryNoticeShown = true;
+        try {
+          ctx.ui.notify(`[memory] ${notice}`, "warning");
+        } catch {
+          // notify is best-effort
+        }
+      }
     } catch {
       // Memory should never prevent a session from starting.
     }
@@ -129,6 +158,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         "Call `related(entity=...)` to find facts related to an entity.",
         "Call `reason(entities=[...])` to find facts linking multiple entities.",
         "Call `contradict()` to surface potentially contradictory facts.",
+        "Reads default to the CURRENT PROJECT scope (project facts + global facts) when you omit `scope`; use `scope=\"global\"` for global-only, `scope=\"project\"` for project-only.",
         "Use `scope=\"project\"` for facts that only apply in the current project directory.",
         "Use `correction_of` when a new fact supersedes an older one.",
         "Use note_add/note_replace/note_remove for short curated MEMORY.md/USER.md entries that should be in every next-session prompt snapshot.",
@@ -244,18 +274,19 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       if (!msg || msg.role !== "user") return;
 
       const text = sanitizeContext(extractText(msg.content).trim());
-      if (text.length < 10) return;
+      if (text.length < 4) return;
 
-      // Only run correction patterns — keep per-turn overhead minimal.
-      if (CORRECTION_PATTERNS.some((p) => p.test(text))) {
-        manager.add(text.slice(0, 400), {
+      // Gated correction detection: bare "actually I want…" chatter must not
+      // be stored as a 0.7-trust correction (2.3.5). Questions and long
+      // contextual turns are skipped.
+      if (isLikelyCorrection(text)) {
+        manager.add(text.slice(0, 200), {
           category: "correction",
           scope: currentCwd ? "project" : undefined,
           cwd: currentCwd ?? undefined,
           source: "correction",
           trust: CORRECTED_BOOST,
         });
-        curated.add("memory", text.slice(0, 400));
       }
 
       // Queue background prefetch for the next turn.
@@ -267,16 +298,31 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
   // --- 5. auto-extract + session message accumulation ----------------------
   const sessionMessages: unknown[] = [];
+  /** Text fingerprints of messages already extracted — prevents re-scanning
+   *  the whole accumulated history on every agent_end (2.6.2). */
+  const seenMessageTexts = new Set<string>();
+  const MAX_SESSION_MESSAGES = 200;
 
   pi.on("agent_end", (event) => {
     try {
       const messages = (event.messages ?? []) as ExtractableMessage[];
-      if (rawStore instanceof MemoryStore) {
-        autoExtractFromMessages(rawStore, messages, { cwd: currentCwd ?? undefined });
+      // Only the messages we have not scanned before.
+      const fresh: ExtractableMessage[] = [];
+      for (const m of messages) {
+        const fingerprint = `${m.role}\u0000${extractText(m.content)}`;
+        if (seenMessageTexts.has(fingerprint)) continue;
+        seenMessageTexts.add(fingerprint);
+        fresh.push(m);
       }
-      curated.autoExtract(messages);
-      // Keep a running total of all session messages for onSessionEnd
-      sessionMessages.push(...messages);
+      if (fresh.length > 0 && rawStore instanceof MemoryStore) {
+        autoExtractFromMessages(rawStore, fresh, { cwd: currentCwd ?? undefined });
+      }
+      curated.autoExtract(fresh);
+      // Keep a bounded running total for onSessionEnd.
+      sessionMessages.push(...fresh);
+      if (sessionMessages.length > MAX_SESSION_MESSAGES) {
+        sessionMessages.splice(0, sessionMessages.length - MAX_SESSION_MESSAGES);
+      }
     } catch {
       // best-effort
     }

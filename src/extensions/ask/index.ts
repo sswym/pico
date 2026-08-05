@@ -37,8 +37,13 @@ import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
 void Type;
 
 const DONE_SENTINEL = "(done — submit)";
+const PICKED_MARKER = "✓ ";
 const PREVIEW_SUFFIX = " · preview";
 const RESERVED_LABELS = new Set([OTHER_LABEL, DONE_SENTINEL]);
+
+/** Preview text is appended to the select label — cap it (2.5.9): a
+ *  multi-line 10KB preview would break the TUI layout. */
+const PREVIEW_MAX_CHARS = 120;
 
 interface QuestionAnswer {
   picks: string[];
@@ -73,7 +78,11 @@ function decorateLabel(opt: AskOptionInput): string {
   const description = opt.description.trim();
   if (description) parts.push(description);
   let label = parts.join(" · ");
-  if (opt.preview) label = `${label}${PREVIEW_SUFFIX}\n${opt.preview}`;
+  if (opt.preview) {
+    const flat = opt.preview.replace(/\s+/g, " ").trim();
+    const preview = flat.length > PREVIEW_MAX_CHARS ? `${flat.slice(0, PREVIEW_MAX_CHARS)}…` : flat;
+    label = `${label}${PREVIEW_SUFFIX}\n${preview}`;
+  }
   return label;
 }
 
@@ -127,17 +136,26 @@ async function askMulti(
   ctx: ExtensionContext,
   question: AskQuestionInput,
 ): Promise<QuestionAnswer | null> {
-  const remaining = new Set(question.options.map((o) => o.label));
   const picked: string[] = [];
   let otherNotes: string | undefined;
 
-  while (remaining.size > 0) {
-    const remainingOptions = question.options.filter((o) => remaining.has(o.label));
-    const labels = [...remainingOptions.map(decorateLabel), OTHER_LABEL, DONE_SENTINEL];
+  // 2.5.9: multi-select used to re-open the picker after every choice with
+  // no way to undo. Picked options now appear again marked "✓" and can be
+  // toggled off; "(done — submit)" finalizes the selection.
+  for (;;) {
+    const pickedSet = new Set(picked);
+    const unpicked = question.options.filter((o) => !pickedSet.has(o.label));
+    const pickedOptions = question.options.filter((o) => pickedSet.has(o.label));
+    const labels = [
+      ...unpicked.map(decorateLabel),
+      ...pickedOptions.map((o) => `${PICKED_MARKER}${decorateLabel(o)}`),
+      OTHER_LABEL,
+      DONE_SENTINEL,
+    ];
     const title =
       picked.length === 0
         ? questionTitle(question)
-        : `${questionTitle(question)} (already picked: ${picked.join(", ")})`;
+        : `${questionTitle(question)} (picked: ${picked.join(", ")} — select a ✓ option again to remove it)`;
     const choice = await ctx.ui.select(title, labels);
     if (choice === undefined) return null;
     if (choice === DONE_SENTINEL) break;
@@ -150,10 +168,14 @@ async function askMulti(
       continue;
     }
 
-    const opt = findOptionByDecoratedLabel(remainingOptions, choice);
-    if (opt && remaining.has(opt.label)) {
-      picked.push(opt.label);
-      remaining.delete(opt.label);
+    const decorated = choice.startsWith(PICKED_MARKER) ? choice.slice(PICKED_MARKER.length) : choice;
+    const opt = findOptionByDecoratedLabel(question.options, decorated);
+    if (opt) {
+      if (pickedSet.has(opt.label)) {
+        picked.splice(picked.indexOf(opt.label), 1);
+      } else {
+        picked.push(opt.label);
+      }
     }
   }
 
@@ -203,16 +225,30 @@ export const askExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         }
 
         const answers: AskAnswers = {};
+        let cancelled: string | null = null;
         for (const q of params.questions) {
           const result = q.multiSelect ? await askMulti(ctx, q) : await askSingle(ctx, q);
           if (result === null) {
-            return errorResult(`User cancelled question "${q.question}".`);
+            cancelled = q.question;
+            break;
           }
           answers[q.question] = {
             picks: result.picks,
             ...(result.notes !== undefined ? { notes: result.notes } : {}),
             ...(result.preview !== undefined ? { preview: result.preview } : {}),
           };
+        }
+
+        if (cancelled !== null) {
+          // 2.5.9: a thrown error reads as "tool failed" and models retry the
+          // same question — a loop of dialogs. Return a normal result with an
+          // explicit cancelled marker and do-not-retry instruction instead.
+          return jsonResult({
+            cancelled: true,
+            cancelledQuestion: cancelled,
+            answers,
+            message: "The user dismissed the question. Do NOT re-ask — proceed with the answers you have (or without this answer).",
+          });
         }
 
         return jsonResult({ answers });

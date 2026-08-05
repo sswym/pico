@@ -21,6 +21,15 @@ const SECRET_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
     pattern:
       /['"]?(?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|auth[_-]?token|private[_-]?key|client[_-]?secret|github[_-]?token|token)['"]?\s*[:=]\s*(?:['"][^'"\s]{8,}['"]|\S{8,})/i,
   },
+  {
+    name: "camelCase credential",
+    // camelCase spellings (`accessKey=`, `secretKey`, `apiToken`, `clientSecret`)
+    // slipped past the kebab/snake regex above.
+    pattern:
+      /['"]?(?:accessKey|secretKey|apiToken|authToken|clientSecret|privateKey|apiKey)['"]?\s*[:=]\s*(?:['"][^'"\s]{8,}['"]|\S{8,})/,
+  },
+  // JSON Web Tokens — three dot-separated base64url segments.
+  { name: "JWT", pattern: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/ },
   // Slack tokens
   { name: "Slack token", pattern: /xox[baprs]-[A-Za-z0-9-]{10,}/ },
   // Google API keys

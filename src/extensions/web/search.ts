@@ -22,6 +22,13 @@ export interface SearchResult {
   snippet: string;
 }
 
+/** Search results plus human-readable provider notes (2.5.4: a degraded
+ *  provider must be visible in the tool result, not only console.warn). */
+export interface WebSearchOutcome {
+  results: SearchResult[];
+  notes: string[];
+}
+
 export interface SearchInput {
   query: string;
   max_results?: number;
@@ -51,6 +58,11 @@ const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
 const SEARCH_TIMEOUT_MS = 15_000;
 
 export async function webSearch(input: SearchInput, opts: SearchOptions = {}): Promise<SearchResult[]> {
+  return (await webSearchWithNotes(input, opts)).results;
+}
+
+/** Same as webSearch, but also returns provider-degradation notes. */
+export async function webSearchWithNotes(input: SearchInput, opts: SearchOptions = {}): Promise<WebSearchOutcome> {
   if (!input.query.trim()) {
     throw new Error("webSearch: query must not be empty");
   }
@@ -68,21 +80,24 @@ export async function webSearch(input: SearchInput, opts: SearchOptions = {}): P
         "Configure the key (settings.json env stanza or environment) or switch to PICO_SEARCH_PROVIDER=exa.",
       );
     }
-    return filterDomains(await tavilySearch(input.query, max, env.tavilyKey, opts), input.allowed_domains, input.blocked_domains).slice(0, max);
+    return { results: filterDomains(await tavilySearch(input.query, max, env.tavilyKey, opts), input.allowed_domains, input.blocked_domains).slice(0, max), notes: [] };
   }
   if (provider === "exa") {
-    return filterDomains(await exaSearch(input.query, max, opts), input.allowed_domains, input.blocked_domains).slice(0, max);
+    return { results: filterDomains(await exaSearch(input.query, max, opts), input.allowed_domains, input.blocked_domains).slice(0, max), notes: [] };
   }
   if (provider !== undefined && provider !== "") {
     throw new Error(`Unknown PICO_SEARCH_PROVIDER value '${env.provider}'. Valid values: exa | tavily.`);
   }
 
   // No forced provider: Exa alone without a key, hybrid with one.
-  const raw = env.tavilyKey
-    ? await hybridSearch(input.query, max, env.tavilyKey, opts)
-    : await exaSearch(input.query, max, opts);
-
-  return filterDomains(raw, input.allowed_domains, input.blocked_domains).slice(0, max);
+  if (env.tavilyKey) {
+    const outcome = await hybridSearch(input.query, max, env.tavilyKey, opts);
+    return {
+      results: filterDomains(outcome.results, input.allowed_domains, input.blocked_domains).slice(0, max),
+      notes: outcome.notes,
+    };
+  }
+  return { results: filterDomains(await exaSearch(input.query, max, opts), input.allowed_domains, input.blocked_domains).slice(0, max), notes: [] };
 }
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -287,7 +302,7 @@ async function hybridSearch(
   max: number,
   tavilyKey: string,
   opts: SearchOptions,
-): Promise<SearchResult[]> {
+): Promise<{ results: SearchResult[]; notes: string[] }> {
   const [exaResult, tavilyResult] = await Promise.allSettled([
     exaSearch(query, max, opts),
     tavilySearch(query, max, tavilyKey, opts),
@@ -299,6 +314,7 @@ async function hybridSearch(
   }
   const exaResults = exaResult.status === "fulfilled" ? exaResult.value : [];
   const tavilyResults = tavilyResult.status === "fulfilled" ? tavilyResult.value : [];
+  const notes: string[] = [];
   if (exaResult.status === "rejected" && tavilyResult.status === "rejected") {
     const messages = [exaResult.reason, tavilyResult.reason]
       .map((err) => err instanceof Error ? err.message : String(err))
@@ -306,13 +322,16 @@ async function hybridSearch(
     throw new Error(`Hybrid search failed: ${messages}`);
   }
   // A single-source failure must not vanish silently — the user sees a
-  // half-coverage result with no hint that a provider is down.
+  // half-coverage result with no hint that a provider is down. The note is
+  // surfaced in the tool result (2.5.4), not just stderr.
   if (exaResult.status === "rejected") {
     const reason = exaResult.reason instanceof Error ? exaResult.reason.message : String(exaResult.reason);
     console.warn(`[pico web] Exa unavailable, using Tavily only: ${reason}`);
+    notes.push(`Exa provider unavailable — only Tavily results shown (${reason}).`);
   } else if (tavilyResult.status === "rejected") {
     const reason = tavilyResult.reason instanceof Error ? tavilyResult.reason.message : String(tavilyResult.reason);
     console.warn(`[pico web] Tavily unavailable, using Exa only: ${reason}`);
+    notes.push(`Tavily provider unavailable — only Exa results shown (${reason}).`);
   }
 
   // Merge with URL dedup, preserving interleaved ordering. The two providers
@@ -327,7 +346,7 @@ async function hybridSearch(
       merged.push(r);
     }
   }
-  return merged;
+  return { results: merged, notes };
 }
 
 /** Lowercase host, drop fragment/default port/trailing slash — a stable page key. */
@@ -423,6 +442,21 @@ function hostMatches(host: string, pattern: string): boolean {
 }
 
 // ─── Formatting ─────────────────────────────────────────────────────────────
+
+/** Total output cap for the formatted result (2.5.4) — webSearch had no cap
+ *  while webFetch capped at 8KB; 25 results with long snippets routinely
+ *  burned 10KB+ of context. */
+export const SEARCH_OUTPUT_CAP_BYTES = 12 * 1024;
+
+/** Cap a formatted search result by bytes (safe on UTF-8 boundaries). */
+export function capSearchOutput(text: string, cap = SEARCH_OUTPUT_CAP_BYTES): string {
+  if (Buffer.byteLength(text, "utf8") <= cap) return text;
+  let cut = cap;
+  while (cut > 0 && (text.charCodeAt(cut - 1) & 0xc0) === 0x80) cut--;
+  const truncated = text.slice(0, cut);
+  const omitted = Buffer.byteLength(text.slice(cut), "utf8");
+  return `${truncated}\n\n[Results truncated: ${omitted} bytes omitted to protect context.]`;
+}
 
 export function formatSearchResults(query: string, results: SearchResult[]): string {
   if (results.length === 0) {

@@ -95,10 +95,15 @@ const LspParams = Type.Object({
 // would otherwise re-fire the notification (and re-ask the install dialog
 // after a decline).
 const warnedMissingCommands = new Set<string>();
+/** Commands the user explicitly declined to install this session — later
+ *  LSP calls must explain WHY nothing starts, instead of a bare
+ *  "No language server available" (2.5.11). */
+const declinedMissingCommands = new Set<string>();
 
 /** Test hook: clear the once-per-command warning cache. */
 export function __resetWarnedMissingCommandsForTests(): void {
   warnedMissingCommands.clear();
+  declinedMissingCommands.clear();
 }
 
 function shouldWarnAboutMissingCommand(command: string): boolean {
@@ -154,6 +159,16 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       const fullCmd = err.message.match(/"(.+?)"/)?.[1];
       const cmd = fullCmd ? basename(fullCmd) : null;
       const warnKey = cmd ?? fullCmd ?? "unknown";
+      if (declinedMissingCommands.has(warnKey)) {
+        // The user already refused the install — re-explain instead of
+        // nagging again (2.5.11): a bare "no server available" reads as a
+        // broken tool, not as a consequence of the earlier decline.
+        ctx.ui.notify(
+          `LSP server "${warnKey}" was declined earlier and is not installed — no language server is running. Run /doctor or retry this action to install it.`,
+          "warning",
+        );
+        return null;
+      }
       if (!shouldWarnAboutMissingCommand(warnKey)) return null;
       const hint = cmd ? getInstallHint(cmd) : null;
       if (!hint) {
@@ -167,7 +182,10 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         `Install LSP server "${cmd}"?`,
         `Command "${cmd}" not found. Install with:\n  ${hint.command}\n\nProceed?`,
       );
-      if (!doInstall) return null;
+      if (!doInstall) {
+        declinedMissingCommands.add(warnKey);
+        return null;
+      }
       const result = await installServer(cmd!);
       if (!result.ok) {
         ctx.ui.notify(`Installation failed:\n${result.output}`, "error");
@@ -267,9 +285,11 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           if (!doc) return fail(`Cannot open file: ${params.file}`);
           ctx.ui.setStatus("lsp", `LSP: ${doc.serverName}`.trim());
           try {
-            await new Promise<void>((resolve) => { setTimeout(() => resolve(), 500); });
-            const diags = doc.client.getDiagnostics(doc.uri);
-            return ok(formatDiagnosticsForFile(params.file, diags));
+            // 2.5.11: a fixed 500ms sleep returned stale/empty diagnostics on
+            // slow servers — wait for the server's own publish instead
+            // (inline window, then a bounded deferred catch-up).
+            const diags = await waitForFreshDiagnostics(doc.client, doc.uri, 500, 5_000);
+            return ok(formatDiagnosticsForFile(params.file, diags ?? []));
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             return fail(`LSP diagnostics failed: ${msg}`);
@@ -492,8 +512,15 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       if (freshMessages.length > 0) {
         additions.push({ type: "text", text: `\n[LSP] ${freshMessages.join("\n")}` });
       }
-    } catch {
-      // Silently ignore writethrough failures
+    } catch (err) {
+      // 2.5.2: a crashed/disconnected server must not turn write-through into
+      // total silence — the user just wrote a file and the model believes it
+      // was verified. Say so, visibly.
+      const reason = err instanceof Error ? err.message : String(err);
+      additions.push({
+        type: "text",
+        text: `\n[LSP] server unavailable; diagnostics skipped for this write${reason && !reason.includes("Server not running") ? ` (${reason})` : ""}. The file was written without LSP verification.`,
+      });
     }
 
     if (additions.length === 0) return;

@@ -27,6 +27,7 @@ import {
 	getFinalOutput,
 	getResultOutput,
 	isFailedResult,
+	truncateOutput,
 	type SingleResult,
 	type SubagentDetails,
 } from "./results.ts";
@@ -42,6 +43,10 @@ import { publishExtensionEvent } from "../events.ts";
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
+/** Default per-agent timeout (2.4.2): none of the built-in agents set
+ *  maxExecutionTimeMs, so a hung model loop previously ran forever.
+ *  Frontmatter/config can override. */
+const DEFAULT_AGENT_TIMEOUT_MS = 30 * 60 * 1000;
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 type SubagentToolResult = AgentToolResult<SubagentDetails> & { isError?: boolean };
@@ -138,19 +143,22 @@ async function runSingleAgent(
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
-	/** Removes the spilled large-output temp dir (if any) in the finally. */
-	let spillCleanup: (() => void) | undefined;
 
 	const currentResult = createInitialResult(agent, agentName, task, step);
 
-	const emitUpdate = () => {
-		if (onUpdate) {
-			onUpdate({
-				content: [{ type: "text", text: getFinalOutput(currentResult.messages) || "(running...)" }],
-				details: makeDetails([currentResult]),
-			});
-		}
-	};
+		const emitUpdate = () => {
+			if (onUpdate) {
+				onUpdate({
+					content: [{ type: "text", text: getFinalOutput(currentResult.messages) || "(running...)" }],
+					details: makeDetails([currentResult]),
+				});
+			}
+		};
+
+		// 2.4.4: emit an initial "(running...)" update before the child even
+		// produces its first event — slow first-token models previously left
+		// the result panel blank for 10-60s with no indication of life.
+		emitUpdate();
 
 	try {
 		if (agent.systemPrompt.trim()) {
@@ -167,16 +175,24 @@ async function runSingleAgent(
 			cwd: cwd ?? defaultCwd,
 			result: currentResult,
 			signal,
-			timeoutMs: agent.maxExecutionTimeMs,
+			timeoutMs: agent.maxExecutionTimeMs ?? DEFAULT_AGENT_TIMEOUT_MS,
 			spawn: (command, args, options) => spawn(command, args, options),
 			onMessage: emitUpdate,
 		});
 
 		applyProcessExit(currentResult, processResult.exitCode, processResult.timedOut, agent.maxExecutionTimeMs);
-		if (processResult.wasAborted) throw new Error("Subagent was aborted");
+		if (processResult.wasAborted) {
+			// 2.4.5: an aborted run is a result, not a thrown exception — the
+			// partial messages it produced must stay visible to the caller so
+			// parallel/chain modes can preserve already-finished work.
+			currentResult.stopReason = "aborted";
+			currentResult.errorMessage = "Subagent aborted (user interrupt)";
+		}
 
 		try {
-			spillCleanup = await spillLargeFileOnlyOutput(currentResult, agent.name, agent.outputMode, PER_TASK_OUTPUT_CAP, {
+			// Spilled output files are registered for session-end cleanup
+			// (2.4.7) — chained steps may still need to read the path.
+			await spillLargeFileOnlyOutput(currentResult, agent.name, agent.outputMode, PER_TASK_OUTPUT_CAP, {
 				tmpPrefix: path.join(os.tmpdir(), "pico-agent-output-"),
 				mkdtemp: (prefix) => fs.promises.mkdtemp(prefix),
 				writeFile: (filePath, content) => fs.promises.writeFile(filePath, content, { encoding: "utf-8", mode: 0o600 }),
@@ -188,12 +204,6 @@ async function runSingleAgent(
 
 		return currentResult;
 	} finally {
-		if (spillCleanup)
-			try {
-				spillCleanup();
-			} catch {
-				/* ignore */
-			}
 		if (tmpPromptPath)
 			try {
 				fs.unlinkSync(tmpPromptPath);
@@ -385,6 +395,12 @@ export async function runSubagentRequest(
 			results.push(result);
 			publishExtensionEvent("subagent_completed", { task: step.task, result: getResultOutput(result) });
 
+			if (result.stopReason === "aborted" || signal?.aborted) {
+				// 2.4.5: user interrupt — keep the completed steps visible
+				// instead of letting Promise.all-style rejection swallow them.
+				break;
+			}
+
 			const isError = isFailedResult(result);
 			if (isError) {
 				const errorMsg = getResultOutput(result);
@@ -400,8 +416,16 @@ export async function runSubagentRequest(
 			}
 		}
 		const lastResult = results.at(-1);
+		const aborted = lastResult?.stopReason === "aborted" || signal?.aborted;
+		const contentText = aborted
+			? `Chain aborted after ${results.length} of ${chain.length} steps.\n\nCompleted steps:\n${results
+					.map((r) => `### [${r.agent}] ${r.stopReason === "aborted" ? "aborted" : "completed"}\n\n${truncateOutput(getResultOutput(r), 8192)}`)
+					.join("\n\n---\n\n")}`
+			: lastResult
+				? getFinalOutput(lastResult.messages) || "(no output)"
+				: "(no output)";
 		return {
-			content: [{ type: "text", text: lastResult ? getFinalOutput(lastResult.messages) || "(no output)" : "(no output)" }],
+			content: [{ type: "text", text: contentText }],
 			details: makeDetails("chain")(results),
 		};
 	}
@@ -442,6 +466,10 @@ export async function runSubagentRequest(
 			}
 		};
 
+		// 2.4.4: show "0/N running..." immediately instead of a blank panel
+		// until the first task produces output.
+		emitParallelUpdate();
+
 		try {
 			const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
 				const handle = worktreeHandles[index];
@@ -476,19 +504,29 @@ export async function runSubagentRequest(
 				return result;
 			});
 
+			// 2.4.5: on interrupt, running tasks come back as aborted results
+			// (runSingleAgent no longer throws); never-launched tasks keep
+			// their placeholder status — report them, don't drop the lot.
 			const mergeNotes = useWorktree ? mergeParallelWorktrees(ctx.cwd, results, worktreeHandles) : [];
 
 			for (let i = 0; i < results.length; i++) {
 				const t = params.tasks[i];
 				const r = results[i];
-				if (t && r) publishExtensionEvent("subagent_completed", { task: t.task, result: getResultOutput(r) });
+				if (t && r && r.stopReason !== "aborted" && r.exitCode !== -1) {
+					publishExtensionEvent("subagent_completed", { task: t.task, result: getResultOutput(r) });
+				}
 			}
+
+			const abortedCount = results.filter((r) => r.stopReason === "aborted").length;
+			const pendingCount = results.filter((r) => r.exitCode === -1).length;
 
 			const text = summarizeParallelResults(
 				results,
 				PER_TASK_OUTPUT_CAP,
 				useWorktree ? mergeNotes : [],
-			);
+			) + (abortedCount > 0 || pendingCount > 0
+				? `\n\n_Interrupted: ${abortedCount} task(s) aborted, ${pendingCount} not started. Completed results above are preserved._`
+				: "");
 			return {
 				content: [{ type: "text", text }],
 				details: makeDetails("parallel")(results),
@@ -520,6 +558,12 @@ export async function runSubagentRequest(
 		);
 		publishExtensionEvent("subagent_completed", { task: params.task, result: getResultOutput(result) });
 		if (forkFallbackNote) result.contextFallback = forkFallbackNote;
+		if (result.stopReason === "aborted") {
+			return {
+				content: [{ type: "text", text: `Agent aborted. Partial output:\n\n${truncateOutput(getResultOutput(result), 8192)}` }],
+				details: makeDetails("single")([result]),
+			};
+		}
 		const isError = isFailedResult(result);
 		if (isError) {
 			const errorMsg = getResultOutput(result);

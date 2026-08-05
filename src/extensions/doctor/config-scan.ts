@@ -8,14 +8,14 @@
  * YAML subset that matters (indented `key: value` maps) and reports keys
  * that are present in config.yml but NOT effective in pico.
  *
- * It also scans models.yml for reasoning models whose provider compat
+ * It also scans models.json for reasoning models whose provider compat
  * lacks `requiresReasoningContentOnAssistantMessages` — the known
  * precondition for "reasoning_content must be passed back" 400s from
  * deepseek-style OpenAI-compatible proxies.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { picoAgentHome } from "../paths.ts";
+import { picoAgentHome, picoModelsPath } from "../paths.ts";
 import { readSettingsObject } from "../settings.ts";
 
 export const SAFETY_KEYS = [
@@ -137,7 +137,7 @@ export function formatConfigYmlConflictLines(): string[] {
   return lines;
 }
 
-// ---- models.yml reasoning-compat scan ----------------------------------
+// ---- models.json reasoning-compat scan ----------------------------------
 
 export interface ReasoningCompatIssue {
   provider: string;
@@ -148,94 +148,61 @@ export interface ReasoningCompatIssue {
 interface ProviderScan {
   name: string;
   reasoningModels: string[];
-  compatLine: string | null;
+  hasCompat: boolean;
 }
 
-const MODEL_FILE_SUBKEYS = new Set(["compat", "models", "baseurl", "api", "apikey", "authheader", "name"]);
-
 /**
- * Minimal YAML scan for provider/model/compat structure:
+ * Scan the JSON model catalog (models.json) for provider/model compat
+ * structure:
  *
- *   providers:
- *     zen-openai:
- *       compat:
- *         supportsDeveloperRole: false
- *       models:
- *         - id: deepseek-v4-flash-free
- *           reasoning: true
+ *   {
+ *     "providers": {
+ *       "zen-openai": {
+ *         "compat": { "supportsDeveloperRole": false },
+ *         "models": [
+ *           { "id": "deepseek-v4-flash-free", "reasoning": true,
+ *             "compat": { "requiresReasoningContentOnAssistantMessages": true } }
+ *         ]
+ *       }
+ *     }
+ *   }
+ *
+ * The flag may live on the provider or on any of its models; either way it
+ * covers the provider's reasoning models (matching the legacy YAML scan).
  */
-export function scanModelsYml(raw: string): ProviderScan[] {
-  const lines = raw.split("\n");
-  const providers: ProviderScan[] = [];
-  let current: ProviderScan | null = null;
-
-  const providerIndent = (line: string): number => line.length - line.trimStart().length;
-  const topLevel = lines.findIndex((l) => l.trim() === "providers:");
-  // YAML indent is not mandated to be 2 spaces — derive the provider block
-  // depth from the actual `providers:` line so 4-space files are scanned too.
-  const topLevelIndent = topLevel >= 0 ? providerIndent(lines[topLevel]!) : 0;
-  const providerDepth = topLevelIndent + 2;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    if (i <= topLevel || topLevel < 0) continue;
-
-    const indent = providerIndent(line);
-    if (indent === 0) continue;
-
-    // Provider block: exactly one nesting level under `providers:` — deeper
-    // keys (compat/models/baseUrl) are subkeys, not providers, and must never
-    // reset the current block.
-    const providerMatch = /^([A-Za-z0-9_-]+)\s*:\s*$/.exec(trimmed);
-    if (providerMatch && indent === providerDepth && !MODEL_FILE_SUBKEYS.has(providerMatch[1]!.toLowerCase())) {
-      current = { name: providerMatch[1]!, reasoningModels: [], compatLine: null };
-      providers.push(current);
-      continue;
-    }
-    if (!current) continue;
-
-    if (/^compat\s*:\s*$/.test(trimmed)) {
-      // Look ahead for requiresReasoningContentOnAssistantMessages within
-      // the compat block (next non-comment line with greater indent).
-      for (let j = i + 1; j < lines.length; j++) {
-        const next = lines[j]!.trim();
-        if (!next || next.startsWith("#")) continue;
-        const nextIndent = providerIndent(lines[j]!);
-        if (nextIndent <= indent) break;
-        if (/^requiresReasoningContentOnAssistantMessages\s*:\s*true\s*$/.test(next)) {
-          current.compatLine = `requiresReasoningContentOnAssistantMessages: true`;
-        }
-        break;
-      }
-      continue;
-    }
-
-    const modelMatch = /^-\s*id\s*:\s*(.+)$/.exec(trimmed);
-    if (modelMatch) {
-      const id = modelMatch[1]!.trim();
-      // Reasoning flag lives in a following line (`reasoning: true`).
-      for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
-        const next = lines[j]!.trim();
-        if (next.startsWith("- ") || /^[A-Za-z]/.test(next) && !next.startsWith("reasoning")) break;
-        if (/^reasoning\s*:\s*true\s*$/.test(next)) {
-          current.reasoningModels.push(id);
-          break;
-        }
-        if (next.startsWith("reasoning")) break;
-      }
-      continue;
-    }
+export function scanModelsJson(raw: string): ProviderScan[] {
+  let parsed: { providers?: Record<string, unknown> };
+  try {
+    parsed = JSON.parse(raw) as { providers?: Record<string, unknown> };
+  } catch {
+    return [];
   }
-
+  const providers: ProviderScan[] = [];
+  for (const [name, value] of Object.entries(parsed.providers ?? {})) {
+    if (!value || typeof value !== "object") continue;
+    const p = value as {
+      compat?: Record<string, unknown>;
+      models?: Array<{ id?: unknown; reasoning?: unknown; compat?: Record<string, unknown> }>;
+    };
+    const hasFlag = (c: Record<string, unknown> | undefined): boolean =>
+      c?.["requiresReasoningContentOnAssistantMessages"] === true;
+    const reasoningModels: string[] = [];
+    let hasCompat = hasFlag(p.compat);
+    for (const m of p.models ?? []) {
+      if (m?.reasoning === true) {
+        reasoningModels.push(typeof m.id === "string" ? m.id : String(m.id ?? ""));
+      }
+      if (hasFlag(m?.compat)) hasCompat = true;
+    }
+    providers.push({ name, reasoningModels, hasCompat });
+  }
   return providers;
 }
 
 export function detectReasoningCompatIssues(): ReasoningCompatIssue[] {
   try {
-    const raw = readFileSync(join(picoAgentHome(), "models.yml"), "utf-8");
-    const providers = scanModelsYml(raw);
+    const raw = readFileSync(picoModelsPath(), "utf-8");
+    const providers = scanModelsJson(raw);
     const issues: ReasoningCompatIssue[] = [];
     for (const provider of providers) {
       if (provider.reasoningModels.length === 0) continue;
@@ -243,7 +210,7 @@ export function detectReasoningCompatIssues(): ReasoningCompatIssue[] {
         issues.push({
           provider: provider.name,
           model,
-          hasCompatFlag: provider.compatLine !== null,
+          hasCompatFlag: provider.hasCompat,
         });
       }
     }
@@ -264,7 +231,7 @@ export function formatReasoningCompatLines(): string[] {
     ...missing.map(
       (issue) =>
         `  ${issue.provider}/${issue.model} — add compat.requiresReasoningContentOnAssistantMessages: true ` +
-        `in ~/.pico/agent/models.yml`,
+        `in ${picoModelsPath()}`,
     ),
   ];
   return lines;

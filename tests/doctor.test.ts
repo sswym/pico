@@ -103,7 +103,7 @@ import {
   detectReasoningCompatIssues,
   formatConfigYmlConflictLines,
   parseConfigYmlSafetyBlock,
-  scanModelsYml,
+  scanModelsJson,
 } from "../src/extensions/doctor/config-scan.ts";
 
 const REAL_STYLE_CONFIG_YML = `env:
@@ -203,35 +203,39 @@ test("detectConfigYmlSafetyConflicts is empty when settings match config.yml", (
   }
 });
 
-test("scanModelsYml finds reasoning models and compat flags", () => {
-  const modelsYml = `providers:
-  zen-openai:
-    baseUrl: http://localhost:4096/v1
-    api: openai-completions
-    compat:
-      supportsDeveloperRole: false
-    models:
-      - id: deepseek-v4-flash-free
-        reasoning: true
-      - id: plain-model
-        reasoning: false
-  other:
-    models:
-      - id: m2
-        reasoning: true
-        compat:
-          requiresReasoningContentOnAssistantMessages: true
-`;
+test("scanModelsJson finds reasoning models and compat flags", () => {
+  const modelsJson = JSON.stringify({
+    providers: {
+      "zen-openai": {
+        baseUrl: "http://localhost:4096/v1",
+        api: "openai-completions",
+        compat: { supportsDeveloperRole: false },
+        models: [
+          { id: "deepseek-v4-flash-free", reasoning: true },
+          { id: "plain-model", reasoning: false },
+        ],
+      },
+      other: {
+        models: [
+          {
+            id: "m2",
+            reasoning: true,
+            compat: { requiresReasoningContentOnAssistantMessages: true },
+          },
+        ],
+      },
+    },
+  });
 
-  const providers = scanModelsYml(modelsYml);
+  const providers = scanModelsJson(modelsJson);
   const zen = providers.find((p) => p.name === "zen-openai");
   expect(zen).toBeDefined();
   expect(zen!.reasoningModels).toEqual(["deepseek-v4-flash-free"]);
-  expect(zen!.compatLine).toBeNull();
+  expect(zen!.hasCompat).toBe(false);
 
   const other = providers.find((p) => p.name === "other");
   expect(other!.reasoningModels).toEqual(["m2"]);
-  expect(other!.compatLine).toBe("requiresReasoningContentOnAssistantMessages: true");
+  expect(other!.hasCompat).toBe(true);
 });
 
 test("detectReasoningCompatIssues reports models missing the compat flag", () => {
@@ -241,15 +245,17 @@ test("detectReasoningCompatIssues reports models missing the compat flag", () =>
     const agentDir = join(home, "agent");
     mkdirSync(agentDir, { recursive: true });
     writeFileSync(
-      join(agentDir, "models.yml"),
-      `providers:
-  zen-openai:
-    models:
-      - id: deepseek-v4-flash-free
-        reasoning: true
-      - id: plain
-        reasoning: false
-`,
+      join(agentDir, "models.json"),
+      JSON.stringify({
+        providers: {
+          "zen-openai": {
+            models: [
+              { id: "deepseek-v4-flash-free", reasoning: true },
+              { id: "plain", reasoning: false },
+            ],
+          },
+        },
+      }),
     );
 
     const issues = detectReasoningCompatIssues();

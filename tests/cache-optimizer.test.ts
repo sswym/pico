@@ -124,19 +124,31 @@ test("does not lift ambiguous stable candidates", () => {
   expect(result.systemPrompt).toBe(prompt);
 });
 
-test("injects prompt_cache_key and strips unsupported proxy retention", () => {
+test("injects prompt_cache_key ONLY for official OpenAI endpoints (2.5.5)", () => {
   const payload = { model: "gpt", messages: [], prompt_cache_retention: "long" };
   const model = {
-    provider: "proxy",
+    provider: "openai",
     api: "openai-completions",
-    baseUrl: "https://proxy.example.test/v1",
+    baseUrl: "https://api.openai.com/v1",
   } as any;
 
   const result = optimizeProviderPayload(payload, model, "session-123") as any;
 
   expect(result.prompt_cache_key).toBe("session-123");
-  expect(result.prompt_cache_retention).toBeUndefined();
+  expect(result.prompt_cache_retention).toBe("long");
   expect(payload.prompt_cache_retention).toBe("long");
+
+  // A third-party OpenAI-compatible gateway (vLLM/Ollama/proxy) must NOT
+  // receive prompt_cache_key — the field 400s on gateways that don't know it.
+  const proxyPayload = { model: "gpt", messages: [], prompt_cache_retention: "long" };
+  const proxyModel = {
+    provider: "proxy",
+    api: "openai-completions",
+    baseUrl: "https://proxy.example.test/v1",
+  } as any;
+  const proxyResult = optimizeProviderPayload(proxyPayload, proxyModel, "session-123") as any;
+  expect(proxyResult.prompt_cache_key).toBeUndefined();
+  expect(proxyResult.prompt_cache_retention).toBeUndefined();
 });
 
 test("preserves existing prompt_cache_key and official OpenAI retention", () => {
@@ -190,5 +202,14 @@ test("extension registers prompt and provider hooks", () => {
     sessionManager: { getSessionId: () => "test-session-id" },
   });
 
-  expect(providerResult.prompt_cache_key).toBe("test-session-id");
+  // 2.5.5: proxy gateways must not receive prompt_cache_key.
+  expect(providerResult).toBeUndefined();
+
+  const officialResult = pi.handlers.before_provider_request![0]!({
+    payload: { messages: [] },
+  }, {
+    model: { provider: "openai", api: "openai-completions", baseUrl: "https://api.openai.com/v1" },
+    sessionManager: { getSessionId: () => "test-session-id" },
+  });
+  expect(officialResult.prompt_cache_key).toBe("test-session-id");
 });

@@ -23,7 +23,7 @@ import type {
   ToolCallEvent,
   ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
-import { type Hook, loadHooks } from "./config.ts";
+import { type Hook, loadHooks, drainHookConfigErrors } from "./config.ts";
 import { type HookVars, runHook } from "./runner.ts";
 
 export { loadHooks, type Hook } from "./config.ts";
@@ -90,6 +90,15 @@ export function createHooksExtension(deps: {
       } catch {}
     }
 
+    pi.on("session_start", () => {
+      // 2.5.8: config parse errors are invisible in the TUI (console.warn
+      // goes to stderr). Surface them via the same channel hook failures use.
+      const errors = drainHookConfigErrors();
+      for (const message of errors) {
+        warn(message);
+      }
+    });
+
     pi.on("tool_call", async (event: ToolCallEvent) => {
       const matching = hooks().filter((h) => matches(h, "PreToolUse", event.toolName));
       if (matching.length === 0) return {};
@@ -100,8 +109,21 @@ export function createHooksExtension(deps: {
       };
 
       for (const hook of matching) {
-        const res = await run(hook, vars, cwdFn());
         const blocking = hook.blocking ?? true;
+        // 2.5.8: a blocking hook with a long timeout looks like a dead tool
+        // call — say it is running before the subprocess spins up.
+        if (blocking && (hook.timeoutMs ?? 30_000) >= 10_000) {
+          try {
+            pi.sendMessage({
+              customType: "pico.hook.progress",
+              content: `Waiting for PreToolUse hook \`${hook.command}\` (timeout ${(hook.timeoutMs ?? 30_000) / 1000}s)…`,
+              display: true,
+            });
+          } catch {
+            // non-TUI mode may drop custom messages
+          }
+        }
+        const res = await run(hook, vars, cwdFn());
         const failed = res.timedOut || res.exitCode !== 0;
         if (failed && blocking) {
           const why = res.timedOut
@@ -148,11 +170,16 @@ export function createHooksExtension(deps: {
       };
 
       for (const hook of matching) {
-        const res = await run(hook, vars, cwdFn());
-        if (res.timedOut || res.exitCode !== 0) {
-          const why = res.timedOut ? "timeout" : `exit ${res.exitCode}`;
-          warn(`PostUserMessage hook \`${hook.command}\` ${why}`);
-        }
+        // 2.5.8: a slow PostUserMessage hook must not block the UI after
+        // every user message — run it in the background.
+        void run(hook, vars, cwdFn()).then((res) => {
+          if (res.timedOut || res.exitCode !== 0) {
+            const why = res.timedOut ? "timeout" : `exit ${res.exitCode}`;
+            warn(`PostUserMessage hook \`${hook.command}\` ${why}`);
+          }
+        }).catch((err) => {
+          warn(`PostUserMessage hook \`${hook.command}\` failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
       }
     });
 

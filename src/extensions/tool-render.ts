@@ -1,4 +1,4 @@
-import { Text } from "@earendil-works/pi-tui";
+import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import {
   type AgentToolResult,
   type Theme,
@@ -27,6 +27,23 @@ function stringifyValue(value: unknown): string {
 
 function stripTrailingCarriageReturns(text: string): string {
   return text.replace(/\r/g, "");
+}
+
+/** Truncate to a visible-column budget with a single-column ellipsis
+ *  (2.1.3). pi-tui's truncateToWidth pads with its own multi-char ellipsis
+ *  and can inject reset sequences; a hand-rolled code-point walk keeps the
+ *  preview clean. */
+function truncateByWidth(text: string, maxWidth: number): string {
+  if (visibleWidth(text) <= maxWidth) return text;
+  let used = 0;
+  const out: string[] = [];
+  for (const ch of Array.from(text)) {
+    const w = visibleWidth(ch);
+    if (used + w > maxWidth - 1) break;
+    out.push(ch);
+    used += w;
+  }
+  return `${out.join("").trimEnd()}…`;
 }
 
 function collapseLine(line: string, maxLength: number): string {
@@ -99,16 +116,37 @@ export function previewText(
   maxLineLength = DEFAULT_COLLAPSED_LINE_LENGTH,
 ): { preview: string; hiddenLines: number; truncatedLine: boolean } {
   const lines = stripTrailingCarriageReturns(text).split("\n");
+  // 2.1.3: the preview budget is measured in COLUMNS, not characters — a
+  // 180-char Chinese line occupies ~360 columns at 2 cols/char and would
+  // wrap far beyond the promised 8 rows. Budget = maxLines × maxLineLength
+  // columns, and the TUI's wrap width is the terminal columns (≈maxLineLength),
+  // so capping by column count makes "N lines" honest again.
+  const budget = maxLines * maxLineLength;
+  const collapsed: string[] = [];
+  let used = 0;
+  let index = 0;
   let truncatedLine = false;
-  const collapsed = lines.slice(0, maxLines).map((line) => {
-    const clean = line.trimEnd();
-    if (clean.length <= maxLineLength) return clean;
-    truncatedLine = true;
-    return truncateWithEllipsis(clean, maxLineLength);
-  });
+  for (; index < lines.length; index++) {
+    const clean = lines[index]!.trimEnd();
+    const width = visibleWidth(clean);
+    if (width > maxLineLength) {
+      if (collapsed.length >= maxLines) {
+        break;
+      }
+      collapsed.push(truncateByWidth(clean, Math.max(1, maxLineLength)));
+      used += maxLineLength;
+      truncatedLine = true;
+      continue;
+    }
+    if (collapsed.length >= maxLines || used + width > budget) {
+      break;
+    }
+    collapsed.push(clean);
+    used += Math.max(1, width);
+  }
   return {
     preview: collapsed.join("\n").trimEnd(),
-    hiddenLines: Math.max(0, lines.length - collapsed.length),
+    hiddenLines: Math.max(0, lines.length - index),
     truncatedLine,
   };
 }
@@ -165,7 +203,14 @@ export function renderToolResultText(
 
   const color = context.isError ? "error" : "toolOutput";
   if (options.expanded) {
-    text.setText(`\n${theme.fg(color, clean)}`);
+    // 2.1.4: expanding MB-scale output (large file reads, base64 images)
+    // used to push the whole payload into the TUI diff — cap the render and
+    // say where the full text lives.
+    const { preview, hiddenLines, truncatedLine } = previewText(clean, 5000, 5000);
+    const capped = hiddenLines > 0 || truncatedLine
+      ? `${preview}\n\n[Output truncated in view: ${hiddenLines} lines omitted. Full output preserved in tool details.]`
+      : preview;
+    text.setText(`\n${theme.fg(color, capped)}`);
     return text;
   }
 

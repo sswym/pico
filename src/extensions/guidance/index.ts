@@ -22,7 +22,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { picoHome } from "../paths.ts";
+import { picoHome, picoModelsPath, picoSettingsPath } from "../paths.ts";
 
 export const HELP_COMMAND_LIST = [
   "pico 命令",
@@ -65,7 +65,7 @@ export function buildReasoningErrorGuidance(): string {
     "检测到推理模型的多轮对话被代理拒绝：当前提供商要求把上一轮的 reasoning_content 原样带回，",
     "但本地代理未满足该契约（上游 400）。建议按顺序尝试：",
     "  1. 降低思考级别（Shift+Tab 切到 off/minimal）后重试该轮；",
-    "  2. 在 ~/.pico/agent/models.yml 的模型 compat 中加入",
+    `  2. 在 ${picoModelsPath()} 中对应模型（或 provider）的 compat 中加入`,
     "     requiresReasoningContentOnAssistantMessages: true（若代理仍拒绝，请升级代理）；",
     "  3. 切换到非推理模型（/model）。",
     "详情见 docs/user-guide.md「模型与提供商」章节。",
@@ -76,7 +76,7 @@ export function buildNoModelGuidance(): string {
   return [
     "当前没有可用的模型配置。首次使用请运行：",
     "  pico setup     —— 交互式向导（模型/工具/安全/界面等）",
-    "或手动编辑 ~/.pico/agent/settings.json 与 models.yml。",
+    `或手动编辑 ${picoSettingsPath()} 与 ${picoModelsPath()}。`,
     "配置完成后重启 pico 即可开始。",
   ].join("\n");
 }

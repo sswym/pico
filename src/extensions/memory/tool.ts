@@ -2,6 +2,7 @@ import type { MemoryProvider } from "./provider.ts";
 import type { ProviderManager } from "./provider-manager.ts";
 import type { CuratedMemoryStore, CuratedTarget } from "./curated-store.ts";
 import { VALID_CATEGORIES, type Category, type Scope } from "./schema.ts";
+import { projectScopeKey } from "./query-scope.ts";
 
 export interface MemoryToolParams {
   action:
@@ -60,12 +61,39 @@ function parseScope(raw: unknown): Scope | undefined {
   return raw === "project" || raw === "global" ? raw : undefined;
 }
 
-function cwdForScope(scope: Scope | undefined, currentCwd: string | null): string | undefined {
-  return scope === "project" ? (currentCwd ?? undefined) : undefined;
+/**
+ * Resolve the effective cwd for a read/write.
+ *
+ * 2.3.1: reads default to the CURRENT PROJECT scope (project + global) when
+ * no explicit scope is given and a cwd is known — auto-extraction writes
+ * project-scoped facts by default, so a global-only read default made the
+ * vast majority of stored facts invisible ("memory feels broken"). An
+ * explicit `scope: "global"` still forces global-only.
+ */
+function cwdForScope(scope: Scope | undefined, currentCwd: string | null, isRead: boolean): string | undefined {
+  if (scope === "project") return currentCwd ?? undefined;
+  if (scope === "global") return undefined;
+  if (isRead) return currentCwd ?? undefined;
+  return undefined;
 }
 
 function parseCuratedTarget(raw: unknown): CuratedTarget {
   return raw === "user" ? "user" : "memory";
+}
+
+/**
+ * Ownership gate (2.3.4): a fact stored under `project:<other-cwd>` must not
+ * be removable/updatable from a session rooted in a different directory.
+ * Global facts and the current project's facts are fair game.
+ */
+function ownershipViolation(fact: { scope: string; fact_id: number } | null | undefined, currentCwd: string | null): string | null {
+  if (!fact) return null; // not found — handled by the caller
+  if (!fact.scope.startsWith("project:")) return null;
+  if (!currentCwd) {
+    return `fact #${fact.fact_id} belongs to project scope '${fact.scope}' — refusing without a session cwd`;
+  }
+  if (fact.scope === projectScopeKey(currentCwd)) return null;
+  return `fact belongs to another project ('${fact.scope}') — refusing cross-project modification`;
 }
 
 export function executeMemoryToolAction(
@@ -92,7 +120,7 @@ export function executeMemoryToolAction(
           category: cat,
           tags: params.tags,
           scope,
-          cwd: cwdForScope(scope, currentCwd),
+          cwd: cwdForScope(scope, currentCwd, false),
           correctionOf: params.correction_of,
           source: "manual",
         });
@@ -117,7 +145,7 @@ export function executeMemoryToolAction(
           minTrust: params.min_trust,
           limit: params.limit,
           scope,
-          cwd: cwdForScope(scope, currentCwd),
+          cwd: cwdForScope(scope, currentCwd, true),
         });
         return jsonResult({ count: results.length, results });
       }
@@ -131,7 +159,7 @@ export function executeMemoryToolAction(
           minTrust: params.min_trust,
           limit: params.limit,
           scope,
-          cwd: cwdForScope(scope, currentCwd),
+          cwd: cwdForScope(scope, currentCwd, true),
         });
         return jsonResult({ count: results.length, results });
       }
@@ -143,7 +171,7 @@ export function executeMemoryToolAction(
           minTrust: params.min_trust,
           limit: params.limit,
           scope,
-          cwd: cwdForScope(scope, currentCwd),
+          cwd: cwdForScope(scope, currentCwd, true),
         });
         return jsonResult({ count: results.length, facts: results });
       }
@@ -157,7 +185,7 @@ export function executeMemoryToolAction(
           minTrust: params.min_trust,
           limit: params.limit,
           scope,
-          cwd: cwdForScope(scope, currentCwd),
+          cwd: cwdForScope(scope, currentCwd, true),
         });
         return jsonResult({ count: results.length, results });
       }
@@ -170,7 +198,7 @@ export function executeMemoryToolAction(
           minTrust: params.min_trust,
           limit: params.limit,
           scope,
-          cwd: cwdForScope(scope, currentCwd),
+          cwd: cwdForScope(scope, currentCwd, true),
         });
         return jsonResult({ count: results.length, results });
       }
@@ -181,7 +209,7 @@ export function executeMemoryToolAction(
           category: cat,
           limit: params.limit,
           scope,
-          cwd: cwdForScope(scope, currentCwd),
+          cwd: cwdForScope(scope, currentCwd, true),
         });
         return jsonResult({ count: results.length, contradictions: results });
       }
@@ -190,6 +218,8 @@ export function executeMemoryToolAction(
         const cat = asCategory(params.category);
         if (params.category && !cat) return errorResult(`invalid category '${params.category}'`);
         const prevFact = provider.get(params.fact_id);
+        const violation = ownershipViolation(prevFact, currentCwd);
+        if (violation) return errorResult(violation);
         const beforeUpd = provider.onBeforeWrite?.({ action: "update", content: params.content, factId: params.fact_id, category: cat, tags: params.tags, previousContent: prevFact?.content });
         if (beforeUpd && beforeUpd.ok === false) return errorResult(beforeUpd.reason ?? "memory write denied");
         const ok = provider.update(params.fact_id, {
@@ -209,6 +239,9 @@ export function executeMemoryToolAction(
       }
       case "remove": {
         if (params.fact_id === undefined) return errorResult("'fact_id' is required for remove");
+        const target = provider.get(params.fact_id);
+        const violation = ownershipViolation(target, currentCwd);
+        if (violation) return errorResult(violation);
         const beforeRm = provider.onBeforeWrite?.({ action: "remove", factId: params.fact_id });
         if (beforeRm && beforeRm.ok === false) return errorResult(beforeRm.reason ?? "memory write denied");
         const ok = provider.remove(params.fact_id);
@@ -221,6 +254,9 @@ export function executeMemoryToolAction(
       case "feedback": {
         if (params.fact_id === undefined) return errorResult("'fact_id' is required for feedback");
         if (params.helpful === undefined) return errorResult("'helpful' is required for feedback");
+        const target = provider.get(params.fact_id);
+        const violation = ownershipViolation(target, currentCwd);
+        if (violation) return errorResult(violation);
         const fact = provider.feedback(params.fact_id, params.helpful);
         if (!fact) return jsonResult({ status: "not_found", fact_id: params.fact_id });
         return jsonResult({ status: "ok", fact });

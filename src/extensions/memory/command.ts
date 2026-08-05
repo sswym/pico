@@ -5,11 +5,25 @@
  * Side effects (notify / confirm) arrive through deps, which also makes the
  * whole command surface testable without a live ExtensionAPI.
  */
+import { writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { formatFactLine } from "./prompt.ts";
 import type { Fact, MemoryProvider } from "./provider.ts";
 import { ProviderManager, resolveDbPath } from "./provider-manager.ts";
 import type { CuratedMemoryStore, CuratedTarget } from "./curated-store.ts";
 import { CATEGORY_LIST, VALID_CATEGORIES, type Category } from "./schema.ts";
+import { projectScopeKey } from "./query-scope.ts";
+
+/** Export facts to a timestamped JSON backup next to the memory DB. */
+function backupFactsBeforeClear(facts: Fact[]): string | null {
+  try {
+    const backup = join(dirname(resolveDbPath()), `memory-backup-${Date.now()}.json`);
+    writeFileSync(backup, `${JSON.stringify(facts, null, 2)}\n`, "utf-8");
+    return backup;
+  } catch {
+    return null;
+  }
+}
 
 export interface MemoryCommandDeps {
   provider: MemoryProvider;
@@ -28,7 +42,7 @@ interface ParsedCommand {
 
 export function parseCommand(args: string): ParsedCommand {
   const trimmed = args.trim();
-  if (!trimmed) return { cmd: "list", rest: "" };
+  if (!trimmed) return { cmd: "help", rest: "" };
   const idx = trimmed.search(/\s/);
   if (idx < 0) return { cmd: trimmed.toLowerCase(), rest: "" };
   return { cmd: trimmed.slice(0, idx).toLowerCase(), rest: trimmed.slice(idx + 1).trim() };
@@ -49,6 +63,26 @@ function parseScope(text: string): { scope: "global" | "project" | undefined; re
   };
 }
 
+/** Strip a leading `--limit <n>` flag from the argument tail. */
+function parseLimit(text: string): { limit: number | undefined; rest: string } {
+  const m = text.match(/--limit\s+(\d+)\s*/i);
+  if (!m) return { limit: undefined, rest: text };
+  const limit = Number(m[1]);
+  return { limit: Number.isInteger(limit) && limit > 0 ? limit : undefined, rest: text.replace(/--limit\s+\d+\s*/i, "").trim() };
+}
+
+/**
+ * Ownership gate (2.3.4): refuse to remove a fact that belongs to another
+ * project's scope.
+ */
+function ownershipViolation(fact: Fact | null | undefined, currentCwd: string | null): string | null {
+  if (!fact) return null;
+  if (!fact.scope.startsWith("project:")) return null;
+  if (!currentCwd) return `fact #${fact.fact_id} belongs to project scope '${fact.scope}' — refusing without a session cwd`;
+  if (fact.scope === projectScopeKey(currentCwd)) return null;
+  return `fact belongs to another project ('${fact.scope}') — refusing cross-project removal`;
+}
+
 function parseNotesTarget(text: string): { target: CuratedTarget; rest: string } {
   const trimmed = text.trim();
   const m = trimmed.match(/^(memory|user)\s*(.*)$/i);
@@ -59,12 +93,12 @@ function parseNotesTarget(text: string): { target: CuratedTarget; rest: string }
 function usageLines(): string[] {
   return [
     "Usage:",
-    "  /memory list [--scope global|project] [category] — list facts",
+    "  /memory list [--scope global|project] [--limit N] [category] — list facts",
     "  /memory search [--scope global|project] <query>  — full-text search",
     `  /memory add [category] [--scope project] <text>  — add a fact`,
     `    categories: ${CATEGORY_LIST}`,
-    "  /memory remove <id>       — delete a fact",
-    "  /memory clear             — wipe all memory (asks first)",
+    "  /memory remove <id>       — delete a fact (asks first; project-scoped facts are protected)",
+    "  /memory clear [--scope project] — wipe memory (asks first; backs up first)",
     "  /memory count             — show count + db path",
     "  /memory status            — show provider and note status",
     "  /memory setup <provider>  — set backend for next session",
@@ -72,8 +106,8 @@ function usageLines(): string[] {
     "  /memory notes             — list curated MEMORY.md / USER.md notes",
     "  /memory notes add user <text>       — add a user profile note",
     "  /memory notes replace memory <old> => <new> — replace a curated note",
-    "  /memory related <entity>  — find facts related to an entity",
-    "  /memory reason <e1>,<e2>  — find facts linking multiple entities",
+    "  /memory related [--scope global|project] <entity> — find facts related to an entity",
+    "  /memory reason [--scope global|project] <e1>,<e2> — find facts linking multiple entities",
     "  /memory contradict [--scope global|project] — surface contradictory facts",
   ];
 }
@@ -118,7 +152,7 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
         if (info.dbPath) {
           lines.push(`Database: ${info.dbPath}`);
         }
-        lines.push(`Curated notes: ${curated.count()}`);
+        lines.push(`Curated notes: ${curated.count()} (MEMORY.md ${curated.usageOf("memory")} chars, USER.md ${curated.usageOf("user")} chars)`);
         const providers = ProviderManager.availableProviders()
           .map((p) => (p === "holographic" ? `${p} (demo stub — use builtin)` : p))
           .join(", ");
@@ -142,15 +176,22 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
       }
       case "list": {
         const { scope, rest: filterRest } = parseScope(rest);
-        const cat = asCategory(filterRest) || undefined;
+        const { limit, rest: catRest } = parseLimit(filterRest);
+        const cat = asCategory(catRest) || undefined;
         renderFacts(
-          manager.list({ limit: 50, scope, cwd: scopedCwd(scope), category: cat }),
+          manager.list({ limit: limit ?? 50, scope, cwd: scopedCwd(scope), category: cat }),
           `Memory — ${manager.count()} facts:`,
         );
+        if (limit === undefined && manager.count() > 50) {
+          lines.push(`(showing 50 of ${manager.count()} — use --limit N or a category filter)`);
+        }
         break;
       }
       case "count": {
-        announce(`Memory: ${manager.count()} facts at ${resolveDbPath()}; ${curated.count()} curated notes`);
+        const facts = manager.list({ limit: 10_000, minTrust: 0 });
+        const global = facts.filter((f) => f.scope === "global").length;
+        const project = facts.length - global;
+        announce(`Memory: ${manager.count()} facts (${global} global, ${project} project) at ${resolveDbPath()}; ${curated.count()} curated notes`);
         break;
       }
       case "search": {
@@ -190,23 +231,37 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
         break;
       }
       case "related": {
-        if (!rest) {
-          announce("Usage: /memory related <entity>");
+        const { scope, rest: entityRest } = parseScope(rest);
+        if (!entityRest) {
+          announce("Usage: /memory related [--scope global|project] <entity>");
           break;
         }
         // The whole argument is the entity — never treat it as a category
         // (an entity named like a category would silently filter results).
-        const results = manager.related(rest, { limit: 20, minTrust: 0 });
-        renderFacts(results, `Related to "${rest}":`);
+        // Defaults to the current project scope (project + global) when a
+        // cwd is known — project facts were previously unreachable here.
+        const results = manager.related(entityRest, {
+          limit: 20,
+          minTrust: 0,
+          scope,
+          cwd: scopedCwd(scope) ?? (scope === undefined ? (currentCwd ?? undefined) : undefined),
+        });
+        renderFacts(results, `Related to "${entityRest}":`);
         break;
       }
       case "reason": {
-        if (!rest) {
-          announce("Usage: /memory reason <entity1>,<entity2>[,...]");
+        const { scope, rest: entitiesRest } = parseScope(rest);
+        if (!entitiesRest) {
+          announce("Usage: /memory reason [--scope global|project] <entity1>,<entity2>[,...]");
           break;
         }
-        const entities = rest.split(",").map((s) => s.trim()).filter(Boolean);
-        const results = manager.reason(entities, { limit: 20, minTrust: 0 });
+        const entities = entitiesRest.split(",").map((s) => s.trim()).filter(Boolean);
+        const results = manager.reason(entities, {
+          limit: 20,
+          minTrust: 0,
+          scope,
+          cwd: scopedCwd(scope) ?? (scope === undefined ? (currentCwd ?? undefined) : undefined),
+        });
         renderFacts(results, `Reason over [${entities.join(", ")}]:`);
         break;
       }
@@ -234,27 +289,60 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
           announce("Usage: /memory remove <fact_id>");
           break;
         }
+        const target = provider.get(id);
+        const violation = ownershipViolation(target, currentCwd);
+        if (violation) {
+          announce(`Refused: ${violation}`);
+          break;
+        }
+        if (target && !target.scope.startsWith("project:")) {
+          const confirmed = await confirm(
+            "Remove memory?",
+            `Delete #${id}: "${target.content.slice(0, 80)}"? This cannot be undone.`,
+          );
+          if (!confirmed) {
+            announce("Cancelled.");
+            break;
+          }
+        }
         const ok = manager.remove(id);
         announce(ok ? `Removed memory #${id}` : `No such memory #${id}`);
         break;
       }
       case "clear": {
-        const confirmed = await confirm(
-          "Clear all memory?",
-          `Permanently delete ${manager.count()} facts at ${resolveDbPath()} and ${curated.count()} curated notes?`,
-        );
-        if (confirmed) {
+        const { scope, rest: clearRest } = parseScope(rest);
+        const projectOnly = scope === "project";
+        if (clearRest) {
+          announce("Usage: /memory clear [--scope project]");
+          break;
+        }
+        const facts = manager.list({ limit: 50_000, minTrust: 0, scope, cwd: scopedCwd(scope) });
+        const scopeLabel = projectOnly
+          ? `the current project scope (${facts.length} facts, incl. global)`
+          : `ALL memory (${manager.count()} facts across every project + ${curated.count()} curated notes)`;
+        const confirmed = await confirm("Clear memory?", `Permanently delete ${scopeLabel}? A backup will be saved first.`);
+        if (!confirmed) {
+          announce("Cancelled.");
+          break;
+        }
+        // Backup before destructive ops: export current facts to a JSON file.
+        const backupPath = backupFactsBeforeClear(facts);
+        if (backupPath) lines.push(`Backup saved to ${backupPath}`);
+        if (projectOnly) {
+          for (const f of facts) {
+            if (f.scope !== "global") manager.remove(f.fact_id);
+          }
+          lines.push(`Cleared project-scoped memory (${facts.filter((f) => f.scope !== "global").length} facts removed).`);
+        } else {
           manager.clear();
           curated.clear();
-          announce("Memory cleared.");
-        } else {
-          announce("Cancelled.");
+          lines.push("Memory cleared.");
         }
         break;
       }
       case "notes": {
         const { cmd: notesCmd, rest: notesRest } = parseCommand(rest);
-        if (!notesCmd || notesCmd === "list" || notesCmd === "show") {
+        if (!notesCmd || notesCmd === "list" || notesCmd === "show" || notesCmd === "help") {
           const target = notesRest === "memory" || notesRest === "user" ? notesRest : undefined;
           const entries = curated.list(target);
           lines.push(`Curated memory (${curated.count(target)} entries):`);
@@ -271,13 +359,21 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
         if (notesCmd === "add") {
           const { target, rest: content } = parseNotesTarget(notesRest);
           const result = curated.add(target, content);
-          announce(result.success ? `Added ${target} note.` : `Error: ${result.error}`);
+          if (result.success) {
+            // The prompt snapshot is frozen per session for prompt-cache
+            // stability — say so explicitly, otherwise the user (or the
+            // model) concludes the write silently failed (2.3.11).
+            announce(`Added ${target} note. Takes effect from the NEXT session (/new) — this session's snapshot is frozen.`);
+          } else {
+            announce(`Error: ${result.error}`);
+          }
           break;
         }
         if (notesCmd === "remove" || notesCmd === "rm") {
           const { target, rest: oldText } = parseNotesTarget(notesRest);
           const result = curated.remove(target, oldText);
-          announce(result.success ? `Removed ${target} note.` : `Error: ${result.error}`);
+          if (result.success) announce(`Removed ${target} note. Takes effect from the NEXT session (/new).`);
+          else announce(`Error: ${result.error}`);
           break;
         }
         if (notesCmd === "replace") {
@@ -288,7 +384,8 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
             break;
           }
           const result = curated.replace(target, oldText, content);
-          announce(result.success ? `Replaced ${target} note.` : `Error: ${result.error}`);
+          if (result.success) announce(`Replaced ${target} note. Takes effect from the NEXT session (/new).`);
+          else announce(`Error: ${result.error}`);
           break;
         }
         if (notesCmd === "clear") {

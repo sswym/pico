@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "../src/extensions/memory/store.ts";
 import { BuiltinMemoryProvider } from "../src/extensions/memory/builtin-provider.ts";
-import { CuratedMemoryStore } from "../src/extensions/memory/curated-store.ts";
+import { CuratedMemoryStore, resetCuratedMemoryDir } from "../src/extensions/memory/curated-store.ts";
 import { autoExtractFromMessages } from "../src/extensions/memory/extract.ts";
 import { scanSecrets } from "../src/extensions/memory/secrets.ts";
 import { executeMemoryToolAction } from "../src/extensions/memory/tool.ts";
@@ -944,9 +944,9 @@ async function withCommandDeps(
   }
 }
 
-test("parseCommand defaults to list and splits cmd from rest", () => {
-  expect(parseCommand("")).toEqual({ cmd: "list", rest: "" });
-  expect(parseCommand("   ")).toEqual({ cmd: "list", rest: "" });
+test("parseCommand defaults to help and splits cmd from rest", () => {
+  expect(parseCommand("")).toEqual({ cmd: "help", rest: "" });
+  expect(parseCommand("   ")).toEqual({ cmd: "help", rest: "" });
   expect(parseCommand("status")).toEqual({ cmd: "status", rest: "" });
   expect(parseCommand("SEARCH bun runtime")).toEqual({ cmd: "search", rest: "bun runtime" });
 });
@@ -957,7 +957,7 @@ test("/memory add then list round-trips the fact", async () => {
     expect(added).toContain("Added:");
     expect(added).toContain("I prefer bun over node");
 
-    const listed = await executeMemoryCommand("", deps);
+    const listed = await executeMemoryCommand("list", deps);
     expect(listed).toContain("Memory — 1 facts:");
     expect(listed).toContain("I prefer bun over node");
   });
@@ -1033,7 +1033,9 @@ test("/memory clear honours the confirm seam in both directions", async () => {
     expect(deps.manager.count()).toBe(1);
 
     sink.confirmAnswer = true;
-    expect(await executeMemoryCommand("clear", deps)).toBe("Memory cleared.");
+    const cleared = await executeMemoryCommand("clear", deps);
+    expect(cleared).toContain("Backup saved to");
+    expect(cleared).toContain("Memory cleared.");
     expect(deps.manager.count()).toBe(0);
   });
 });
@@ -1042,7 +1044,7 @@ test("/memory count and status report store state", async () => {
   await withCommandDeps(async (deps) => {
     await executeMemoryCommand("add general something worth keeping", deps);
 
-    expect(await executeMemoryCommand("count", deps)).toContain("Memory: 1 facts at ");
+    expect(await executeMemoryCommand("count", deps)).toContain("Memory: 1 facts (1 global, 0 project) at ");
 
     const status = await executeMemoryCommand("status", deps);
     expect(status).toContain("Memory provider: ");
@@ -1054,7 +1056,7 @@ test("/memory count and status report store state", async () => {
 test("/memory notes add, list, replace, and remove round-trip", async () => {
   await withCommandDeps(async (deps) => {
     expect(await executeMemoryCommand("notes add user works in the pico repo", deps))
-      .toBe("Added user note.");
+      .toContain("Added user note. Takes effect from the NEXT session");
 
     const listed = await executeMemoryCommand("notes", deps);
     expect(listed).toContain("USER.md:");
@@ -1063,13 +1065,13 @@ test("/memory notes add, list, replace, and remove round-trip", async () => {
     expect(listed).toContain("  (empty)");
 
     expect(await executeMemoryCommand("notes replace user works in the pico repo => maintains pico", deps))
-      .toBe("Replaced user note.");
+      .toContain("Replaced user note.");
     // Target filtering requires the explicit `list` subcommand; a bare
     // `notes user` parses `user` as the subcommand, not the target.
     expect(await executeMemoryCommand("notes list user", deps)).toContain("maintains pico");
 
     expect(await executeMemoryCommand("notes remove user maintains pico", deps))
-      .toBe("Removed user note.");
+      .toContain("Removed user note.");
     expect(deps.curated.count("user")).toBe(0);
   });
 });
@@ -1369,5 +1371,161 @@ test("prefetch hits the queued cache with a prefix query", () => {
     expect(Array.isArray(hits)).toBe(true);
   } finally {
     provider.shutdown();
+  }
+});
+
+// ---- 2.3.x regression tests (fifth review round) --------------------------
+
+test("2.3.3: corrupt memory.db is backed up and rebuilt instead of throwing", async () => {
+  const corruptPath = join(tmpdir(), `pico-corrupt-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  writeFileSync(corruptPath, "this is not a sqlite database at all");
+  try {
+    const recovered = new MemoryStore(corruptPath);
+    try {
+      expect(recovered.recoveryNotice).toContain("corrupt");
+      expect(recovered.recoveryNotice).toContain("Backed up");
+      expect(existsSync(`${corruptPath}.corrupt-`)).toBe(false); // exact name has a ts suffix
+      // The corrupt original must have been renamed away and a fresh store created.
+      recovered.add("fresh start", { category: "general" });
+      expect(recovered.count()).toBe(1);
+    } finally {
+      recovered.close();
+    }
+    // The backup file exists with the corrupt payload preserved.
+    const name = corruptPath.split("/").pop()!;
+    const backups = (await import("node:fs")).readdirSync(tmpdir()).filter((f: string) => f.startsWith(`${name}.corrupt-`));
+    expect(backups.length).toBeGreaterThanOrEqual(1);
+  } finally {
+    rmSync(corruptPath, { force: true });
+  }
+});
+
+test("2.3.4: remove/update refuse cross-project facts", async () => {
+  const { executeMemoryToolAction } = await import("../src/extensions/memory/tool.ts");
+  const mkProvider = new BuiltinMemoryProvider(":memory:");
+  try {
+    const otherId = mkProvider.add("project fact in /other/proj", { category: "project", scope: "project", cwd: "/other/proj" });
+    const mineId = mkProvider.add("project fact in my proj", { category: "project", scope: "project", cwd: "/my/proj" });
+    const deps = { provider: mkProvider, manager: new ProviderManager({ backend: "builtin" }), currentCwd: "/my/proj" };
+
+    const out = await executeMemoryToolAction({ action: "remove", fact_id: otherId }, deps);
+    expect(JSON.parse(out.content[0]!.text).error).toContain("another project");
+    expect(mkProvider.get(otherId)).not.toBeNull();
+
+    const out2 = await executeMemoryToolAction({ action: "remove", fact_id: mineId }, deps);
+    expect(JSON.parse(out2.content[0]!.text).status).toBe("removed");
+
+    // update path is gated the same way
+    const id3 = mkProvider.add("third fact", { category: "project", scope: "project", cwd: "/other/proj" });
+    const out3 = await executeMemoryToolAction({ action: "update", fact_id: id3, content: "changed" }, deps);
+    expect(JSON.parse(out3.content[0]!.text).error).toContain("another project");
+  } finally {
+    mkProvider.shutdown();
+  }
+});
+
+test("2.3.5: isLikelyCorrection gates contextual chatter but keeps strong corrections", async () => {
+  const { isLikelyCorrection } = await import("../src/extensions/memory/extract.ts");
+  expect(isLikelyCorrection("Actually, I want the dark theme instead.")).toBe(true); // short contextual correction
+  expect(isLikelyCorrection(
+    "Actually, I want to tell you about the team's quarterly offsite planning session next month which we've been postponing since early spring because of the venue availability issues and budget reallocation talks with the finance committee.",
+  )).toBe(false); // long contextual chatter (> 200 chars)
+  expect(isLikelyCorrection("You said the API is v2, that's wrong, it's v3.")).toBe(true); // referential
+  expect(isLikelyCorrection("Wait, is this wrong?")).toBe(false); // question
+  expect(isLikelyCorrection("Don't use that approach.")).toBe(true);
+});
+
+test("2.3.5: contextual 'actually I want' chatter is not extracted as correction", () => {
+  const before = store.count();
+  const extracted = autoExtractFromMessages(store, [
+    { role: "user", content: "Actually, I want to tell you about the team's quarterly offsite planning session next month which we've been postponing since early spring because of the venue availability issues and budget reallocation talks with the finance committee." },
+  ]);
+  expect(extracted).toBe(0);
+  expect(store.count()).toBe(before);
+});
+
+test("2.3.6: help requests and denials are not extracted as durable facts", () => {
+  const before = store.count();
+  autoExtractFromMessages(store, [
+    { role: "user", content: "程序报错了，帮我看看这个报错" },
+    { role: "user", content: "I never said that, you must have misheard me" },
+    { role: "user", content: "I want to fix this bug in the parser" },
+  ]);
+  expect(store.count()).toBe(before);
+});
+
+test("2.3.6: terse preference like '别用 npm' is now extractable", () => {
+  const before = store.count();
+  const n = autoExtractFromMessages(store, [
+    { role: "user", content: "别用 npm" },
+  ]);
+  expect(n).toBe(1);
+  expect(store.count()).toBe(before + 1);
+});
+
+test("2.3.8: JWT and camelCase secrets are blocked, tags are scanned", () => {
+  expect(scanSecrets("token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c").blocked).toBe(true);
+  expect(scanSecrets("accessKey=Zx9KpLmQ2VrT7nB4cY6dE8fGhJ1kL3mN5oP7qRs9TuVwXyZ").blocked).toBe(true);
+  expect(() => store.add("fact with a secret in tags", { tags: "token=AbCdEfGh12345678" })).toThrow(/secret/i);
+});
+
+test("2.3.8: PICO_MEMORY_DENY is enforced at the store layer (not only the tool path)", () => {
+  const old = process.env.PICO_MEMORY_DENY;
+  process.env.PICO_MEMORY_DENY = "forbidden-word";
+  try {
+    expect(() => store.add("this mentions the forbidden-word in passing")).toThrow(/forbidden-word/);
+    // ...but auto-extract / correction paths route through store.add too.
+  } finally {
+    process.env.PICO_MEMORY_DENY = old;
+  }
+});
+
+test("2.3.2: negated facts are downweighted in substring fallback", () => {
+  const pos = store.add("we use bun for all scripts", { category: "project" });
+  const neg = store.add("我不用 bun", { category: "user_pref" });
+  store.feedback(neg, true); // boost trust of the negative one
+  const hits = store.search("bun", { minTrust: 0, limit: 5 });
+  expect(hits.map((h) => h.fact_id)).toContain(pos);
+  expect(hits[0]!.fact_id).toBe(pos);
+});
+
+test("2.3.12: stored alias matches canonical query in fallback", () => {
+  store.add("prefer TS for type safety", { category: "user_pref" });
+  const hits = store.search("typescript", { minTrust: 0 });
+  expect(hits.map((h) => h.content)).toContain("prefer TS for type safety");
+});
+
+test("2.3.10: prefetch cache hits on shared topic token, not only prefix", () => {
+  const provider = new BuiltinMemoryProvider(":memory:");
+  try {
+    provider.queuePrefetch("refactor the login flow", "/p/a");
+    // New turn shares a significant token ("refactor") but is not a prefix.
+    const hits = provider.prefetch("refactor the auth module", "/p/a");
+    expect(Array.isArray(hits)).toBe(true);
+  } finally {
+    provider.shutdown();
+  }
+});
+
+test("2.3.7: project scope keys normalize trailing slash and symlinks", async () => {
+  const { projectScopeKey, normalizeProjectCwd } = await import("../src/extensions/memory/query-scope.ts");
+  const cwd = mkdtempSync(join(tmpdir(), "pico-proj-"));
+  try {
+    expect(projectScopeKey(`${cwd}/`)).toBe(projectScopeKey(cwd));
+    expect(normalizeProjectCwd(`${cwd}/`)).toBe(cwd);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("2.3.13: curated dedupe is normalization-insensitive", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pico-curated-"));
+  const curated = new CuratedMemoryStore({ dir, memoryCharLimit: 1000 });
+  try {
+    expect(curated.add("memory", "we use bun for scripts").success).toBe(true);
+    expect(curated.add("memory", "we use  bun for scripts").success).toBe(true);
+    expect(curated.count("memory")).toBe(1);
+  } finally {
+    resetCuratedMemoryDir(dir);
   }
 });

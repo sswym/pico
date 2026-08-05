@@ -44,17 +44,29 @@ const TIMEOUT_DEFAULT = 30_000;
 const TIMEOUT_MAX = 120_000;
 
 const warnedPaths = new Set<string>();
+/** Config errors accumulated since the last drain — surfaced to the TUI at
+ *  session_start (2.5.8): a malformed security-hook config must not vanish
+ *  into stderr where TUI users never see it. */
+const recentErrors: string[] = [];
 
 function warnOnce(path: string, err: unknown): void {
+  const msg = err instanceof Error ? err.message : String(err);
+  const line = `[pico hooks] ignoring ${path}: ${msg}`;
+  console.warn(line);
+  recentErrors.push(line);
   if (warnedPaths.has(path)) return;
   warnedPaths.add(path);
-  const msg = err instanceof Error ? err.message : String(err);
-  console.warn(`[pico hooks] ignoring ${path}: ${msg}`);
+}
+
+/** Return and clear the accumulated config errors. */
+export function drainHookConfigErrors(): string[] {
+  return recentErrors.splice(0);
 }
 
 /** Reset the once-per-path warning cache. Test-only. */
 export function __resetWarnedPaths(): void {
   warnedPaths.clear();
+  recentErrors.length = 0;
 }
 
 export function hookConfigPaths(cwd: string): string[] {
@@ -121,24 +133,34 @@ function dedupeKey(h: Hook): string {
 /**
  * Load and merge hooks for the given working directory. Home layer runs
  * first; cwd layer is appended afterwards when PICO_ENABLE_PROJECT_HOOKS=1.
- * Order is preserved within each
- * layer, and duplicates (same event+tool+command) keep the first
- * occurrence — i.e. home wins over cwd if the cwd layer repeats it.
+ * Order is preserved within each layer, and duplicates (same event+tool+
+ * command) keep the LAST occurrence — so a project layer can deliberately
+ * override a home-layer hook with the same key (2.5.8).
  */
 export function loadHooks(cwd: string): Hook[] {
   const [homePath, cwdPath] = hookConfigPaths(cwd);
+  // 2.2.3: a project hooks.json that is silently ignored looks like a broken
+  // security setup — note it (drained & surfaced at session_start).
+  if (!allowProjectHooks() && existsSync(cwdPath!)) {
+    const line = "[pico hooks] 检测到项目 hooks 配置（.pico/hooks.json），但当前被安全策略禁用（PICO_ENABLE_PROJECT_HOOKS 未开启）。";
+    recentErrors.push(line);
+    console.warn(line);
+  }
   const merged = [
     ...loadOne(homePath!),
     ...(allowProjectHooks() ? loadOne(cwdPath!) : []),
   ];
 
+  // Keep the LAST occurrence of each dedupe key (project layer may
+  // deliberately override a home hook with the same event+tool+command).
   const seen = new Set<string>();
   const out: Hook[] = [];
-  for (const h of merged) {
+  for (let i = merged.length - 1; i >= 0; i--) {
+    const h = merged[i]!;
     const k = dedupeKey(h);
     if (seen.has(k)) continue;
     seen.add(k);
-    out.push({
+    out.unshift({
       ...h,
       timeoutMs: h.timeoutMs ?? TIMEOUT_DEFAULT,
       blocking: h.blocking ?? true,

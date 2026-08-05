@@ -244,7 +244,7 @@ describe("LspManager runtime state", () => {
     expect(() => __checkInitBackoffForTests(b, "tsserver")).not.toThrow();
   });
 
-  test("typescript-native skips tsc commands without native LSP support", () => {
+  test("typescript-native skips tsc commands without native LSP support", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pico-lsp-probe-"));
     const oldTsc = join(dir, "old-tsc");
     const nativeTsc = join(dir, "native-tsc");
@@ -255,11 +255,11 @@ describe("LspManager runtime state", () => {
       chmodSync(oldTsc, 0o755);
       chmodSync(nativeTsc, 0o755);
 
-      expect(__getUnsupportedServerCommandReasonForTests("typescript-native", oldTsc, dir)).toContain(
+      expect(await __getUnsupportedServerCommandReasonForTests("typescript-native", oldTsc, dir)).toContain(
         "does not advertise TypeScript native LSP support",
       );
-      expect(__getUnsupportedServerCommandReasonForTests("typescript-native", nativeTsc, dir)).toBeNull();
-      expect(__getUnsupportedServerCommandReasonForTests("typescript-language-server", oldTsc, dir)).toBeNull();
+      expect(await __getUnsupportedServerCommandReasonForTests("typescript-native", nativeTsc, dir)).toBeNull();
+      expect(await __getUnsupportedServerCommandReasonForTests("typescript-language-server", oldTsc, dir)).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

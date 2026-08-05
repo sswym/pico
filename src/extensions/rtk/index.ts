@@ -109,12 +109,23 @@ export function shouldRewriteWithRtk(command: string): boolean {
   const normalized = command.trim().replace(/\s+/g, " ");
   if (normalized.length === 0) return false;
   if (normalized.includes("\n")) return false;
+  // 2.5.10: pipelines/redirections/command chains must run raw — wrapping
+  // only the first segment breaks their semantics.
+  if (SHELL_COMPOSITION_RE.test(normalized)) return false;
   if (SKIP_PREFIXES.some((prefix) => commandStartsWith(normalized, prefix))) return false;
   if (isLongRunningCommand(normalized)) return false;
   return SUPPORTED_PREFIXES.some((prefix) => commandStartsWith(normalized, prefix));
 }
 
-/** True when the command spawns a follower/watcher/dev server that never exits. */
+/** Shell metacharacters that break rtk wrapping (2.5.10): piping through
+ *  rtk compresses the intermediate output before the consumer sees it
+ *  (`git log | head`), redirection would write the compressed text to the
+ *  file, and && / || / ; only wrap the first segment. */
+const SHELL_COMPOSITION_RE = /[|><;&`$()]/;
+
+/**
+ * True when the command spawns a follower/watcher/dev server that never exits.
+ */
 function isLongRunningCommand(command: string): boolean {
   const tokens = command.split(" ");
   const head = tokens[0];
@@ -129,6 +140,9 @@ function isLongRunningCommand(command: string): boolean {
   for (let i = 0; i < args.length - 1; i++) {
     if (args[i] === "run" && (args[i + 1]!.startsWith("dev") || args[i + 1] === "start")) return true;
   }
+  // `cargo run` / `go run` launch long-lived dev servers — compressing their
+  // output corrupts a live session view (2.5.10).
+  if ((head === "cargo" || head === "go") && args[0] === "run") return true;
   return false;
 }
 

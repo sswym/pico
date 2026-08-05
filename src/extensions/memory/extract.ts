@@ -24,6 +24,8 @@ const PREF_PATTERNS = [
   // 中文：偏好/习惯陈述
   /(?:我|咱们)\s*(?:更喜欢|偏好|习惯用|爱用|只用|倾向用|喜欢用)\s*.+/,
   /(?:我|咱们)\s*(?:总是|从不|通常|一般)\s*.+/,
+  // 中文：极简偏好（"别用 npm"、"不要用 X"）——无主语也成立
+  /^\s*(?:别用|不要用|禁用|别加|别写)\s*\S+/,
 ];
 
 const DECISION_PATTERNS = [
@@ -37,17 +39,72 @@ const DECISION_PATTERNS = [
 /** Patterns that indicate the user is correcting the agent. */
 export const CORRECTION_PATTERNS = [
   /\bno[,.]?\s+(?:that'?s?\s+)?(?:wrong|incorrect|not right|not what I meant)\b/i,
-  /\b(?:actually|instead|rather),?\s+(?:I\s+)?(?:want|need|prefer|use|meant)\b/i,
+  /\bthat'?s\s+(?:wrong|incorrect|not\s+right|not\s+what\s+I\s+meant)\b/i,
+  /\byou\s+(?:said|told\s+me)\s+[^.]{0,80}?\b(?:wrong|incorrect|not\s+right)\b/i,
   /\bdon't\s+(?:do|use|write|put|add)\s+that\b/i,
-  /\bI\s+(?:said|meant)\s+/i,
+  /\bI\s+(?:never\s+)?said\s+(?:that|this|it)\b/i,
   /\bwrong[.!]?\s+(?:it(?:'s| is)|that(?:'s| is))\s+(?:should be|supposed to be)\b/i,
   /\b(?:fix|correct)\s+(?:that|this|it)\b/i,
-  // 中文：纠错/纠正
-  /(?:不对|错了|搞错了|说错了|理解错了)[,.]?\s*.+/,
-  /(?:实际上|其实|准确地说|更正一下)[,.]?\s*(?:我|我们|应该|要用|是)\s*.+/,
-  /(?:之前|刚才|上面)\s*(?:说|写|记|说的)\s*(?:不对|错了|有误)/,
+  // 中文：明确指向先前内容的纠错
+  /(?:之前|刚才|上面|你(?:刚才|之前)?(?:说|写|记|给的|介绍的))[^。！？]{0,24}(?:不对|错了|有误|说错了)/,
+  /(?:不对|错了|搞错了|说错了|理解错了)[,，!！.]?\s*(?:我|我们|你|是|应该|要用|是它)/,
   /(?:不要用|别用|别写|别加|去掉)\s*\S+\s*(?:了|吧)?[,，]?\s*(?:改[成用]|用|换成)\s*.+/,
 ];
+
+/**
+ * Contextual correction patterns — these match common polite turns
+ * ("actually, I want…", "I meant…") that are NOT necessarily corrections of
+ * a prior claim. They only count when the message is short (a real
+ * correction is usually terse) and not a question.
+ */
+const CONTEXTUAL_CORRECTION_PATTERNS = [
+  /\b(?:actually|instead|rather),?\s+(?:I\s+)?(?:want|need|prefer|use|meant)\b/i,
+  /\bI\s+(?:meant|said)\s+/i,
+  /(?:实际上|其实|准确地说|更正一下)[,.]?\s*(?:我|我们|应该|要用|是)\s*.+/,
+];
+
+/** True when the message is a question — questions are never corrections. */
+function isQuestion(text: string): boolean {
+  return /[?？]/.test(text);
+}
+
+/** Help / one-time-request intents that must never be stored as durable facts. */
+const HELP_PATTERNS = [
+  /\bI\s+want\s+to\s+(?:fix|solve|build|do|install|migrate)\b/i,
+  /\bI\s+want\s+to\s+(?:tell|mention|share|note|report)\b/i,
+  /(?:帮我|麻烦你|请教|求助|求求)/,
+  /(?:怎么办|怎么(?:修|解决|做|处理)|如何(?:修|解决|做|处理))/,
+];
+
+/** Explicit denials that must never invert into preferences ("I never said that"). */
+const DENIAL_PATTERNS = [
+  /\bI\s+never\s+said\b/i,
+  /\bI\s+didn'?t\s+say\b/i,
+  /我没(?:有)?说过|不是我说的/,
+];
+
+/**
+ * Decide whether a message is a genuine correction. Strong patterns are
+ * referential (they point at a prior claim); contextual patterns additionally
+ * require the message to be short and non-question, otherwise everyday
+ * "actually I want X" chatter gets stored as 0.7-trust corrections and
+ * systematically docks real memories.
+ */
+export function isLikelyCorrection(text: string): boolean {
+  if (isQuestion(text)) return false;
+  if (CORRECTION_PATTERNS.some((p) => p.test(text))) return true;
+  return text.length <= 200 && CONTEXTUAL_CORRECTION_PATTERNS.some((p) => p.test(text));
+}
+
+/** Messages that are one-time requests/help calls — skip extraction entirely. */
+function isHelpRequest(text: string): boolean {
+  return HELP_PATTERNS.some((p) => p.test(text));
+}
+
+/** Messages that negate a prior statement — never store as preference. */
+function isDenial(text: string): boolean {
+  return DENIAL_PATTERNS.some((p) => p.test(text));
+}
 
 /** Patterns that capture learnings from experience. */
 const INSIGHT_PATTERNS = [
@@ -148,14 +205,18 @@ export function autoExtractFromMessages(
   for (const msg of messages) {
     if (msg.role !== "user") continue;
     const text = extractText(msg.content).trim();
-    if (text.length < 10) continue;
+    if (text.length < 4) continue;
 
     // Skip messages that are instructions TO the agent (meta-commands like
     // "use memory tool action=add ..."), not durable user statements.
     if (INSTRUCTION_PATTERNS.some((p) => p.test(text))) continue;
+    // One-time help requests ("帮我看看这个报错") are not durable facts.
+    if (isHelpRequest(text)) continue;
+    // Denials ("I never said that") must not be stored as preferences.
+    if (isDenial(text)) continue;
 
     let category: Category | undefined;
-    if (CORRECTION_PATTERNS.some((p) => p.test(text))) category = "correction";
+    if (isLikelyCorrection(text)) category = "correction";
     else if (FAILURE_PATTERNS.some((p) => p.test(text))) category = "failure";
     else if (INSIGHT_PATTERNS.some((p) => p.test(text))) category = "insight";
     else if (PREF_PATTERNS.some((p) => p.test(text))) category = "user_pref";
@@ -165,7 +226,7 @@ export function autoExtractFromMessages(
     if (!category) continue;
 
     try {
-      store.add(text.slice(0, 400), {
+      store.add(text.slice(0, 200), {
         category,
         scope,
         cwd: opts?.cwd,

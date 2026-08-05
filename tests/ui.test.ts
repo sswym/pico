@@ -123,3 +123,10 @@ test("truncateWithEllipsis never splits a surrogate pair", () => {
   expect(out.includes("\ud83d")).toBe(false); // no lone high surrogate
   expect(out.endsWith("…")).toBe(true);
 });
+
+test("2.1.8: sanitizeTerminalText strips DCS and APC sequences", () => {
+  const { sanitizeTerminalText } = require("../src/extensions/ui/rendering.ts");
+  const kitty = "\x1bP+q104\x1b\\image-data";
+  expect(sanitizeTerminalText(kitty)).not.toContain("\x1bP");
+  expect(sanitizeTerminalText("\x1b_this is APC\x1b\\rest")).toBe("rest");
+});

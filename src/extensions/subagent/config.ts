@@ -24,17 +24,29 @@ export interface SubagentConfig {
 }
 
 const warnedPaths = new Set<string>();
+/** Config errors accumulated since the last drain — surfaced to the TUI at
+ *  session_start (2.2.2): a malformed subagent.json silently disabled the
+ *  user's model/timeout overrides with no visible sign. */
+const recentErrors: string[] = [];
 
 function warnOnce(path: string, err: unknown): void {
-	if (warnedPaths.has(path)) return;
-	warnedPaths.add(path);
-	const msg = err instanceof Error ? err.message : String(err);
-	console.warn(`[pico subagent] ignoring ${path}: ${msg}`);
+  const msg = err instanceof Error ? err.message : String(err);
+  const line = `[pico subagent] ignoring ${path}: ${msg}`;
+  console.warn(line);
+  recentErrors.push(line);
+  if (warnedPaths.has(path)) return;
+  warnedPaths.add(path);
+}
+
+/** Return and clear the accumulated config errors. */
+export function drainSubagentConfigErrors(): string[] {
+  return recentErrors.splice(0);
 }
 
 /** Reset the once-per-path warning cache. Test-only. */
 export function __resetWarnedPaths(): void {
-	warnedPaths.clear();
+  warnedPaths.clear();
+  recentErrors.length = 0;
 }
 
 export function loadSubagentConfig(): SubagentConfig {

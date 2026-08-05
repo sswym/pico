@@ -177,6 +177,13 @@ test("reasoning contract detection handles plain-text content and unrelated erro
   expect(buildCrashResumeHint({ sessionId: "s1", cwd: "/w" })).toContain("pico -c");
 });
 
+test("guidance points at models.json (not the legacy models.yml)", () => {
+  expect(buildReasoningErrorGuidance()).toContain("models.json");
+  expect(buildReasoningErrorGuidance()).not.toContain("models.yml");
+  expect(buildNoModelGuidance()).toContain("models.json");
+  expect(buildNoModelGuidance()).not.toContain("models.yml");
+});
+
 test("guidance extension registers help and commands aliases", () => {
   const { pi, commands } = makeFakePi();
   guidanceExtension(pi);

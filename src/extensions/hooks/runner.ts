@@ -132,6 +132,10 @@ export async function runHook(hook: Hook, vars: HookVars, cwd?: string): Promise
       // children — otherwise grandchildren (npm/node subprocesses) survive
       // and keep the stdout pipe open forever.
       detached: true,
+      // Recursion guard (2.5.8): a hook that invokes `pico` itself would
+      // spawn a full nested agent (which may run hooks again — infinite
+      // nesting). bin/pico.ts refuses to start under this marker.
+      env: { ...process.env, PICO_HOOK_RECURSION_GUARD: "1" },
     });
     const child = proc;
     timer = setTimeout(() => {

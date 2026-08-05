@@ -216,6 +216,7 @@ export function renderLogoHeader(
 export const logoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   let currentCtx: { model?: { id?: string; provider?: string } } | undefined;
   let headerTui: { requestRender?: (force?: boolean) => void } | undefined;
+  let collapsed = false;
   const install = (ctx: { ui: { setHeader: (factory: any) => void } }) => {
     ctx.ui.setHeader((tui: unknown, theme: any) => {
       headerTui = tui as { requestRender?: (force?: boolean) => void };
@@ -228,17 +229,20 @@ export const logoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           const container = new Container();
           const effectiveWidth =
             (tui as { terminal?: { columns?: number } } | undefined)?.terminal?.columns ?? width;
-          container.addChild(
-            new Text(
-              renderLogoHeader(theme, effectiveWidth, currentCtx, cachedSessionInfo()),
-              1,
-              0,
-            ),
-          );
-          container.addChild(new Spacer(1));
+          // 2.1.2: Ctrl+O collapse protocol — a collapsed header renders as
+          // a single "pico" line instead of the full logo block.
+          const header = collapsed
+            ? theme.fg("accent", "✻ ") + theme.bold(theme.fg("accent", "pico")) + theme.fg("dim", ` v${(pkg as { version?: string }).version ?? "0.0.0"}`)
+            : renderLogoHeader(theme, effectiveWidth, currentCtx, cachedSessionInfo());
+          container.addChild(new Text(header, 1, 0));
+          if (!collapsed) container.addChild(new Spacer(1));
           return container.render(effectiveWidth);
         },
         invalidate(): void {},
+        setExpanded(expanded: boolean): void {
+          collapsed = !expanded;
+          headerTui?.requestRender?.();
+        },
       };
     });
   };

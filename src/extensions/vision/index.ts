@@ -85,7 +85,17 @@ export function createVisionExtension(deps: VisionAnalyzeDeps = defaultVisionDep
       if (!event.images || event.images.length === 0) return { action: "continue" as const };
       if (event.source === "extension") return { action: "continue" as const };
       if (modelSupportsVision(ctx.model)) return { action: "continue" as const };
-      if (!readVisionConfig()) return { action: "continue" as const };
+
+      // 2.5.9: the active model cannot see images AND no auxiliary vision
+      // model is configured — sending the image would silently produce a
+      // vision-less answer. Say so explicitly instead of pretending.
+      if (!readVisionConfig()) {
+        return {
+          action: "transform" as const,
+          text: `${event.text.trim()}\n\n[附带了 ${event.images.length} 张图片，但当前模型不支持图像且未配置辅助视觉模型（auxiliary.vision），图片内容无法分析。如需要可配置 PICO_VISION_MODEL。]`,
+          images: [],
+        };
+      }
 
       // Per-image try/catch: one failing image must not discard the analyses
       // that already succeeded — keep them and append a failure note.
@@ -96,7 +106,9 @@ export function createVisionExtension(deps: VisionAnalyzeDeps = defaultVisionDep
           results.push(await analyzeImageWithVisionModel(ctx, image, event.text, deps));
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          failures.push(`[image analysis failed: ${message}]`);
+          // 2.5.9: a failed image is dropped from the prompt — mark it
+          // visibly so the model knows the visual content is missing.
+          failures.push(`[image analysis failed: ${message} — this image was NOT included in the prompt]`);
         }
       }
 

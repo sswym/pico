@@ -462,7 +462,7 @@ flowchart TD
 - truncateWithEllipsis 改码点截断（不劈代理对）；footer git 超时结果不缓存（下次渲染重试）；input-history trim 加 mkdir 锁串行化 + 30s 残留恢复；ActivityTracker 在 session_shutdown 复位。
 
 **坑 61：入口/配置低危批量（低）**
-- bin/pico.ts console.clear 仅限交互 TTY 非帮助/非 --mode 场景；setup 安装命令 `set -o pipefail`（curl|sh 退出码遮蔽）+ 安装失败/跳过不再落盘 enabled=true；--reset 清理 lsp/hooks/mcp 文件；未知 section 显式报错；/doctor 非交互输出到 stdout；models.yml 扫描按 `providers:` 实际缩进推导 provider 深度（兼容 4 空格）；env-bootstrap 与 paths.ts 的 PICO_HOME 归一化统一（~ 展开 + resolve）；memory ftsCandidates 失败告警。
+- bin/pico.ts console.clear 仅限交互 TTY 非帮助/非 --mode 场景；setup 安装命令 `set -o pipefail`（curl|sh 退出码遮蔽）+ 安装失败/跳过不再落盘 enabled=true；--reset 清理 lsp/hooks/mcp 文件；未知 section 显式报错；/doctor 非交互输出到 stdout；models.json 推理 compat 扫描（JSON 解析，provider/模型级 compat 均可识别）；env-bootstrap 与 paths.ts 的 PICO_HOME 归一化统一（~ 展开 + resolve）；memory ftsCandidates 失败告警。
 
 **坑 62：其余低危（低）**
 - 子代理 frontmatter 逐文件 try/catch（坏 YAML 不再拖垮整个工具）；subagent.json overrides 复用 >0 数值校验；file-only 大输出 tmp 目录返回清理函数（orchestrator finally 调用）；cache-optimizer DISABLE 补 PI_ 别名、prompt_cache_key 仅注入 openai-completions；todo schema 长度约束；/language 校验（64 字符、禁换行）；ask 重复 question 拒绝；LSP 负值 line/character 校验、execute signal 透传、applyEdit 应答 `{applied:false}`、file:// URI 编解码、idle 回收等待在途关闭、formatOnWrite mtime 新鲜度校验、installServer 异步化（进程组超时）、typescript-native 探针按 (command,cwd) 缓存。
@@ -588,3 +588,15 @@ bun test tests/<feature>.test.ts  # 单文件测试
 ---
 
 *归档说明：本文随整改提交（`fd04fff` / `10fba51` / `2891708` 及第四轮 backend/frontend 提交）同步维护；后续迭代请同步更新 §5 局限清单与 §6 运维要点。*
+
+### 6.7 第五轮用户体验整改（UX 审查落地）
+
+对应 `docs/ux-review.md` 的问题清单（P0→P2），本提交集中修复：
+
+- **记忆系统**：读路径默认 scope 与写入对齐（project+global，`tool.ts`/工具描述）；检索 bump 节流 5min + 预取缓存命中放宽；FTS 结果否定词降权 + 子串回退别名归一（"TS"↔"typescript"）；`memory.db` 损坏自动备份重建（含 WAL/shm）不再阻断启动；`clear --scope project` + 清理前 JSON 备份 + `remove/update/feedback` 跨项目归属校验；纠正检测收紧（疑问句/长文不触发、存储 200 字符、去掉 turn_end curated 双写）；误提取过滤（求助/否定句跳过、"别用 npm" 等短偏好可提取）；scope key 规范化（realpath+去尾斜杠+上溯项目根）；密钥扫描下沉 store 层（tags+JWT+驼峰）；related/reason 支持 `--scope`；命令面（无参显示用法、`--limit`、count 分布、status 用量、notes 生效提示）；curated 归一化去重 + 过期 .bak 清理；`PICO_MEMORY_DENY` 下沉 store 层堵住自动提取旁路。
+- **子代理**：`detached` 进程组击杀；默认 30min 超时；spawn 错误透出（ENOENT 等）；初始 "(running...)" 反馈；中断保留已完成结果（parallel/chain/single 不再整体丢弃）；spill 文件保留至会话结束；`{previous}` 32KB 截断 + 占位符显式报错；gate 中止归因为 abort、逐条 evidence 进度回调；stderr 256KB 上限；工具描述列全 16 个内置 agent。
+- **LSP**：initialize 超时 90s、失败退避 3min→1min；写透传失败可见提示；诊断改事件驱动（去掉固定 500ms sleep）；拒绝安装后后续调用解释原因；tsc 探测与 prewarm 改异步不阻塞事件循环。
+- **工具链**：webFetch 暴露 `allow_private_network`/`bypass_cache`；webSearch 12KB 总量截断 + provider 降级提示入结果；MCP 崩溃自动重连（指数退避）+ 工具名 id 清洗 + "超时不代表取消"提示；hooks PostUserMessage 异步化、阻塞钩子进度提示、`PICO_HOOK_RECURSION_GUARD` 递归防护、配置错误 session_start 可见、项目层可覆盖 home；plan 非交互模式 ExitPlanMode 自动释放锁、`/plan off`；cache-optimizer `prompt_cache_key` 仅官方 api.openai.com 注入；rtk 跳过管道/重定向/命令链与 `cargo run`/`go run`；ask 取消返回 cancelled 标记不重弹、preview 限长、多选支持撤销；vision 未配置辅助模型贴图显式提示、调用 60s 超时。
+- **界面**：不再删除用户主题文件、用户显式配置主题时不强制覆盖；logo 支持 setExpanded 折叠；折叠预览按列宽截断；展开模式设渲染上限；页脚 git 超时结果负缓存 30s；活动行工具名截断；DCS/APC 序列清洗；输入框装饰宽度按 visibleWidth 对齐；todo 面板空任务 F7 提示、全部完成保留汇总。
+- **配置可见性**：hooks/subagent 配置解析错误经 session_start notify 可见；项目级 MCP/hooks 配置存在但被安全开关禁用时显式提示；`pico --version` 默认只显示 pico 版本（`--verbose` 带上游）、`setup --help` 不再重复品牌头。
+- **审查类任务规则**：`src/prompts/vibe-system.md` 新增「只读优先」——分析/审查请求默认只输出报告，修改需先征得用户同意。

@@ -15,6 +15,8 @@ export interface ActivityClock {
 }
 
 const TICK_MS = 1000;
+/** Tool names longer than this are truncated in the working row (2.1.7). */
+const TOOL_NAME_MAX = 24;
 
 export class ActivityTracker {
   private phase: ActivityPhase = "idle";
@@ -70,8 +72,14 @@ export class ActivityTracker {
         return `thinking ${elapsed}s`;
       case "streaming":
         return `streaming ${elapsed}s`;
-      case "tool":
-        return `tool ${this.toolName} ${elapsed}s`;
+      case "tool": {
+        // 2.1.7: `typescript-language-server` etc. used to overflow the row
+        // and wrap — clip the name to a fixed width.
+        const name = this.toolName.length > TOOL_NAME_MAX
+          ? `${this.toolName.slice(0, TOOL_NAME_MAX - 1)}…`
+          : this.toolName;
+        return `tool ${name} ${elapsed}s`;
+      }
       case "idle":
         return undefined;
     }

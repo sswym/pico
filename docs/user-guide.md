@@ -260,7 +260,7 @@ subagent(chain=[
 
 - **`/help`**（别名 `/commands`）：离线命令与快捷键速查，无需模型即可查看；全新用户不再因 `/help` 被当消息发送而撞上 API key 报错。
 - **无模型引导**：交互会话启动时若未配置模型，会发送中文引导消息（指向 `pico setup`），替代仅指向 node_modules 的上游报错。
-- **推理模型 400 引导**：当多轮工具调用被代理以 `reasoning_content must be passed back` 拒绝时，自动追加中文修复指引（降低思考级别 → 在 `models.yml` 的 provider `compat` 加 `requiresReasoningContentOnAssistantMessages: true` → 切换非推理模型）。
+- **推理模型 400 引导**：当多轮工具调用被代理以 `reasoning_content must be passed back` 拒绝时，自动追加中文修复指引（降低思考级别 → 在 `models.json` 的对应模型/provider `compat` 加 `requiresReasoningContentOnAssistantMessages: true` → 切换非推理模型）。
 - **崩溃恢复**：会话启动写 `~/.pico/last-session.json` 标记，正常退出（`quit`）清除；若上次会话被强杀（SIGKILL/崩溃），下次启动提示用 `pico -c` / `pico -r` 续接。
 - **生成阶段反馈**：长生成期间工作区显示 `thinking Ns` / `streaming Ns` / `tool <name> Ns` 动态状态，替代无信息的 "Working..."。
 

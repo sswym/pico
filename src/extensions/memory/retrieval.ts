@@ -164,7 +164,10 @@ export class FactRetriever {
     const expandedQuery = expandedTerms.join(" ");
 
     const candidates = this.ftsCandidates(expandedQuery, opts, minTrust, limit * 3);
-    if (candidates.length === 0) return [];
+    // 2.3.9: FTS silence must not be treated as "no matches" — fall back to
+    // substring ranking (Chinese queries almost always miss FTS5's run-based
+    // tokenizer), mirroring MemoryStore.search's behaviour.
+    if (candidates.length === 0) return this._substringFallback(expandedTerms, opts, minTrust, limit);
 
     const queryTokens = jaccardTokens(expandedQuery);
     const idfAvailable = candidates.some((c) => c.tfidf_vector && c.tfidf_vector !== "{}");
@@ -449,6 +452,61 @@ export class FactRetriever {
 
     contradictions.sort((a, b) => b.contradiction_score - a.contradiction_score);
     return contradictions.slice(0, limit);
+  }
+
+  /**
+   * Substring fallback used when FTS5 returns nothing: ranks facts by raw
+   * term inclusion (canonical alias aware) with trust weighting, and applies
+   * a negation penalty so "我不用 bun" never ranks as recall for "bun".
+   */
+  private _substringFallback(terms: string[], opts: RetrievalQueryOptions, minTrust: number, limit: number): ScoredFact[] {
+    const canonicalTerms = Array.from(new Set(terms.map(normalizeTerm).filter((t) => t.length > 0)));
+    if (canonicalTerms.length === 0) return [];
+    const scope = scopeFilter(opts);
+
+    const sql = opts.category
+      ? `SELECT f.* FROM facts f WHERE f.trust_score >= ? ${scope.clause} AND f.category = ? LIMIT ?`
+      : `SELECT f.* FROM facts f WHERE f.trust_score >= ? ${scope.clause} LIMIT ?`;
+    const rows = opts.category
+      ? this.db.query<FactRow, [...(number | string)[]]>(sql).all(minTrust, ...scope.params, opts.category, 500) as FactRow[]
+      : this.db.query<FactRow, [...(number | string)[]]>(sql).all(minTrust, ...scope.params, 500) as FactRow[];
+
+    const scored: ScoredFact[] = [];
+    for (const fact of rows) {
+      const raw = `${fact.content} ${fact.tags}`;
+      const content = raw.toLowerCase();
+      const canonical = new Set(filterStopwords(tokenize(raw)).map(normalizeTerm));
+      let score = 0;
+      let negated = false;
+      for (const term of canonicalTerms) {
+        if (canonical.has(term) || content.includes(term)) {
+          score += term.length >= 4 ? 2 : 1;
+          if (!negated) {
+            let idx = content.indexOf(term);
+            while (idx >= 0) {
+              if (this._negationNear(content, idx, term)) { negated = true; break; }
+              idx = content.indexOf(term, idx + Math.max(1, term.length));
+            }
+          }
+        }
+      }
+      if (score === 0) continue;
+      if (negated) score *= 0.2;
+      let s = scoreScopeBoost(score * fact.trust_score, fact.scope, scope.projectScope);
+      s *= this._temporalDecay(fact.updated_at);
+      scored.push({ ...fact, score: s });
+    }
+    scored.sort((a, b) => b.score - a.score || b.fact_id - a.fact_id);
+    return scored.slice(0, limit);
+  }
+
+  /** Negation words that flip a fact's assertion about a nearby term. */
+  private static readonly NEGATION_RE = /(?:不|没|别|无|非|莫|never|not\b|no\b|without|instead\s+of)/i;
+
+  private _negationNear(text: string, idx: number, token: string): boolean {
+    const before = text.slice(Math.max(0, idx - 4), idx);
+    const after = text.slice(idx + token.length, idx + token.length + 2);
+    return FactRetriever.NEGATION_RE.test(before) || FactRetriever.NEGATION_RE.test(after);
   }
 
   /** Get raw FTS5 candidates from the store. */

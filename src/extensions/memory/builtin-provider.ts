@@ -232,12 +232,14 @@ export class BuiltinMemoryProvider implements MemoryProvider {
    * a synchronous search if no cache hit.
    */
   prefetch(query: string, cwd?: string): Fact[] {
-    // Prefix match: the next turn's message usually starts with (or equals)
-    // the query that was queued, so exact equality almost never hits.
-    if (this.cachedPrefetch && (query === this.cachedPrefetch.query || query.startsWith(this.cachedPrefetch.query))) {
-      const results = this.cachedPrefetch.results;
+    // Cache-hit rule (2.3.10): the queued key is the previous full user
+    // message, so exact equality almost never hits. Accept any direction of
+    // prefix overlap, or a shared significant token (>= 4 chars, not a
+    // stopword) — enough signal that the new turn continues the same topic.
+    const cached = this.cachedPrefetch;
+    if (cached && this._prefetchHit(cached.query, query)) {
       this.cachedPrefetch = null;
-      return results;
+      return cached.results;
     }
     if (!query) return [];
     // Cache miss — drop the stale entry so a later re-ask of the old query
@@ -249,6 +251,19 @@ export class BuiltinMemoryProvider implements MemoryProvider {
       scope: cwd ? ("project" as const) : undefined,
       cwd,
     }).map(toFact);
+  }
+
+  private _prefetchHit(cached: string, current: string): boolean {
+    const a = cached.toLowerCase();
+    const b = current.toLowerCase();
+    if (!a || !b) return false;
+    if (a === b || a.startsWith(b) || b.startsWith(a)) return true;
+    const tokensA = new Set(a.split(/\s+/).filter((t) => t.length >= 4));
+    const tokensB = new Set(b.split(/\s+/).filter((t) => t.length >= 4));
+    for (const t of tokensA) {
+      if (tokensB.has(t)) return true;
+    }
+    return false;
   }
 
   /**

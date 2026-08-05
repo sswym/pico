@@ -280,7 +280,7 @@ test("factory registers handlers for all four mapped events", () => {
   const fake = makeFakeApi();
   factory(fake.api);
   expect(Object.keys(fake.handlers).sort()).toEqual(
-    ["session_shutdown", "tool_call", "tool_result", "turn_end"].sort(),
+    ["session_shutdown", "session_start", "tool_call", "tool_result", "turn_end"].sort(),
   );
 });
 

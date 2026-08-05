@@ -22,7 +22,7 @@ import {
   renderWebSearchCall,
   renderWebSearchResult,
 } from "./render.ts";
-import { formatSearchResults, webSearch } from "./search.ts";
+import { formatSearchResults, webSearchWithNotes, capSearchOutput } from "./search.ts";
 
 const WebFetchParams = Type.Object({
   url: Type.String({
@@ -33,6 +33,18 @@ const WebFetchParams = Type.Object({
     Type.String({
       description:
         "What you want to find on the page. Echoed back at the top of the result so you can re-find it; the page is NOT summarized for you.",
+    }),
+  ),
+  bypass_cache: Type.Optional(
+    Type.Boolean({
+      description:
+        "Skip the 15-minute in-memory cache and re-fetch the page live. Use for dynamic pages (CI status, dashboards). Default false.",
+    }),
+  ),
+  allow_private_network: Type.Optional(
+    Type.Boolean({
+      description:
+        "Allow localhost / private-network addresses (intranet wikis, local doc servers). Off by default — public web fetch only.",
     }),
   ),
 });
@@ -78,7 +90,11 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       renderResult: renderWebFetchResult,
       async execute(_id, params, signal) {
         try {
-          const page = await fetchAndConvert(params.url, { signal });
+          const page = await fetchAndConvert(params.url, {
+            signal,
+            bypassCache: params.bypass_cache === true,
+            allowPrivateNetwork: params.allow_private_network === true,
+          });
           return {
             content: [{ type: "text" as const, text: formatFetchResult(page, params.prompt) }],
             details: {
@@ -115,7 +131,7 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       renderResult: renderWebSearchResult,
       async execute(_id, params, signal) {
         try {
-          const results = await webSearch(
+          const outcome = await webSearchWithNotes(
             {
               query: params.query,
               max_results: params.max_results,
@@ -124,11 +140,13 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             },
             { signal },
           );
+          const body = formatSearchResults(params.query, outcome.results);
+          const notes = outcome.notes.length > 0 ? `\n\n${outcome.notes.join("\n")}` : "";
           return {
             content: [
-              { type: "text" as const, text: formatSearchResults(params.query, results) },
+              { type: "text" as const, text: capSearchOutput(body + notes) },
             ],
-            details: { count: results.length, results },
+            details: { count: outcome.results.length, results: outcome.results, notes: outcome.notes },
           };
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);

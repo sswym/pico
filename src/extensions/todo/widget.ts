@@ -137,7 +137,11 @@ export function syncTodoWidget(ctx: ExtensionContext, readTodos: TodoReader): vo
 
   ctx.ui.setStatus(TODO_STATUS_KEY, status);
   if (open.length === 0) {
-    state.visible = false;
+    // 2.5.12: completing the last task used to wipe the panel instantly —
+    // the "everything done" state is worth a glance. Keep it visible if the
+    // session actually had tasks, hide it for an empty first run.
+    const hadTasks = state.openIds.size > 0 || state.openContent.size > 0;
+    state.visible = hadTasks;
     state.collapsed = false;
   } else if (hasNewOpen) {
     // Only genuinely new task content auto-opens the panel; a model
@@ -180,10 +184,17 @@ export function toggleTodoWidget(ctx: ExtensionContext, readTodos: TodoReader): 
   const todos = readTodos(session);
   const hasOpenTodos = todos.some((todo) => todo.status !== "completed");
   if (!hasOpenTodos) {
+    // 2.1.9: toggling the panel with nothing to show gave zero feedback —
+    // say so once instead of silently doing nothing.
     state.collapsed = false;
     state.visible = false;
     ctx.ui.setStatus(TODO_STATUS_KEY, undefined);
     requestRender(session);
+    try {
+      ctx.ui.notify("当前没有任务（todo 列表为空）。", "info");
+    } catch {
+      // non-TUI mode may drop notify
+    }
     return;
   }
   if (state.visible) {

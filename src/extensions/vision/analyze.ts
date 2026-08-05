@@ -11,6 +11,8 @@ const DEFAULT_PROMPT =
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const IMAGE_FETCH_TIMEOUT_MS = 15_000;
 const MAX_IMAGE_REDIRECTS = 5;
+/** Wall-clock cap for the vision model call itself (2.5.9). */
+const VISION_TIMEOUT_MS = 60_000;
 
 export interface VisionConfig {
   provider: string;
@@ -270,7 +272,9 @@ export async function analyzeImageWithVisionModel(
       apiKey: auth.apiKey,
       env: auth.env,
       headers: auth.headers,
-      signal: ctx.signal,
+      // 2.5.9: a hung vision provider must not stall the turn forever —
+      // bound the call with its own wall-clock timeout.
+      signal: withTimeoutSignal(ctx.signal, VISION_TIMEOUT_MS, "visionAnalyze").signal,
       maxTokens: 2048,
     },
   );

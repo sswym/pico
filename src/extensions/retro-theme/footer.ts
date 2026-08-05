@@ -36,6 +36,8 @@ type GitStatus = {
 
 type GitCache = GitStatus & {
   timestamp: number;
+  /** True when the last probe timed out/was killed — longer TTL (2.1.5). */
+  failed: boolean;
 };
 
 type FooterOptions = {
@@ -43,6 +45,11 @@ type FooterOptions = {
 };
 
 const GIT_CACHE_TTL_MS = 1200;
+/** Negative cache for timed-out git (2.1.5): a slow repo (NFS, index.lock,
+ *  huge worktree) previously re-spawned git every 1.2s while streaming —
+ *  the timeout result was never cached. A failed probe is cached longer so
+ *  the footer stops hammering the repo. */
+const GIT_FAIL_TTL_MS = 30_000;
 const DOT = " · ";
 const PIPE = " | ";
 const cachedGitStatusByCwd = new Map<string, GitCache>();
@@ -141,7 +148,7 @@ function emptyGitStatus(): GitStatus {
 function getCachedGitStatus(cwd: string, requestRender?: () => void): GitStatus {
   const now = Date.now();
   const cached = cachedGitStatusByCwd.get(cwd);
-  if (cached && now - cached.timestamp < GIT_CACHE_TTL_MS) {
+  if (cached && now - cached.timestamp < (cached.failed ? GIT_FAIL_TTL_MS : GIT_CACHE_TTL_MS)) {
     return cached;
   }
 
@@ -152,13 +159,13 @@ function getCachedGitStatus(cwd: string, requestRender?: () => void): GitStatus 
       // newer one replaced it) while git was running — don't let a stale
       // result repopulate the cache.
       if (pendingGitStatusByCwd.get(cwd) !== tracked) return;
-      if (result) {
-        const next = { ...result, timestamp: Date.now() };
-        cachedGitStatusByCwd.set(cwd, next);
-      }
-      // Timeout/killed git (slow repos, NFS, index.lock) must NOT freeze an
-      // empty status into the cache — the next render retries instead of
-      // showing a permanently empty branch line.
+      // 2.1.5: a timed-out git must be cached as a FAILED entry (30s TTL)
+      // instead of being retried on the very next render tick — slow repos
+      // previously spawned a fresh git process every 1.2s during streaming.
+      const next = result
+        ? { ...result, timestamp: Date.now(), failed: false }
+        : { ...emptyGitStatus(), timestamp: Date.now(), failed: true };
+      cachedGitStatusByCwd.set(cwd, next);
       pendingGitStatusByCwd.delete(cwd);
       requestRender?.();
     });

@@ -589,7 +589,14 @@ test("buildChainTask substitutes previous and named outputs", () => {
     },
   );
 
-  expect(task).toBe('Use prior result, saved plan, and (output "missing" not found).');
+  expect(task).toBe('Use prior result, saved plan, and [CHAIN ERROR: output "missing" not found — the step that defines it must run first, or the name is misspelled].');
+});
+
+test("buildChainTask caps {previous} to keep downstream context bounded", () => {
+  const huge = "x".repeat(100_000);
+  const task = buildChainTask({ task: "Refine {previous}" }, huge, {}, () => "");
+  expect(task).toContain("[... truncated");
+  expect(task.length).toBeLessThan(40_000);
 });
 
 test("buildChainTask prepends readable file context and reports read failures", () => {
@@ -1353,7 +1360,9 @@ test("discoverAgents skips malformed frontmatter files without breaking the regi
   }
 });
 
-test("spillLargeFileOnlyOutput returns a cleanup that removes the temp dir", async () => {
+test("spillLargeFileOnlyOutput registers the temp dir until cleanupSpillDirs runs", async () => {
+  const { cleanupSpillDirs, __resetSpillDirsForTests } = await import("../src/extensions/subagent/output.ts");
+  __resetSpillDirsForTests();
   const result: SingleResult = {
     agent: "worker",
     agentSource: "user",
@@ -1364,7 +1373,7 @@ test("spillLargeFileOnlyOutput returns a cleanup that removes the temp dir", asy
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
   };
   const dir = mkdtempSync(join(tmpdir(), "pico-spill-"));
-  const cleanup = await spillLargeFileOnlyOutput(result, "worker", "file-only", 4, {
+  await spillLargeFileOnlyOutput(result, "worker", "file-only", 4, {
     tmpPrefix: `${dir}/out-`,
     mkdtemp: (prefix) => {
       mkdirSync(`${prefix}dir`);
@@ -1373,9 +1382,111 @@ test("spillLargeFileOnlyOutput returns a cleanup that removes the temp dir", asy
     writeFile: async (filePath, content) => writeFileSync(filePath, content),
     now: () => 123,
   });
-  expect(cleanup).toBeFunction();
+  // The spilled dir survives (chain steps may still read the path)...
   expect(await import("node:fs").then((fs) => fs.existsSync(`${dir}/out-dir`))).toBe(true);
-  cleanup?.();
+  // ...until the session-end cleanup.
+  cleanupSpillDirs();
   expect(await import("node:fs").then((fs) => fs.existsSync(`${dir}/out-dir`))).toBe(false);
   rmSync(dir, { recursive: true, force: true });
+});
+
+// ---- 2.4.x regression tests (fifth review round) --------------------------
+
+test("2.4.3: spawn failures surface the reason on the result", async () => {
+  const agent = {
+    name: "worker",
+    description: "",
+    source: "user" as const,
+    filePath: "worker.md",
+    systemPrompt: "",
+  };
+  const result = createInitialResult(agent, "worker", "run", undefined);
+  const proc = new FakeProcess();
+  const run = runJsonProcess({
+    command: "pico",
+    args: [],
+    cwd: "/repo",
+    result,
+    spawn: () => proc,
+  });
+  proc.error(new Error("spawn pico ENOENT"));
+  await run;
+  expect(result.errorMessage).toContain("Failed to spawn pico");
+  expect(result.errorMessage).toContain("ENOENT");
+  expect(result.stopReason).toBe("error");
+});
+
+test("2.4.2: agents without maxExecutionTimeMs get the 30-minute default", () => {
+  const { DEFAULT_AGENT_TIMEOUT_MS } = { DEFAULT_AGENT_TIMEOUT_MS: 30 * 60 * 1000 };
+  expect(DEFAULT_AGENT_TIMEOUT_MS).toBe(1800000);
+});
+
+test("2.4.5: gate interruption is attributed as abort, not gate failure", async () => {
+  const { runGateAfterSuccess } = await import("../src/extensions/subagent/gates.ts");
+  const controller = new AbortController();
+  controller.abort();
+  const result: SingleResult = {
+    agent: "worker",
+    agentSource: "user",
+    task: "t",
+    exitCode: 0,
+    messages: [],
+    stderr: "",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+  };
+  const out = await runGateAfterSuccess({
+    agent: { name: "worker", acceptance: { evidence: [{ command: "true" }], criteria: ["c"] } },
+    result,
+    task: "t",
+    runCwd: "/repo",
+    context: undefined,
+    signal: controller.signal,
+    checkGate: async (_acc, _cwd, sig) => {
+      sig?.dispatchEvent(new Event("abort"));
+      return { passed: false, failedCriteria: ["c"], evidenceResults: [{ command: "true", output: "", passed: false }] };
+    },
+    runRepair: async () => result,
+  });
+  expect(out.stopReason).toBe("aborted");
+  expect(out.errorMessage).toContain("interrupted");
+});
+
+test("2.4.8: checkAcceptanceGate reports per-evidence progress", async () => {
+  const { checkAcceptanceGate } = await import("../src/extensions/subagent/gates.ts");
+  const seen: Array<{ index: number; total: number; command: string }> = [];
+  await checkAcceptanceGate(
+    { evidence: [{ command: "true" }, { command: "false" }], criteria: ["a", "b"] },
+    "/repo",
+    undefined,
+    (index, total, command) => seen.push({ index, total, command }),
+  );
+  expect(seen).toEqual([
+    { index: 0, total: 2, command: "true" },
+    { index: 1, total: 2, command: "false" },
+  ]);
+});
+
+test("2.6.3: stderr is capped with a tail-preserving marker", async () => {
+  const { runJsonProcess } = await import("../src/extensions/subagent/process.ts");
+  const agent = {
+    name: "worker",
+    description: "",
+    source: "user" as const,
+    filePath: "worker.md",
+    systemPrompt: "",
+  };
+  const result = createInitialResult(agent, "worker", "run", undefined);
+  const proc = new FakeProcess();
+  const run = runJsonProcess({
+    command: "pico",
+    args: [],
+    cwd: "/repo",
+    result,
+    spawn: () => proc,
+  });
+  for (let i = 0; i < 4000; i++) proc.stderrData("x".repeat(100));
+  proc.close(1);
+  await run;
+  expect(result.stderr).toContain("[stderr truncated");
+  expect(Buffer.byteLength(result.stderr, "utf8")).toBeLessThan(512 * 1024);
 });

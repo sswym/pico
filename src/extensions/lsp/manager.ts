@@ -4,8 +4,8 @@
  * Uses config.ts to discover and route servers. Each server is spawned lazily
  * when first needed. Supports multiple concurrent servers per file type.
  */
-import { readFileSync, readdirSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { readFileSync, readdirSync, promises as fsPromises } from "node:fs";
+import { spawn } from "node:child_process";
 import { join, extname } from "node:path";
 import type { LspServerConfig, LspConfig } from "./config.ts";
 import { loadConfig, getPrimaryServerForFile, getServersForFile, detectServers, resolveCommand } from "./config.ts";
@@ -14,7 +14,10 @@ import { LspClient, locationToDisplay, lspPositionToDisplay, LspError, COMMAND_N
 // ── Runtime state ───────────────────────────────────────────────────────────
 
 const IDLE_CHECK_INTERVAL_MS = 60_000;
-const INIT_FAILURE_BACKOFF_MS = 3 * 60 * 1000;
+// 2.5.1: 3 minutes locked the user out of every LSP call after one cold-start
+// failure (rust-analyzer first index etc.). 60s still prevents hot-looping a
+// broken server while letting a transient cold start retry quickly.
+const INIT_FAILURE_BACKOFF_MS = 60 * 1000;
 
 interface LspManagerRuntime {
   idleTimeoutMs: number | null;
@@ -89,34 +92,61 @@ export function resetUnsupportedProbeCache(): void {
   unsupportedProbeCache.clear();
 }
 
-function getUnsupportedServerCommandReason(serverName: string, command: string, cwd: string): string | null {
+/**
+ * Async probe (2.5.11): the old spawnSync blocked the whole event loop for
+ * up to 2s on the session-start path, freezing the UI on every launch.
+ */
+async function getUnsupportedServerCommandReason(serverName: string, command: string, cwd: string): Promise<string | null> {
   if (serverName !== "typescript-native") return null;
 
   const key = `${command}\0${cwd}`;
   const cached = unsupportedProbeCache.get(key);
   if (cached !== undefined) return cached;
 
-  const probe = spawnSync(command, ["--help", "--all"], {
-    cwd,
-    encoding: "utf8",
-    timeout: 2_000,
-  });
-  let reason: string | null;
-  if (probe.error) {
-    const errno = probe.error as NodeJS.ErrnoException;
-    if (errno.code === "ENOENT") {
-      // Command missing — not a probe verdict; the caller reports
-      // COMMAND_NOT_FOUND and may install it, so don't cache this outcome.
-      return null;
+  const reason = await new Promise<string | null>((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (reason: string | null) => {
+      if (settled) return;
+      settled = true;
+      resolve(reason);
+    };
+    let child;
+    try {
+      child = spawn(command, ["--help", "--all"], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    } catch {
+      finish(null);
+      return;
     }
-    reason = `Command "${command}" probe failed: ${probe.error.message}`;
-  } else {
-    const output = `${probe.stdout ?? ""}\n${probe.stderr ?? ""}`;
-    reason = output.includes("--lsp")
-      ? null
-      : `Command "${command}" does not advertise TypeScript native LSP support (--lsp).`;
-  }
-  unsupportedProbeCache.set(key, reason);
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch {}
+      finish(null);
+    }, 2_000);
+    timer.unref?.();
+    child.stdout.on("data", (d) => { stdout += String(d); });
+    child.stderr.on("data", (d) => { stderr += String(d); });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      const errno = err as NodeJS.ErrnoException;
+      if (errno.code === "ENOENT") {
+        // Command missing — not a probe verdict; the caller reports
+        // COMMAND_NOT_FOUND and may install it, so don't cache this outcome.
+        finish(null);
+        return;
+      }
+      finish(`Command "${command}" probe failed: ${err.message}`);
+    });
+    child.on("close", () => {
+      clearTimeout(timer);
+      const output = `${stdout}\n${stderr}`;
+      finish(output.includes("--lsp")
+        ? null
+        : `Command "${command}" does not advertise TypeScript native LSP support (--lsp).`);
+    });
+  });
+
+  if (reason !== null) unsupportedProbeCache.set(key, reason);
   return reason;
 }
 
@@ -372,7 +402,7 @@ export async function ensureServer(
     }
 
     const resolvedCommand = resolveCommand(serverConfig.command, workspaceRoot) ?? serverConfig.command;
-    const unsupportedReason = getUnsupportedServerCommandReason(name, resolvedCommand, workspaceRoot);
+    const unsupportedReason = await getUnsupportedServerCommandReason(name, resolvedCommand, workspaceRoot);
     if (unsupportedReason) {
       recordInitFailure(state, name, unsupportedReason);
       continue;
@@ -398,7 +428,7 @@ export async function ensureServer(
       try {
         await managed.client.initialize(workspaceRoot);
         managed.lastActivity = Date.now();
-        prewarmProject(managed, workspaceRoot);
+        await prewarmProject(managed, workspaceRoot);
       } catch (err) {
         // Propagate command-not-found so callers can offer to install.
         if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) {
@@ -458,7 +488,7 @@ export async function ensureNamedServer(
   // Start this server
   checkInitBackoff(state, name);
   const resolvedCommand = resolveCommand(serverConfig.command, workspaceRoot) ?? serverConfig.command;
-  const unsupportedReason = getUnsupportedServerCommandReason(name, resolvedCommand, workspaceRoot);
+  const unsupportedReason = await getUnsupportedServerCommandReason(name, resolvedCommand, workspaceRoot);
   if (unsupportedReason) {
     recordInitFailure(state, name, unsupportedReason);
     return null;
@@ -484,7 +514,7 @@ export async function ensureNamedServer(
     try {
       await newManaged.client.initialize(workspaceRoot);
       newManaged.lastActivity = Date.now();
-      prewarmProject(newManaged, workspaceRoot);
+      await prewarmProject(newManaged, workspaceRoot);
     } catch (err) {
       if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) {
         state.servers.delete(name);
@@ -551,7 +581,7 @@ export function __checkInitBackoffForTests(state: LspManagerState, serverName: s
   checkInitBackoff(state, serverName);
 }
 
-export function __getUnsupportedServerCommandReasonForTests(serverName: string, command: string, cwd: string): string | null {
+export function __getUnsupportedServerCommandReasonForTests(serverName: string, command: string, cwd: string): Promise<string | null> {
   return getUnsupportedServerCommandReason(serverName, command, cwd);
 }
 
@@ -690,43 +720,49 @@ function guessLanguageId(filePath: string): string {
  * Pre-warm a language server by opening the first matching source file.
  * Both tsserver and rust-analyzer need at least one didOpen before
  * workspace/symbol and other project-wide features work.
+ *
+ * Async (2.5.11): the previous readdirSync/readFileSync scan ran on the
+ * startup path and blocked the whole event loop for seconds in large repos.
  */
-function prewarmProject(managed: ManagedServer, workspaceRoot: string): void {
+async function prewarmProject(managed: ManagedServer, workspaceRoot: string): Promise<void> {
   const exts = new Set((managed.client.config.extensions ?? []).map(e => e.startsWith(".") ? e : `.${e}`));
   const SKIP = new Set(["node_modules", ".git", "build", "dist", "target", ".next", "__pycache__"]);
   const MAX_DEPTH = 3;
 
-  function scan(dir: string, depth: number): boolean {
+  async function scan(dir: string, depth: number): Promise<boolean> {
     if (depth > MAX_DEPTH) return false;
+    let entries;
     try {
-      const entries = readdirSync(dir, { withFileTypes: true });
-      // Process files first, then directories
-      for (const entry of entries) {
-        if (entry.isFile()) {
-          const ext = extname(entry.name);
-          if (!exts.has(ext)) continue;
-          const absPath = join(dir, entry.name);
-          try {
-            const text = readFileSync(absPath, "utf8");
-            // Use the canonical languageId mapping ("ts" -> "typescript",
-            // "py" -> "python"); some servers reject or mis-handle raw ext.
-            const langId = guessLanguageId(absPath);
-            const uri = managed.client.ensureOpen(absPath, text, langId);
-            managed.openDocuments.set(absPath, { uri, languageId: langId, version: 1, text });
-            return true;
-          } catch {}
-        }
+      entries = await fsPromises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    // Process files first, then directories
+    for (const entry of entries) {
+      if (entry.isFile()) {
+        const ext = extname(entry.name);
+        if (!exts.has(ext)) continue;
+        const absPath = join(dir, entry.name);
+        try {
+          const text = await fsPromises.readFile(absPath, "utf8");
+          // Use the canonical languageId mapping ("ts" -> "typescript",
+          // "py" -> "python"); some servers reject or mis-handle raw ext.
+          const langId = guessLanguageId(absPath);
+          const uri = managed.client.ensureOpen(absPath, text, langId);
+          managed.openDocuments.set(absPath, { uri, languageId: langId, version: 1, text });
+          return true;
+        } catch {}
       }
-      for (const entry of entries) {
-        if (entry.isDirectory() && !SKIP.has(entry.name) && !entry.name.startsWith(".")) {
-          if (scan(join(dir, entry.name), depth + 1)) return true;
-        }
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory() && !SKIP.has(entry.name) && !entry.name.startsWith(".")) {
+        if (await scan(join(dir, entry.name), depth + 1)) return true;
       }
-    } catch {}
+    }
     return false;
   }
 
-  scan(workspaceRoot, 0);
+  await scan(workspaceRoot, 0);
 }
 
 // Backwards-compatible re-export for index.ts

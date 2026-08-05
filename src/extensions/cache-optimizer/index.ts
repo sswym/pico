@@ -283,10 +283,12 @@ function shouldBypassPromptRewrite(model: PiModel | undefined): boolean {
 function shouldInjectOpenAIPromptCacheKey(model: PiModel | undefined): boolean {
   if (openAICacheKeyDisabled()) return false;
   const api = apiName(model);
-  // prompt_cache_key is a Chat Completions request field; the Responses and
-  // Codex APIs cache automatically and have no such parameter — injecting it
-  // there is at best a no-op and can 400 on strict gateways.
-  return api.includes("openai-completions");
+  if (!api.includes("openai-completions")) return false;
+  // 2.5.5: the api name alone is not enough — vLLM, Ollama, and self-hosted
+  // OpenAI-compatible gateways all advertise "openai-completions" and would
+  // 400 on the unknown `prompt_cache_key` field. Only official OpenAI
+  // endpoints (api.openai.com) get the field.
+  return isOfficialOpenAIBaseUrl(model);
 }
 
 function clampPromptCacheKey(key: string | undefined): string | undefined {

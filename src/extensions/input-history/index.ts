@@ -170,10 +170,16 @@ export class PersistentHistoryEditor extends CustomEditor {
   override render(width: number): string[] {
     if (width <= 2) return super.render(width);
 
-    const lines = super.render(width - 2);
-    if (lines.length < 2) return lines;
+    // 2.1.6: the editor must wrap at (width − prefixWidth) so the cursor's
+    // wrap point matches the visual column of the decorated output. The
+    // prompt width is measured (visibleWidth), not hardcoded — a wide glyph
+    // ("❯" can render 1 or 2 columns) previously produced an off-by-one
+    // between the cursor line and the visual wrap point.
     const prompt = this.borderColor("❯");
-    const continuation = " ".repeat(visibleWidth(prompt) + 1);
+    const prefixWidth = visibleWidth(prompt) + 1;
+    const lines = super.render(Math.max(1, width - prefixWidth));
+    if (lines.length < 2) return lines;
+    const continuation = " ".repeat(prefixWidth);
     const decorated = lines.map((line, index) => {
       if (index === 0 || index === lines.length - 1) return padToWidth(line, width);
       return padToWidth(`${index === 1 ? `${prompt} ` : continuation}${line}`, width);

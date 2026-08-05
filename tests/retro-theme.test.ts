@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -202,6 +202,7 @@ test("onBranchChange drops the cached and pending git status for the cwd", () =>
     unstaged: 0,
     untracked: 0,
     timestamp: Date.now(),
+    failed: false,
   });
   __test.pendingGitStatusByCwd.set(cwd, Promise.resolve());
 
@@ -278,7 +279,13 @@ test("branch change invalidates the cached git status so the next render refetch
 });
 
 test("retroThemeExtension installs theme, working indicator, and footer", async () => {
-  let handler: any;
+  // Isolate from the real ~/.pico: a user-configured theme in settings.json
+  // must be respected (2.1.1) — the test pins the "no user theme" case.
+  const home = mkdtempSync(join(tmpdir(), "pico-theme-"));
+  const prevHome = process.env.PICO_HOME;
+  process.env.PICO_HOME = home;
+  try {
+    let handler: any;
   const fakePi = {
     on: (event: string, h: any) => {
       if (event === "session_start") handler = h;
@@ -310,4 +317,47 @@ test("retroThemeExtension installs theme, working indicator, and footer", async 
   });
 
   expect(calls).toEqual(["theme:claude-code-dark", "indicator", "widget:pico-primary-status", "footer"]);
+  } finally {
+    if (prevHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = prevHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("retroThemeExtension does not override a user-configured theme (2.1.1)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-theme-"));
+  const prevHome = process.env.PICO_HOME;
+  process.env.PICO_HOME = home;
+  try {
+    const agentDir = join(home, "agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "carbon" }), "utf-8");
+    let handler: any;
+    const fakePi = {
+      on: (event: string, h: any) => {
+        if (event === "session_start") handler = h;
+      },
+    };
+    const calls: string[] = [];
+    retroThemeExtension(fakePi as any);
+    await handler({ type: "session_start", reason: "startup" }, {
+      ui: {
+        theme: plainTheme,
+        setTheme: (name: string) => {
+          calls.push(`theme:${name}`);
+          return { success: true };
+        },
+        setWorkingIndicator: () => {},
+        setFooter: () => {},
+        setWidget: () => {},
+      },
+      model: { id: "claude-sonnet-4.5" },
+      getContextUsage: () => ({ tokens: 0, percent: 0, contextWindow: 200000 }),
+    });
+    expect(calls).not.toContain("theme:claude-code-dark");
+  } finally {
+    if (prevHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = prevHome;
+    rmSync(home, { recursive: true, force: true });
+  }
 });
