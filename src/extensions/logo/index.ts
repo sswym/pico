@@ -240,7 +240,11 @@ export const logoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         },
         invalidate(): void {},
         setExpanded(expanded: boolean): void {
-          collapsed = !expanded;
+          // Upstream calls setExpanded(this.toolOutputExpanded) at startup
+          // with toolOutputExpanded=false — the FULL logo banner is the
+          // default/compact state. The single-line form only kicks in when
+          // the user expands tool output (Ctrl+O), freeing the top rows.
+          collapsed = expanded;
           headerTui?.requestRender?.();
         },
       };

@@ -202,3 +202,40 @@ test("recentSessions and hasAnySession tolerate an empty or missing dir", () => 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("setExpanded(false) at startup keeps the full logo banner (regression)", () => {
+  let capturedFactory: any = null;
+  const fakeUi = {
+    setHeader: (factory: any) => {
+      capturedFactory = factory;
+    },
+  };
+  let handler: any = null;
+  const fakePi: any = {
+    on: (name: string, h: any) => {
+      if (name === "session_start") handler = h;
+    },
+    registerTool: () => {},
+    registerCommand: () => {},
+    sendMessage: () => {},
+    sendUserMessage: () => {},
+  };
+  logoExtension(fakePi);
+  handler({ type: "session_start", reason: "startup" }, { ui: fakeUi, model: { id: "deepseek-v4-flash-free", provider: "zen-openai" } });
+  const component = capturedFactory({ terminal: { columns: 96 } }, stubTheme);
+
+  // Upstream calls setExpanded(toolOutputExpanded=false) right after the
+  // factory returns — the full logo must still render (it must NOT be
+  // collapsed by the default false).
+  component.setExpanded(false);
+  const full = component.render(96).join("\n");
+  expect(full).toContain("Welcome");
+  expect(full).toContain("pico");
+  expect(full).not.toContain("✻");
+
+  // Expanding tool output (Ctrl+O → setExpanded(true)) collapses to one line.
+  component.setExpanded(true);
+  const collapsed = component.render(96).join("\n");
+  expect(collapsed).toContain("✻");
+  expect(collapsed).not.toContain("Welcome");
+});
