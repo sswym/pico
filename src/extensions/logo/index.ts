@@ -24,7 +24,7 @@ import type {
   ExtensionAPI,
   ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { closeSync, openSync, readSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { Spacer, Text, Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import pkg from "../../../package.json" with { type: "json" };
@@ -77,12 +77,21 @@ export interface SessionSummary {
 
 function sessionLabelFromFile(file: string, dir: string): string {
   try {
-    const firstLine = readFileSync(join(dir, file), "utf-8").split("\n")[0];
-    if (firstLine) {
-      const parsed = JSON.parse(firstLine) as { cwd?: string };
-      if (typeof parsed?.cwd === "string" && parsed.cwd.length > 0) {
-        return basename(parsed.cwd);
+    // Session files can be MBs long (large tool results) — only the first
+    // line is needed for the label, so read a bounded head.
+    const fd = openSync(join(dir, file), "r");
+    try {
+      const buf = Buffer.alloc(4096);
+      const n = readSync(fd, buf, 0, 4096, 0);
+      const firstLine = buf.subarray(0, Math.max(0, n)).toString("utf-8").split("\n")[0];
+      if (firstLine) {
+        const parsed = JSON.parse(firstLine) as { cwd?: string };
+        if (typeof parsed?.cwd === "string" && parsed.cwd.length > 0) {
+          return basename(parsed.cwd);
+        }
       }
+    } finally {
+      closeSync(fd);
     }
   } catch {
     // Unreadable/empty session file: fall back to the timestamp prefix.
@@ -111,6 +120,28 @@ export function hasAnySession(dir = picoSessionDir()): boolean {
   } catch {
     return false;
   }
+}
+
+// ── Render-cache ───────────────────────────────────────────────────────────
+
+const SESSION_CACHE_TTL_MS = 5_000;
+let sessionsCache: { firstRun: boolean; recent: SessionSummary[]; at: number } | null = null;
+
+/**
+ * Session info is computed on EVERY header render frame (streaming output +
+ * activity ticks re-render multiple times per second) — readdirSync/statSync
+ * per frame is wasteful and full-file reads for the first line are worse.
+ * Cache for a few seconds; invalidate on session_start.
+ */
+export function cachedSessionInfo(now = Date.now()): { firstRun: boolean; recent: SessionSummary[] } {
+  if (sessionsCache && now - sessionsCache.at < SESSION_CACHE_TTL_MS) return sessionsCache;
+  const info = { firstRun: !hasAnySession(), recent: recentSessions(2) };
+  sessionsCache = { ...info, at: now };
+  return info;
+}
+
+export function invalidateSessionCacheForTests(): void {
+  sessionsCache = null;
 }
 
 /**
@@ -199,10 +230,7 @@ export const logoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             (tui as { terminal?: { columns?: number } } | undefined)?.terminal?.columns ?? width;
           container.addChild(
             new Text(
-              renderLogoHeader(theme, effectiveWidth, currentCtx, {
-                firstRun: !hasAnySession(),
-                recent: recentSessions(2),
-              }),
+              renderLogoHeader(theme, effectiveWidth, currentCtx, cachedSessionInfo()),
               1,
               0,
             ),
@@ -216,6 +244,7 @@ export const logoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   };
 
   pi.on("session_start", (_event, ctx) => {
+    sessionsCache = null;
     currentCtx = ctx;
     install(ctx);
   });

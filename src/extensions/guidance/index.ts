@@ -118,10 +118,25 @@ function readMarker(): LastSessionMarker | null {
 /**
  * A marker written by the CURRENT process (a session switch inside one
  * run, e.g. /new or resume) is not a crash — only a marker left by an
- * earlier process counts.
+ * earlier process counts. With multiple pico instances sharing one
+ * PICO_HOME, a concurrent instance's marker must also not read as a crash:
+ * probe whether the writing process is still alive first.
  */
 function isStaleMarker(marker: LastSessionMarker): boolean {
-  return marker.pid !== process.pid;
+  if (marker.pid === process.pid) return false;
+  if (marker.pid !== undefined) {
+    try {
+      // Signal 0 is a permission-free liveness probe.
+      process.kill(marker.pid, 0);
+      // Alive → another instance is running, not a crash.
+      return false;
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === "EPERM") return false; // exists but owned by another user
+      // ESRCH → the writer is gone → stale marker.
+    }
+  }
+  return true;
 }
 
 function writeMarker(marker: LastSessionMarker): void {
@@ -211,10 +226,12 @@ export const guidanceExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     }
   });
 
-  // A clean quit clears the marker; every other shutdown path (kill,
-  // crash, SIGKILL) leaves it in place for the next startup to detect.
+  // A clean quit clears the marker — but only when it is OUR marker: another
+  // concurrent instance's marker must survive this instance's quit.
   pi.on("session_shutdown", (event) => {
-    if (event.reason === "quit") clearMarker();
+    if (event.reason !== "quit") return;
+    const marker = readMarker();
+    if (marker?.pid === process.pid) clearMarker();
   });
 
   // ---- provider contract error guidance --------------------------------

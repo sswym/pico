@@ -152,8 +152,13 @@ function getCachedGitStatus(cwd: string, requestRender?: () => void): GitStatus 
       // newer one replaced it) while git was running — don't let a stale
       // result repopulate the cache.
       if (pendingGitStatusByCwd.get(cwd) !== tracked) return;
-      const next = { ...(result ?? emptyGitStatus()), timestamp: Date.now() };
-      cachedGitStatusByCwd.set(cwd, next);
+      if (result) {
+        const next = { ...result, timestamp: Date.now() };
+        cachedGitStatusByCwd.set(cwd, next);
+      }
+      // Timeout/killed git (slow repos, NFS, index.lock) must NOT freeze an
+      // empty status into the cache — the next render retries instead of
+      // showing a permanently empty branch line.
       pendingGitStatusByCwd.delete(cwd);
       requestRender?.();
     });

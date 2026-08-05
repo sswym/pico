@@ -31,6 +31,10 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.on("tool_execution_start", (event: ToolExecutionStartEvent) => activity.beginTool(event.toolName));
   pi.on("tool_execution_end", () => activity.endTool());
   pi.on("agent_end", () => activity.finish());
+  // If a session dies mid-phase (interrupt, crash recovery), agent_end may
+  // never fire — reset the tracker so no stale timer/sink leaks into the
+  // next session. finish() is idempotent when already idle.
+  pi.on("session_shutdown", () => activity.finish());
 
   pi.on("session_start", async (_event, ctx) => {
     activity.attach((message) => ctx.ui.setWorkingMessage(message));

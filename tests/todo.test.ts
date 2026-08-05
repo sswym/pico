@@ -100,3 +100,31 @@ test("allLists returns one entry per non-empty session", () => {
   store.commit("b", [{ content: "y", activeForm: "ying", status: "pending" }]);
   expect(store.allLists()).toHaveLength(2);
 });
+
+test("plan-mode collapse is restored when the mode exits", () => {
+  const {
+    collapseTodoWidget,
+    restoreTodoWidget,
+    resetTodoWidgetStateForTests,
+    __getTodoWidgetStateForTests,
+  } = require("../src/extensions/todo/widget.ts") as typeof import("../src/extensions/todo/widget.ts");
+  resetTodoWidgetStateForTests();
+  const ctx = {
+    sessionManager: { getSessionId: () => "s1" },
+    hasUI: true,
+    ui: { setStatus: () => {}, requestRender: () => {} },
+  };
+  try {
+    collapseTodoWidget(ctx as never);
+    const collapsed = __getTodoWidgetStateForTests("s1");
+    expect(collapsed?.collapsed).toBe(true);
+    expect(collapsed?.visible).toBe(false);
+
+    restoreTodoWidget(ctx as never);
+    const restored = __getTodoWidgetStateForTests("s1");
+    expect(restored?.collapsed).toBe(false);
+    expect(restored?.visible).toBe(true);
+  } finally {
+    resetTodoWidgetStateForTests();
+  }
+});

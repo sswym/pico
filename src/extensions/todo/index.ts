@@ -13,13 +13,14 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
-import { subscribeExtensionEvent } from "../events.ts";
+import { subscribeSessionExtensionEvent } from "../events.ts";
 import { formatTodoList, TODO_DESCRIPTION, TODO_PROMPT } from "./prompt.ts";
 import { TodoWriteParams } from "./schema.ts";
 import { TodoStore } from "./store.ts";
 import {
   clearTodoWidget,
   collapseTodoWidget,
+  restoreTodoWidget,
   ensureTodoWidget,
   registerTodoShortcut,
   removeTodoWidgetState,
@@ -143,10 +144,12 @@ export const todoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
   // Plan mode suspends the todo panel: entering plan mode collapses it so
   // the stale in-flight task list does not sit above the plan discussion,
-  // and exiting restores it for the execution phase.
-  subscribeExtensionEvent("plan_mode_changed", ({ active }) => {
-    if (!active || !lastSessionCtx) return;
-    collapseTodoWidget(lastSessionCtx);
+  // and exiting restores it for the execution phase. Session-scoped: /reload
+  // re-runs the factory, so the subscription must not accumulate.
+  subscribeSessionExtensionEvent("plan_mode_changed", ({ active }) => {
+    if (!lastSessionCtx) return;
+    if (active) collapseTodoWidget(lastSessionCtx);
+    else restoreTodoWidget(lastSessionCtx);
   });
 
   // Switching/forking sessions clears only the active session's transient list.

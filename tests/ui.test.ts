@@ -106,3 +106,20 @@ test("icons and ellipsis are single-width glyphs", () => {
     expect(icon).toHaveLength(1);
   }
 });
+
+test("sanitizeTerminalText strips ANSI and control sequences", () => {
+  const { sanitizeTerminalText } = require("../src/extensions/ui/rendering.ts") as typeof import("../src/extensions/ui/rendering.ts");
+  expect(sanitizeTerminalText("plain text")).toBe("plain text");
+  expect(sanitizeTerminalText("\x1b[31mred\x1b[0m")).toBe("red");
+  expect(sanitizeTerminalText("\x1b]0;fake title\x07body")).toBe("body");
+  expect(sanitizeTerminalText("a\x1bb")).toBe("ab");
+  expect(sanitizeTerminalText("tab\there")).toBe("tab\there");
+});
+
+test("truncateWithEllipsis never splits a surrogate pair", () => {
+  const { truncateWithEllipsis } = require("../src/extensions/ui/rendering.ts") as typeof import("../src/extensions/ui/rendering.ts");
+  const emoji = "a".repeat(20) + "😀";
+  const out = truncateWithEllipsis(emoji, 10);
+  expect(out.includes("\ud83d")).toBe(false); // no lone high surrogate
+  expect(out.endsWith("…")).toBe(true);
+});

@@ -15,15 +15,20 @@ export const TodoStatus = Type.Union([
 
 export const TodoItem = Type.Object({
   content: Type.String({
+    minLength: 1,
+    maxLength: 200,
     description: "Imperative form describing the task. Example: 'Run tests'.",
   }),
   activeForm: Type.String({
+    minLength: 1,
+    maxLength: 400,
     description:
       "Present-continuous form shown while the task is in_progress. Example: 'Running tests'.",
   }),
   status: TodoStatus,
   id: Type.Optional(
     Type.String({
+      maxLength: 64,
       description:
         "Stable identifier. Provide on first add to keep the same task across updates; auto-assigned otherwise.",
     }),

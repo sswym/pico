@@ -148,3 +148,16 @@ test("renderToolCallText shows an expand hint when a single line is truncated", 
   expect(text).toContain("a very…");
   expect(text).toMatch(/to expand/i);
 });
+
+test("renderToolResultText strips ANSI sequences from tool output", () => {
+  const { renderToolResultText } = require("../src/extensions/tool-render.ts") as typeof import("../src/extensions/tool-render.ts");
+  const text = renderToolResultText(
+    { content: [{ type: "text", text: "line1\n\x1b[31mred\x1b[0m\x1b]0;title\x07" }], details: {} },
+    { expanded: true, isPartial: false },
+    plainTheme,
+    { lastComponent: undefined },
+  );
+  const rendered = renderedText(text as unknown as { render: (width: number) => string[] });
+  expect(rendered).not.toContain("\x1b");
+  expect(rendered).toContain("red");
+});

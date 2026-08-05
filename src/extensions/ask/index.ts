@@ -189,9 +189,17 @@ export const askExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             `Question "${offending}" combines preview options with multiSelect. preview is single-select only.`,
           );
         }
+        const seenQuestions = new Set<string>();
         for (const question of params.questions) {
           const labelError = validateQuestionLabels(question);
           if (labelError) return errorResult(labelError);
+          // Answers are keyed by the question text — duplicates would
+          // silently overwrite each other in the result payload.
+          const key = question.question.trim();
+          if (seenQuestions.has(key)) {
+            return errorResult(`Duplicate question text: "${question.question}". Use unique question text.`);
+          }
+          seenQuestions.add(key);
         }
 
         const answers: AskAnswers = {};

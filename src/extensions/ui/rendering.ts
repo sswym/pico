@@ -17,8 +17,28 @@ export const UI_ICONS = {
 } as const;
 
 export function truncateWithEllipsis(text: string, maxLength: number): string {
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}${ELLIPSIS}`;
+  // Split by code points, not UTF-16 units: slicing raw units can split a
+  // surrogate pair and render a lone half-emoji.
+  const chars = Array.from(text);
+  if (chars.length <= maxLength) return text;
+  return `${chars.slice(0, Math.max(0, maxLength - 1)).join("").trimEnd()}${ELLIPSIS}`;
+}
+
+/**
+ * Strip ANSI/control sequences from untrusted tool output before it reaches
+ * the terminal. Tool results (MCP server output, file contents via LSP,
+ * memory text) can contain ESC sequences that would drive the terminal —
+ * OSC 52 clipboard overwrite, title changes, cursor moves, fake UI. Mirrors
+ * upstream's sanitizeBinaryOutput for built-in tools.
+ */
+export function sanitizeTerminalText(text: string): string {
+  return text
+    // OSC sequences: ESC ] ... (BEL | ESC \) — titles, clipboard, hyperlinks
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    // CSI sequences: ESC [ params intermediates final — colors, cursor, modes
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    // Remaining C0 controls (incl. lone ESC) and DEL
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 
 export function renderToolTitle(theme: Theme, toolName: string, summary?: string): string {

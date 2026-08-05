@@ -45,6 +45,11 @@ export function resetTodoWidgetStateForTests(): void {
   states.clear();
 }
 
+/** Test-only: inspect the widget state machine for a session key. */
+export function __getTodoWidgetStateForTests(sessionKey: string): TodoWidgetState | undefined {
+  return states.get(sessionKey);
+}
+
 export { summarizeTodos };
 
 function visibleTodoWindow(todos: Todo[]): { todos: Todo[]; start: number; hiddenBefore: number; hiddenAfter: number } {
@@ -153,6 +158,18 @@ export function collapseTodoWidget(ctx: ExtensionContext): void {
   const state = getState(session);
   state.collapsed = true;
   state.visible = false;
+  requestRender(session);
+}
+
+/**
+ * Restore the panel that collapseTodoWidget suspended (plan mode exit).
+ */
+export function restoreTodoWidget(ctx: ExtensionContext): void {
+  if (!hasInteractiveUi(ctx)) return;
+  const session = sessionKey(ctx);
+  const state = getState(session);
+  state.collapsed = false;
+  state.visible = true;
   requestRender(session);
 }
 

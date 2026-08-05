@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -72,6 +72,41 @@ export function writeInputHistory(entries: string[], path = picoInputHistoryPath
   renameSync(tmpPath, path);
 }
 
+const TRIM_LOCK_STALE_MS = 30_000;
+
+/**
+ * Serialize the read-modify-write trim across pico instances sharing one
+ * history file (mkdir is atomic). Returns a release function, or null when
+ * another instance holds the lock — the append already succeeded, so the
+ * trim is simply skipped and the next append tries again.
+ */
+function tryAcquireTrimLock(path: string): (() => void) | null {
+  const lockDir = `${path}.trim-lock`;
+  const acquire = (): (() => void) | null => {
+    try {
+      mkdirSync(lockDir);
+      return () => {
+        try { rmSync(lockDir, { recursive: true, force: true }); } catch {}
+      };
+    } catch {
+      return null;
+    }
+  };
+  const release = acquire();
+  if (release) return release;
+  // Lock held by a crashed instance — break it once it looks stale.
+  try {
+    const st = statSync(lockDir);
+    if (Date.now() - st.mtimeMs > TRIM_LOCK_STALE_MS) {
+      rmSync(lockDir, { recursive: true, force: true });
+      return acquire();
+    }
+  } catch {
+    // Lock dir vanished between the failed mkdir and the stat — treat as free.
+  }
+  return null;
+}
+
 export function appendInputHistory(text: string, path = picoInputHistoryPath(), limit = DEFAULT_LIMIT): void {
   const normalized = normalizeHistoryText(text);
   if (!normalized) return;
@@ -82,11 +117,19 @@ export function appendInputHistory(text: string, path = picoInputHistoryPath(), 
   appendFileSync(path, `${JSON.stringify({ text: normalized })}\n`, { encoding: "utf-8", mode: 0o600 });
   try {
     // Trim to the newest `limit` entries once the file grows past the cap.
-    // The trim is best-effort: a concurrent writer may interleave, which is
-    // acceptable since the file stays valid JSONL either way.
-    const raw = readFileSync(path, "utf-8");
-    if (raw.split("\n").filter((line) => line.trim().length > 0).length > limit) {
-      writeInputHistory(parseHistoryFile(raw, limit), path, limit);
+    // The trim is a read-modify-write, so it must be serialized against other
+    // instances' trims (a concurrent trim's rename would clobber this one's
+    // entries). The lock is best-effort: a missed trim just leaves the file
+    // slightly over the cap until the next append.
+    const release = tryAcquireTrimLock(path);
+    if (!release) return;
+    try {
+      const raw = readFileSync(path, "utf-8");
+      if (raw.split("\n").filter((line) => line.trim().length > 0).length > limit) {
+        writeInputHistory(parseHistoryFile(raw, limit), path, limit);
+      }
+    } finally {
+      release();
     }
   } catch {
     // Read-back is best-effort; the append itself already succeeded.

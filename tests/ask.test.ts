@@ -348,3 +348,22 @@ describe("askExtension execute()", () => {
     await expect(run).rejects.toThrow(/cancelled/i);
   });
 });
+
+test("duplicate question texts are rejected instead of overwriting each other", async () => {
+  const tool = await loadAskTool();
+  const fake = makeUi({});
+  await expect(
+    tool.execute(
+      "t1",
+      {
+        questions: [
+          { question: "Pick A?", options: [{ label: "x", description: "" }, { label: "y", description: "" }] },
+          { question: "Pick A?", options: [{ label: "z", description: "" }] },
+        ],
+      },
+      undefined,
+      undefined,
+      fake.ctx,
+    ),
+  ).rejects.toThrow(/Duplicate question text/);
+});

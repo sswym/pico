@@ -7,6 +7,7 @@ import {
 import {
   renderExpandHint,
   renderToolTitle,
+  sanitizeTerminalText,
   truncateWithEllipsis,
 } from "./ui/rendering.ts";
 
@@ -120,8 +121,8 @@ export function renderToolCallText(
   options?: { collapsedLines?: number; collapsedLineLength?: number },
 ): Text {
   const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-  const serialized = (stringifyValue(args) ?? "").trim();
-  const summary = summarizeToolCall(toolName, args);
+  const serialized = sanitizeTerminalText((stringifyValue(args) ?? "").trim());
+  const summary = sanitizeTerminalText(summarizeToolCall(toolName, args));
   const title = renderToolTitle(theme, toolName, summary);
   if (!serialized) {
     text.setText(title);
@@ -158,14 +159,18 @@ export function renderToolResultText(
     return text;
   }
 
+  // Tool output is not trusted (MCP servers, file contents, memory) — strip
+  // ANSI/control sequences so it can never drive the terminal.
+  const clean = sanitizeTerminalText(output);
+
   const color = context.isError ? "error" : "toolOutput";
   if (options.expanded) {
-    text.setText(`\n${theme.fg(color, output)}`);
+    text.setText(`\n${theme.fg(color, clean)}`);
     return text;
   }
 
   const { preview, hiddenLines, truncatedLine } = previewText(
-    output,
+    clean,
     renderOptions?.collapsedLines ?? DEFAULT_COLLAPSED_LINES,
     renderOptions?.collapsedLineLength ?? DEFAULT_COLLAPSED_LINE_LENGTH,
   );
