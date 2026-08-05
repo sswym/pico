@@ -27,7 +27,6 @@ import {
 } from "./schema.ts";
 import {
   ASK_DESCRIPTION,
-  ASK_GUIDELINES,
   ASK_PROMPT_SNIPPET,
   ASK_TOOL_PROMPT,
 } from "./prompt.ts";
@@ -190,7 +189,7 @@ export const askExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       label: "Ask",
       description: ASK_DESCRIPTION,
       promptSnippet: ASK_PROMPT_SNIPPET,
-      promptGuidelines: ASK_GUIDELINES,
+      promptGuidelines: [ASK_TOOL_PROMPT],
       parameters: AskUserQuestionParams,
       renderCall(args, theme, context) {
         return renderToolCallText("askUserQuestion", args, theme, context);
@@ -258,5 +257,4 @@ export const askExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 };
 
 export default askExtension;
-export { ASK_TOOL_PROMPT };
 export { AskUserQuestionParams } from "./schema.ts";

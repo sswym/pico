@@ -152,9 +152,6 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         "Long-term memory for durable user prefs, project decisions, failures, corrections, insights, and reusable facts.",
         `Actions: add | search | probe | list | update | remove | feedback | related | reason | contradict | note_add | note_list | note_replace | note_remove.`,
         "Categories: " + CATEGORY_LIST + ".",
-        "Call `search` BEFORE answering questions about the user or project.",
-        "Call `add` whenever the user shares something they would expect you to remember.",
-        "Call `feedback` after using a fact (helpful=true) to lift its trust score.",
         "Call `related(entity=...)` to find facts related to an entity.",
         "Call `reason(entities=[...])` to find facts linking multiple entities.",
         "Call `contradict()` to surface potentially contradictory facts.",
@@ -165,11 +162,9 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       ].join(" "),
       promptSnippet:
         "memory(action) — long-term fact store; search before answering, add proactively.",
-      promptGuidelines: [
-        "Call `memory(action=\"search\", query=...)` when the user asks something whose answer might depend on previously remembered preferences or project decisions.",
-        `When the user states a durable preference (\"I prefer X\", \"we use Y\", \"never Z\", \"that didn't work\", \"actually use W instead\"), call \`memory(action=\"add\")\` with an appropriate category (${CATEGORY_LIST}).`,
-        "When you cite a stored fact, mention its id like `(memory:#42)` so the user can audit or correct it.",
-      ],
+      // Usage guidance (when to search/add/feedback, how to cite facts) lives
+      // in src/prompts/memory-tool.md and is injected into the system prompt
+      // via systemPromptBlock() — the md is the single source of truth.
       parameters: MemoryParams,
       renderCall(args, theme, context) {
         return renderToolCallText("memory", args, theme, context);
