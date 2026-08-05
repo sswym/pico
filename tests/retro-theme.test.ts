@@ -13,25 +13,29 @@ import {
   renderPrimaryStatusLine,
 } from "../src/extensions/retro-theme/footer.ts";
 import { retroThemeExtension } from "../src/extensions/retro-theme/index.ts";
-import retroTheme from "../src/theme/retro-terminal.json" with { type: "json" };
+import claudeCodeDarkTheme from "../src/theme/claude-code-dark.json" with { type: "json" };
 
 const plainTheme = {
   fg: (_color: string, text: string) => text,
   bold: (text: string) => text,
 };
 
-test("retro theme uses powerline-footer inspired color scheme", () => {
-  expect(retroTheme.vars.pink).toBe("#d787af");
-  expect(retroTheme.vars.amber).toBe("#febc38");
-  expect(retroTheme.vars.teal).toBe("#00afaf");
-  expect(retroTheme.colors.borderMuted).toBe("warmMuted");
-  expect(retroTheme.colors.thinkingOff).toBe("inputGray");
-  expect(retroTheme.colors.thinkingMinimal).toBe("inputGray");
-  // Input-box border color doubles as a thinking-level indicator; all levels
-  // intentionally share one color (the footer already shows the level).
-  for (const key of ["thinkingLow", "thinkingMedium", "thinkingHigh", "thinkingXhigh", "thinkingMax"] as const) {
-    expect((retroTheme.colors as Record<string, string>)[key]).toBe("inputGray");
-  }
+test("claude code dark theme uses the Claude color system", () => {
+  expect(claudeCodeDarkTheme.name).toBe("claude-code-dark");
+  expect(claudeCodeDarkTheme.vars.bgPrimary).toBe("#151413");
+  expect(claudeCodeDarkTheme.vars.bgSecondary).toBe("#1d1b19");
+  expect(claudeCodeDarkTheme.vars.claudeAccent).toBe("#d19a66");
+  expect(claudeCodeDarkTheme.colors.accent).toBe("claudeAccent");
+  expect(claudeCodeDarkTheme.colors.border).toBe("border");
+  expect(claudeCodeDarkTheme.colors.text).toBe("textPrimary");
+  expect(claudeCodeDarkTheme.colors.success).toBe("success");
+  expect(claudeCodeDarkTheme.colors.error).toBe("error");
+  expect(claudeCodeDarkTheme.colors.warning).toBe("warning");
+  expect(claudeCodeDarkTheme.colors.bashMode).toBe("claudeAccent");
+  expect(claudeCodeDarkTheme.colors.thinkingMax).toBe("claudeAccentHover");
+  // Diff context and code blocks stay quiet so the accent only marks action.
+  expect(claudeCodeDarkTheme.colors.toolDiffContext).toBe("textMuted");
+  expect(claudeCodeDarkTheme.colors.mdCodeBlock).toBe("syntaxText");
 });
 
 function fakeCtx(overrides: Record<string, unknown> = {}) {
@@ -305,5 +309,5 @@ test("retroThemeExtension installs theme, working indicator, and footer", async 
     getContextUsage: () => ({ tokens: 0, percent: 0, contextWindow: 200000 }),
   });
 
-  expect(calls).toEqual(["theme:retro-terminal", "indicator", "widget:pico-primary-status", "footer"]);
+  expect(calls).toEqual(["theme:claude-code-dark", "indicator", "widget:pico-primary-status", "footer"]);
 });

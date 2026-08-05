@@ -1,21 +1,21 @@
 /**
- * retro-theme extension — applies a Claude Code‑inspired warm‑dark colour
- * scheme with purple/orange accents, and customizes the working indicator.
+ * retro-theme extension — applies pico's Claude Code dark colour scheme and
+ * customizes the working indicator.
  *
  * Applies the theme on session_start by:
- *   1. Syncing the bundled retro-terminal.json to the custom themes
- *      directory (~/.pico/agent/themes/) so pi's discovery can find it.
- *   2. Calling ctx.ui.setTheme("retro-terminal") which loads it via the
- *      theme discovery system (getCustomThemeInfos → loadThemeJson).
+ *   1. Syncing the bundled claude-code-dark.json to the custom themes directory
+ *      (~/.pico/agent/themes/) so pi's discovery can find it.
+ *   2. Calling ctx.ui.setTheme("claude-code-dark") which loads it via the theme
+ *      discovery system (getCustomThemeInfos → loadThemeJson).
  */
-import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type {
   ExtensionAPI,
   ExtensionFactory,
   ToolExecutionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import retroTheme from "../../theme/retro-terminal.json" with { type: "json" };
+import claudeCodeDarkTheme from "../../theme/claude-code-dark.json" with { type: "json" };
 import { picoAgentHome } from "../paths.ts";
 import { installClaudeLikeFooter } from "./footer.ts";
 import { ActivityTracker } from "./activity.ts";
@@ -50,9 +50,12 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       if (!existsSync(themeDir)) {
         mkdirSync(themeDir, { recursive: true });
       }
+      for (const staleTheme of ["carbon.json", "titanium.json", "retro-terminal.json", "quiet-slate.json"]) {
+        rmSync(join(themeDir, staleTheme), { force: true });
+      }
       writeFileSync(
-        join(themeDir, "retro-terminal.json"),
-        JSON.stringify(retroTheme, null, 2),
+        join(themeDir, "claude-code-dark.json"),
+        JSON.stringify(claudeCodeDarkTheme, null, 2),
         "utf-8",
       );
     } catch {
@@ -61,17 +64,17 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       // The theme may still apply from a previously written copy.
     }
 
-    // ── Apply the retro-terminal theme by name ───────────────────────
-    // Now the file is in place, pi's loadTheme("retro-terminal") will
-    // find it via getCustomThemeInfos scan.
-    const result = ctx.ui.setTheme("retro-terminal");
+    // ── Apply the Claude Code dark theme by name ──────────────────────
+    // Now the file is in place, pi's loadTheme("claude-code-dark") will find it
+    // via getCustomThemeInfos scan.
+    const result = ctx.ui.setTheme("claude-code-dark");
     if (!result.success) {
       // Edge case: first run race with extension init. Retry once.
-      ctx.ui.setTheme("retro-terminal");
+      ctx.ui.setTheme("claude-code-dark");
     }
 
     // ── Custom working indicator: subtle pulse ───────────────────────
-    // A two-frame pulse using the Claude-purple accent.
+    // A two-frame pulse using the theme accent.
     ctx.ui.setWorkingIndicator({
       frames: [
         ctx.ui.theme.fg("dim", "·"),

@@ -113,7 +113,7 @@ auxiliary:
     provider: zen-openai
     model: mimo-v2.5-free
 theme:
-  dark: retro-terminal
+  dark: claude-code-dark
 defaultThinkingLevel: high
 quietStartup: true
 defaultProvider: zen-openai
@@ -155,7 +155,7 @@ test("detectConfigYmlSafetyConflicts flags keys that differ from settings.json",
     const agentDir = join(home, "agent");
     mkdirSync(agentDir, { recursive: true });
     // settings.json has NO safety section — the config.yml values are inert.
-    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "retro-terminal" }));
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "claude-code-dark" }));
     writeFileSync(join(agentDir, "config.yml"), REAL_STYLE_CONFIG_YML);
 
     const conflicts = detectConfigYmlSafetyConflicts();
