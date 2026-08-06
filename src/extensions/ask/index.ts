@@ -79,7 +79,11 @@ function decorateLabel(opt: AskOptionInput): string {
   let label = parts.join(" · ");
   if (opt.preview) {
     const flat = opt.preview.replace(/\s+/g, " ").trim();
-    const preview = flat.length > PREVIEW_MAX_CHARS ? `${flat.slice(0, PREVIEW_MAX_CHARS)}…` : flat;
+    // Slice by code points, not UTF-16 units: a raw slice can split a
+    // surrogate pair and render a lone half-emoji in the option label.
+    const preview = Array.from(flat).length > PREVIEW_MAX_CHARS
+      ? `${Array.from(flat).slice(0, PREVIEW_MAX_CHARS).join("")}…`
+      : flat;
     label = `${label}${PREVIEW_SUFFIX}\n${preview}`;
   }
   return label;

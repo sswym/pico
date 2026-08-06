@@ -140,10 +140,6 @@ export function cachedSessionInfo(now = Date.now()): { firstRun: boolean; recent
   return info;
 }
 
-export function invalidateSessionCacheForTests(): void {
-  sessionsCache = null;
-}
-
 /**
  * Build the rendered header string. Exposed for testing — the live
  * extension wraps this in a Text component via setHeader().

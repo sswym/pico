@@ -30,11 +30,11 @@ export function ok(text: string, details?: LspDetails) {
 	return { content: [{ type: TEXT, text }], details: details ?? { success: true } };
 }
 
-export function fail(text: string, _details?: LspDetails): never {
+export function fail(text: string, _details?: LspDetails, cause?: unknown): never {
 	// Throwing is the only way the agent loop learns a tool call failed — a
 	// returned isError flag is dropped upstream and the failure would render
 	// as a success.
-	throw new Error(text);
+	throw new Error(text, cause === undefined ? undefined : { cause });
 }
 
 const LSP_READONLY_ACTIONS = new Set<Action>([

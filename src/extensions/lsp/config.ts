@@ -16,6 +16,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname, extname } from "node:path";
 import defaultServers from "./defaults.json" with { type: "json" };
 import { picoLspConfigPath } from "../paths.ts";
+import { allowProjectLsp } from "../policy.ts";
 
 // ── Config types ──────────────────────────────────────────────────────────
 
@@ -114,27 +115,29 @@ export function loadConfig(workspaceRoot: string): LspConfig {
     }
   }
 
-  // Merge project-level config
-  const projectConfigPath = join(workspaceRoot, ".pico", "lsp.json");
-  const projectConfig = parseJsonFile(projectConfigPath);
-  if (projectConfig) {
-    // Apply additions/overrides from project config
-    merged = { ...merged, ...parseServerMap(projectConfig as Record<string, unknown>) };
-    // Remove servers explicitly disabled in project config
-    for (const [name, value] of Object.entries(projectConfig)) {
-      if (
-        typeof value === "object" && value !== null &&
-        (value as Record<string, unknown>)["disabled"] === true &&
-        name in merged
-      ) {
-        delete merged[name];
+  // Merge project-level config (opt-in: safety-gated like project MCP/hooks)
+  if (allowProjectLsp()) {
+    const projectConfigPath = join(workspaceRoot, ".pico", "lsp.json");
+    const projectConfig = parseJsonFile(projectConfigPath);
+    if (projectConfig) {
+      // Apply additions/overrides from project config
+      merged = { ...merged, ...parseServerMap(projectConfig as Record<string, unknown>) };
+      // Remove servers explicitly disabled in project config
+      for (const [name, value] of Object.entries(projectConfig)) {
+        if (
+          typeof value === "object" && value !== null &&
+          (value as Record<string, unknown>)["disabled"] === true &&
+          name in merged
+        ) {
+          delete merged[name];
+        }
       }
-    }
-    if (typeof projectConfig["idleTimeoutMs"] === "number") {
-      idleTimeoutMs = projectConfig["idleTimeoutMs"] as number;
-    }
-    if (typeof projectConfig["formatOnWrite"] === "boolean") {
-      formatOnWrite = projectConfig["formatOnWrite"] as boolean;
+      if (typeof projectConfig["idleTimeoutMs"] === "number") {
+        idleTimeoutMs = projectConfig["idleTimeoutMs"] as number;
+      }
+      if (typeof projectConfig["formatOnWrite"] === "boolean") {
+        formatOnWrite = projectConfig["formatOnWrite"] as boolean;
+      }
     }
   }
 
@@ -258,11 +261,6 @@ export function getPrimaryServerForFile(config: LspConfig, filePath: string): [s
   return servers[0] ?? null;
 }
 
-/** Get all server names that handle the given file type, for diagnostics. */
-export function getAllServersForFile(config: LspConfig, filePath: string): Array<[string, LspServerConfig]> {
-  return getServersForFile(config, filePath);
-}
-
 /**
  * Detect which servers to start based on workspace root markers.
  * Returns all servers whose rootMarkers match the workspace.
@@ -300,7 +298,7 @@ export function detectServers(config: LspConfig, workspaceRoot: string): Array<[
     const exts = new Set(serverConfig.fileTypes.map(e => e.startsWith(".") ? e : `.${e}`));
     fileCounts.set(name, countFiles(workspaceRoot, exts, 0));
   }
-  result.sort(([aName, a], [bName, b]) => {
+  result.sort(([aName], [bName]) => {
     return (fileCounts.get(bName) ?? 0) - (fileCounts.get(aName) ?? 0);
   });
   return result;

@@ -14,10 +14,6 @@ export type Settings = Record<string, unknown>;
 /** Set when settings.json exists but failed to parse. */
 let settingsDamaged = false;
 
-export function __resetSettingsDamagedForTests(): void {
-  settingsDamaged = false;
-}
-
 /** True when settings.json exists but is unreadable — writes must be refused. */
 export function isSettingsDamaged(): boolean {
   return settingsDamaged;

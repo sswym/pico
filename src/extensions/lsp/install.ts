@@ -161,11 +161,6 @@ function getAvailableManagers(): Set<PackageManager> {
   return m;
 }
 
-/** Reset cached detection (for testing). */
-export function resetDetection(): void {
-  detectedManagers = null;
-}
-
 // ── Public API ────────────────────────────────────────────────────────────
 
 /**

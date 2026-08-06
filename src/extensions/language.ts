@@ -15,13 +15,32 @@ import { isSettingsDamaged, readSettings, writeSettings } from "./settings.ts";
 
 const DEFAULT_LANGUAGE = "简体中文";
 const LANGUAGE_MAX_LENGTH = 64;
+/** How long the parsed language stays valid before re-reading settings.json. */
+const LANGUAGE_CACHE_TTL_MS = 10_000;
+
+// before_agent_start fires on every agent turn — cache the parsed language
+// instead of re-reading settings.json from disk each time. The cache is
+// refreshed by the /language write path, so changes apply immediately.
+let cachedLanguage: string | null = null;
+let cachedLanguageAt = 0;
 
 function readLanguage(): string {
-  const settings = readSettings();
-  if (typeof settings.language === "string" && settings.language.trim()) {
-    return settings.language.trim();
+  if (cachedLanguage !== null && Date.now() - cachedLanguageAt < LANGUAGE_CACHE_TTL_MS) {
+    return cachedLanguage;
   }
-  return DEFAULT_LANGUAGE;
+  const settings = readSettings();
+  const language = typeof settings.language === "string" && settings.language.trim()
+    ? settings.language.trim()
+    : DEFAULT_LANGUAGE;
+  cachedLanguage = language;
+  cachedLanguageAt = Date.now();
+  return language;
+}
+
+/** Test-only hook: drop the cached language so the next read hits disk again. */
+export function __resetLanguageCacheForTests(): void {
+  cachedLanguage = null;
+  cachedLanguageAt = 0;
 }
 
 export const languageExtension: ExtensionFactory = (pi: ExtensionAPI) => {
@@ -68,6 +87,10 @@ export const languageExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         const settings = readSettings();
         settings.language = value;
         writeSettings(settings);
+        // Keep the cache in sync so the next agent turn sees the new language
+        // without waiting out the TTL.
+        cachedLanguage = value;
+        cachedLanguageAt = Date.now();
 
         ctx.ui.notify(`Language set to: ${value}`, "info");
       } catch (err) {

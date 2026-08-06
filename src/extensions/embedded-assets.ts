@@ -39,5 +39,3 @@ export function getEmbeddedKeys(prefix: string): string[] {
   return Object.keys(_embedded).filter((k) => k.startsWith(prefix));
 }
 
-/** True when running inside a compiled binary with embedded assets. */
-export const isEmbedded = () => _embedded !== null;

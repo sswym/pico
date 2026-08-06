@@ -150,26 +150,6 @@ export function compressSkillsInSystemPrompt(prompt: string, opts: BuildSystemPr
   return prompt.replace(verbose, compressed);
 }
 
-export function stripSessionOverviewChurn(prompt: string): string {
-  const startTag = "<session-overview>";
-  const endTag = "</session-overview>";
-  const startIdx = prompt.indexOf(startTag);
-  if (startIdx === -1) return prompt;
-
-  const endIdx = prompt.indexOf(endTag, startIdx + startTag.length);
-  if (endIdx === -1) return prompt;
-
-  const before = prompt.slice(0, startIdx + startTag.length);
-  const inner = prompt.slice(startIdx + startTag.length, endIdx);
-  const after = prompt.slice(endIdx);
-  const cleaned = inner
-    .replace(/\n## RECENT COMMITS\n[\s\S]*?(?=\n## |$)/, "")
-    .replace(/\nWorking directory:[^\n]*/g, "")
-    .replace(/\nLine count:[^\n]*/g, "");
-
-  return before + cleaned + after;
-}
-
 function buildStableCandidates(opts: BuildSystemPromptOptions): string[] {
   const candidates: string[] = [];
   if (opts.customPrompt) candidates.push(opts.customPrompt);
@@ -360,8 +340,7 @@ export const cacheOptimizerExtension = (pi: ExtensionAPI): void => {
   pi.on("before_agent_start", (event, ctx) => {
     if (optimizerDisabled() || promptRewriteDisabled() || shouldBypassPromptRewrite(ctx.model)) return {};
 
-    const stripped = stripSessionOverviewChurn(event.systemPrompt);
-    const compressed = compressSkillsInSystemPrompt(stripped, event.systemPromptOptions);
+    const compressed = compressSkillsInSystemPrompt(event.systemPrompt, event.systemPromptOptions);
     const optimized = optimizeSystemPrompt(compressed, event.systemPromptOptions);
 
     if (optimized.changed && optimized.systemPrompt.trim()) {

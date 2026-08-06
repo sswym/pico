@@ -25,8 +25,6 @@ export interface JsonRpcResponse {
   error?: { code: number; message: string; data?: unknown };
 }
 
-export type JsonRpcMessage = JsonRpcRequest | JsonRpcNotification | JsonRpcResponse;
-
 // ── LSP basic structures ──────────────────────────────────────────────────
 
 export interface Position {
@@ -163,17 +161,6 @@ export interface WorkspaceSymbol {
 
 // ── Code Action ───────────────────────────────────────────────────────────
 
-export enum CodeActionKind {
-  QuickFix = "quickfix",
-  Refactor = "refactor",
-  RefactorExtract = "refactor.extract",
-  RefactorInline = "refactor.inline",
-  RefactorRewrite = "refactor.rewrite",
-  Source = "source",
-  SourceOrganizeImports = "source.organizeImports",
-  SourceFixAll = "source.fixAll",
-}
-
 export interface CodeActionContext {
   diagnostics: Diagnostic[];
   only?: string[];
@@ -250,18 +237,6 @@ export interface FileRename {
 export interface FileRenameEvent {
   oldUri: string;
   newUri: string;
-}
-
-export interface WillRenameFilesParams {
-  files: FileRename[];
-}
-
-export interface DidRenameFilesParams {
-  files: FileRename[];
-}
-
-export interface WorkspaceSymbolParams {
-  query: string;
 }
 
 export interface ApplyResult {

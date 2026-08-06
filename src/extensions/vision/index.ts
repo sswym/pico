@@ -56,7 +56,7 @@ export function createVisionExtension(deps: VisionAnalyzeDeps = defaultVisionDep
             const message = error instanceof Error ? error.message : String(error);
             // Throw so the failure is marked as an error upstream (a returned
             // isError flag is dropped by the agent loop).
-            throw new Error(`visionAnalyze failed: ${message}`);
+            throw new Error(`visionAnalyze failed: ${message}`, { cause: error });
           }
         },
       }),
@@ -99,6 +99,16 @@ export function createVisionExtension(deps: VisionAnalyzeDeps = defaultVisionDep
 
       // Per-image try/catch: one failing image must not discard the analyses
       // that already succeeded — keep them and append a failure note.
+      const count = event.images.length;
+      try {
+        pi.sendMessage({
+          customType: "pico.vision.progress",
+          content: `Analyzing ${count} attached image${count === 1 ? "" : "s"} with the auxiliary vision model…`,
+          display: true,
+        });
+      } catch {
+        // non-TUI mode may drop custom messages
+      }
       const results: Array<{ analysis: string; model: string; provider: string }> = [];
       const failures: string[] = [];
       for (const image of event.images) {

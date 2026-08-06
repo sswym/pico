@@ -8,6 +8,7 @@ import {
   ELLIPSIS,
   renderExpandHint,
   renderToolTitle,
+  sanitizeTerminalText,
 } from "../ui/rendering.ts";
 import type { FetchedPage } from "./fetch.ts";
 import type { SearchInput, SearchResult } from "./search.ts";
@@ -29,7 +30,7 @@ const SEARCH_COLLAPSED_RESULTS = 3;
 function textOutput(result: AgentToolResult<unknown>): string {
   return result.content
     .filter((c): c is { type: "text"; text: string } => c.type === "text" && typeof c.text === "string")
-    .map((c) => c.text)
+    .map((c) => sanitizeTerminalText(c.text))
     .join("\n");
 }
 
@@ -68,7 +69,7 @@ export function formatWebFetchDisplay(
     const status = details.status ? `status ${details.status}` : "fetched";
     const truncated = details.truncated ? ", truncated" : "";
     const contentType = details.contentType ? `, ${details.contentType.split(";")[0]}` : "";
-    return `\n${theme.fg("toolOutput", `${status}: ${details.url}${contentType}${truncated}`)}\n${expandHint}`;
+    return `\n${theme.fg("toolOutput", sanitizeTerminalText(`${status}: ${details.url}${contentType}${truncated}`))}\n${expandHint}`;
   }
 
   const preview = firstNonEmptyLines(output, 2).join("\n");
@@ -106,7 +107,7 @@ export function formatWebSearchDisplay(
     lines.push(`${ELLIPSIS} ${remaining} more results`);
   }
 
-  return `\n${theme.fg("toolOutput", lines.join("\n"))}\n${expandHint}`;
+  return `\n${theme.fg("toolOutput", sanitizeTerminalText(lines.join("\n")))}\n${expandHint}`;
 }
 
 export function renderWebFetchCall(

@@ -71,6 +71,7 @@ export const CAPABILITIES: readonly CapabilityDescriptor[] = [
 export interface SafetySettings {
   enableProjectHooks?: boolean;
   enableProjectMcp?: boolean;
+  enableProjectLsp?: boolean;
   allowUnattendedPlanApproval?: boolean;
   allowLspFormatOnWrite?: boolean;
 }
@@ -107,6 +108,8 @@ export function readSafetySettings(): SafetySettings {
   if (enableProjectHooks !== undefined) settings.enableProjectHooks = enableProjectHooks;
   const enableProjectMcp = readSafetyValue(raw, "enableProjectMcp");
   if (enableProjectMcp !== undefined) settings.enableProjectMcp = enableProjectMcp;
+  const enableProjectLsp = readSafetyValue(raw, "enableProjectLsp");
+  if (enableProjectLsp !== undefined) settings.enableProjectLsp = enableProjectLsp;
   const allowUnattendedPlanApproval = readSafetyValue(raw, "allowUnattendedPlanApproval");
   if (allowUnattendedPlanApproval !== undefined) settings.allowUnattendedPlanApproval = allowUnattendedPlanApproval;
   const allowLspFormatOnWrite = readSafetyValue(raw, "allowLspFormatOnWrite");
@@ -159,6 +162,12 @@ export function safetyStatuses(): SafetyFlagStatus[] {
       enabled: allowProjectMcp(),
       source: safetyFlagSource("PICO_ENABLE_PROJECT_MCP", "enableProjectMcp"),
     },
+    {
+      envName: "PICO_ENABLE_PROJECT_LSP",
+      settingsKey: "enableProjectLsp",
+      enabled: allowProjectLsp(),
+      source: safetyFlagSource("PICO_ENABLE_PROJECT_LSP", "enableProjectLsp"),
+    },
   ];
 }
 
@@ -176,6 +185,10 @@ export function allowProjectHooks(): boolean {
 
 export function allowProjectMcp(): boolean {
   return safetyFlag("PICO_ENABLE_PROJECT_MCP", "enableProjectMcp");
+}
+
+export function allowProjectLsp(): boolean {
+  return safetyFlag("PICO_ENABLE_PROJECT_LSP", "enableProjectLsp");
 }
 
 /**

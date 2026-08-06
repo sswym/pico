@@ -64,7 +64,21 @@ export interface PreparedWorktrees {
 	);
 
 	// Create a named branch in the worktree for easy identification
-	execSync(`git checkout -b "${branchName}"`, { cwd: worktreeDir, stdio: "pipe" });
+	try {
+		execSync(`git checkout -b "${branchName}"`, { cwd: worktreeDir, stdio: "pipe" });
+	} catch (err) {
+		// Partial failure: `worktree add` registered the worktree, but the
+		// branch check failed. The handle is never returned, so
+		// prepareParallelWorktrees' cleanup pass cannot reach it — remove the
+		// worktree here (rmSync fallback) before rethrowing, or the git
+		// registration and /tmp dir leak.
+		try {
+			execSync(`git worktree remove "${worktreeDir}" --force`, { cwd, stdio: "pipe" });
+		} catch {
+			try { fs.rmSync(worktreeDir, { recursive: true, force: true }); } catch {}
+		}
+		throw err;
+	}
 
 	const handle: WorktreeHandle = {
 		worktreeDir,

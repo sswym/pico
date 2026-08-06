@@ -55,7 +55,7 @@ bun run bin/pico.ts --help     # 查看所有上游标志
 | --- | --- | --- |
 | [README.md](README.md) | 所有人 | 本页：是什么、快速开始、文档入口 |
 | [docs/user-guide.md](docs/user-guide.md) | 使用者 | 全部功能的完整用法手册（记忆/子代理/todo/plan/web/LSP/MCP/hooks…） |
-| [docs/pico-intro.md](docs/pico-intro.md) | 零基础大众 | 科普介绍：项目是什么、怎么运作（含流程图） |
+| [docs/srcode-intro.md](docs/srcode-intro.md) | 零基础大众 | 科普介绍：项目是什么、怎么运作（含流程图） |
 | [docs/internal-tech-review.md](docs/internal-tech-review.md) | 团队内部 | 架构、核心实现、踩坑记录、已知局限、部署运维要点 |
 | [AGENTS.md](AGENTS.md) | 开发者 | 开发约定：命令、架构、测试规范、编辑注意事项 |
 

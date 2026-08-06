@@ -24,6 +24,7 @@ import {
   webSearch,
   type SearchResult,
 } from "../src/extensions/web/search.ts";
+import { webExtension } from "../src/extensions/web/index.ts";
 
 const realFetch = globalThis.fetch;
 const plainTheme = {
@@ -535,6 +536,73 @@ describe("web tool TUI rendering", () => {
       "Ctrl+O to expand",
     );
     expect(expanded).toContain("large page body should be hidden");
+  });
+
+  test("renders external content with ANSI/OSC sequences stripped", () => {
+    const evil = "\x1b]52;c;Y2xpcGJvYXJk\x07\x1b[31mred\x1b[0m";
+    const fetchResult = {
+      content: [{ type: "text" as const, text: evil }],
+      details: { status: 200, url: "https://docs.test/page", truncated: false, contentType: "text/html" },
+    };
+    const expanded = formatWebFetchDisplay(
+      fetchResult,
+      { expanded: true, isPartial: false },
+      plainTheme,
+      false,
+      "hint",
+    );
+    expect(expanded).not.toContain("\x1b");
+    expect(expanded).toContain("red"); // content survives, escape sequences gone
+
+    const searchResult = {
+      content: [{ type: "text" as const, text: "x" }],
+      details: {
+        count: 1,
+        results: [
+          { title: "\x1b[32mgreen", url: "https://a.test/\x1b]0;evil\x07", snippet: "\x1b[35mp" },
+        ],
+      },
+    };
+    const collapsed = formatWebSearchDisplay(
+      searchResult,
+      { expanded: false, isPartial: false },
+      plainTheme,
+      false,
+      "hint",
+    );
+    expect(collapsed).not.toContain("\x1b");
+    expect(collapsed).toContain("green");
+    expect(collapsed).toContain("https://a.test/");
+  });
+});
+
+describe("webFetch tool execute", () => {
+  function makeFakePi() {
+    const tools = new Map<string, any>();
+    return {
+      tools,
+      registerTool: (tool: any) => tools.set(tool.name, tool),
+    };
+  }
+
+  test("4xx/5xx responses throw instead of returning isError", async () => {
+    const fakePi = makeFakePi();
+    webExtension(fakePi as any);
+    const tool = fakePi.tools.get("webFetch");
+
+    globalThis.fetch = (async () => new Response("<html><body>Not Found</body></html>", {
+      status: 404,
+      statusText: "Not Found",
+      headers: { "content-type": "text/html" },
+    })) as unknown as typeof fetch;
+
+    await expect(
+      tool.execute("t", { url: "https://example.test/missing" }, undefined),
+    ).rejects.toMatchObject({
+      message: "webFetch failed: HTTP 404 Not Found",
+      // Page details stay available on the thrown error's cause.
+      cause: { status: 404, url: "https://example.test/missing" },
+    });
   });
 });
 

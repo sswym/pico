@@ -5,7 +5,6 @@ import {
   formatSkillsForPrompt,
   optimizeProviderPayload,
   optimizeSystemPrompt,
-  stripSessionOverviewChurn,
 } from "../src/extensions/cache-optimizer/index.ts";
 
 type FakeHandler = (event: any, ctx: any) => any;
@@ -52,29 +51,6 @@ beforeEach(() => {
 
 afterEach(() => {
   process.env = { ...savedEnv };
-});
-
-test("strips per-turn churn from session overview", () => {
-  const prompt = [
-    "base",
-    "<session-overview>",
-    "## CURRENT TASK",
-    "Ship cache optimizer",
-    "Working directory: 4 uncommitted files",
-    "Line count: 31 / 2000",
-    "## RECENT COMMITS",
-    "- abc noisy commit",
-    "</session-overview>",
-    "tail",
-  ].join("\n");
-
-  const result = stripSessionOverviewChurn(prompt);
-
-  expect(result).toContain("## CURRENT TASK");
-  expect(result).toContain("Ship cache optimizer");
-  expect(result).not.toContain("Working directory:");
-  expect(result).not.toContain("Line count:");
-  expect(result).not.toContain("RECENT COMMITS");
 });
 
 test("compresses verbose skill block into deterministic index", () => {

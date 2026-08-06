@@ -329,10 +329,24 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
         const backupPath = backupFactsBeforeClear(facts);
         if (backupPath) lines.push(`Backup saved to ${backupPath}`);
         if (projectOnly) {
+          let removed = 0;
+          let failed = 0;
           for (const f of facts) {
-            if (f.scope !== "global") manager.remove(f.fact_id);
+            if (f.scope !== "global") {
+              try {
+                manager.remove(f.fact_id);
+                removed++;
+              } catch {
+                failed++;
+              }
+            }
           }
-          lines.push(`Cleared project-scoped memory (${facts.filter((f) => f.scope !== "global").length} facts removed).`);
+          const total = removed + failed;
+          lines.push(
+            failed > 0
+              ? `Cleared project-scoped memory (${removed} of ${total} facts removed, ${failed} failed).`
+              : `Cleared project-scoped memory (${total} facts removed).`,
+          );
         } else {
           manager.clear();
           curated.clear();

@@ -172,6 +172,17 @@ export class FactRetriever {
     const queryTokens = jaccardTokens(expandedQuery);
     const idfAvailable = candidates.some((c) => c.tfidf_vector && c.tfidf_vector !== "{}");
 
+    // The query vector is fact-independent — build it once outside the
+    // candidate loop instead of re-tokenizing/expanding per fact (previously
+    // repeated the same pure computation for every candidate).
+    const qVec: SparseVector = {};
+    if (idfAvailable) {
+      const expanded = expandQuery(filterStopwords(tokenize(query)));
+      for (const { term, weight } of expanded) {
+        qVec[term] = (qVec[term] ?? 0) + weight / expanded.length;
+      }
+    }
+
     const scored: ScoredFact[] = [];
     for (const fact of candidates) {
       const contentTokens = jaccardTokens(fact.content);
@@ -184,13 +195,6 @@ export class FactRetriever {
       let tfidfSim = 0.5;
       if (idfAvailable && fact.tfidf_vector && fact.tfidf_vector !== "{}") {
         const factVec = vectorFromJson(fact.tfidf_vector);
-        // Expand query with synonyms/aliases so paraphrases still match.
-        const queryTerms = filterStopwords(tokenize(query));
-        const expanded = expandQuery(queryTerms);
-        const qVec: SparseVector = {};
-        for (const { term, weight } of expanded) {
-          qVec[term] = (qVec[term] ?? 0) + weight / expanded.length;
-        }
         tfidfSim = cosineSimilarity(qVec, factVec);
       }
 
@@ -419,6 +423,11 @@ export class FactRetriever {
       factEntities.get(er.fact_id)?.add(er.name.toLowerCase());
     }
 
+    // Tokenize each fact's content ONCE — jaccardTokens is O(content length)
+    // and was previously re-run for every compared pair (O(n²) tokenizations).
+    const contentTokens = new Map<number, Set<string>>();
+    for (const row of rows) contentTokens.set(row.fact_id, jaccardTokens(row.content));
+
     const contradictions: ContradictionResult[] = [];
 
     for (let i = 0; i < rows.length; i++) {
@@ -433,7 +442,7 @@ export class FactRetriever {
         const entityOverlap = jaccardSimilarity(ents1, ents2);
         if (entityOverlap < 0.3) continue;
 
-        const contentSim = jaccardSimilarity(jaccardTokens(f1.content), jaccardTokens(f2.content));
+        const contentSim = jaccardSimilarity(contentTokens.get(f1.fact_id)!, contentTokens.get(f2.fact_id)!);
         const contradictionScore = entityOverlap * (1.0 - contentSim);
 
         if (contradictionScore >= threshold) {

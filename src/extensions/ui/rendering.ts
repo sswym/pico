@@ -42,6 +42,14 @@ export function sanitizeTerminalText(text: string): string {
     .replace(/\x1b_[^\x1b]*(?:\x1b\\)/gs, "")
     // CSI sequences: ESC [ params intermediates final — colors, cursor, modes
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    // Single-char ESC sequences: save/restore cursor (7/8), keypad (=/>),
+    // line feed/index (D/E/M), full reset (c), SS2/SS3 (N/O), DECBI/FI (6/9),
+    // and a DCS starter (P) that never got its terminator.
+    .replace(/\x1b[=>6789DECHMcNOP]/g, "")
+    // Two-byte ESC sequences: ESC intermediate final — charset selection
+    // ("(B", "(0"), line attributes (#8), keypad remaps. Without this pass
+    // the leftovers render as garbage like "(B" / "(0" in the TUI.
+    .replace(/\x1b[()*+\-./#=>][A-Za-z0-9]/g, "")
     // Remaining C0 controls (incl. lone ESC) and DEL
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }

@@ -18,7 +18,6 @@ import type {
   Location,
   LocationLink,
   Position,
-  PublishDiagnosticsParams,
   ServerCapabilities,
   ServerConfig,
   SymbolInformation,
@@ -56,10 +55,15 @@ const HEADER_SEP = Buffer.from("\r\n\r\n");
 // The `m` flag lets Content-Length appear on any header line, not just the
 // first — some servers emit Content-Type before Content-Length.
 const CONTENT_LENGTH_RE = /^Content-Length:\s*(\d+)/im;
+// A malicious/buggy server declaring a huge Content-Length (or emitting
+// unbounded unframed output) must not make the client buffer forever.
+const MAX_MESSAGE_SIZE = 64 * 1024 * 1024; // 64MB declared body
+const MAX_BUFFER_SIZE = MAX_MESSAGE_SIZE + 1024 * 1024; // + header slack
 
 class FramedReader {
   private buf = Buffer.alloc(0);
 
+  /** Throws on protocol violations that would otherwise buffer without bound. */
   feed(chunk: Buffer): Buffer[] {
     this.buf = Buffer.concat([this.buf, chunk]);
     const bodies: Buffer[] = [];
@@ -78,10 +82,18 @@ class FramedReader {
         continue;
       }
       const len = parseInt(match[1], 10);
+      if (len > MAX_MESSAGE_SIZE) {
+        throw new Error(`Content-Length ${len} exceeds the 64MB limit`);
+      }
       const bodyStart = sepIdx + HEADER_SEP.length;
       if (this.buf.length < bodyStart + len) break;
       bodies.push(this.buf.subarray(bodyStart, bodyStart + len));
       this.buf = this.buf.subarray(bodyStart + len);
+    }
+    // No complete frame and no header separator — the bytes are unframed
+    // garbage. Drop the connection once they exceed the cap.
+    if (this.buf.length > MAX_BUFFER_SIZE) {
+      throw new Error(`Unframed server output exceeds the 64MB buffer limit`);
     }
     return bodies;
   }
@@ -534,7 +546,16 @@ export class LspClient {
   }
 
   private onStdout(chunk: Buffer): void {
-    const bodies = this.reader.feed(chunk);
+    let bodies: Buffer[];
+    try {
+      bodies = this.reader.feed(chunk);
+    } catch (err) {
+      // A runaway Content-Length or unbounded unframed output must not be
+      // buffered forever — tear the connection down instead.
+      const msg = err instanceof Error ? err.message : String(err);
+      this.destroy(new LspError(`LSP protocol violation: ${msg}`));
+      return;
+    }
     for (const body of bodies) {
       let msg: Record<string, unknown>;
       try {
@@ -624,6 +645,19 @@ export class LspClient {
         handler(uri, diagnostics as Diagnostic[]);
       }
     }
+  }
+
+  /** Hard-tear-down after a fatal protocol error: kill the process and fail
+   *  every in-flight request. Unlike shutdown(), no graceful handshake. */
+  private destroy(err: LspError): void {
+    const proc = this.process;
+    this._ready = false;
+    this.status = "error";
+    this.process = null;
+    if (proc) {
+      try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+    }
+    this.rejectAll(err);
   }
 
   private rejectAll(err: LspError): void {

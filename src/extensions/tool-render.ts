@@ -46,12 +46,6 @@ function truncateByWidth(text: string, maxWidth: number): string {
   return `${out.join("").trimEnd()}…`;
 }
 
-function collapseLine(line: string, maxLength: number): string {
-  const clean = line.trimEnd();
-  if (clean.length <= maxLength) return clean;
-  return truncateWithEllipsis(clean, maxLength);
-}
-
 function getObjectValue(value: unknown, key: string): unknown {
   if (!value || typeof value !== "object") return undefined;
   return (value as Record<string, unknown>)[key];

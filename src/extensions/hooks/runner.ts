@@ -107,22 +107,26 @@ function truncate(s: string): string {
 
 async function readAll(stream: ReadableStream<Uint8Array> | undefined | null): Promise<string> {
   if (!stream) return "";
-  // Read incrementally and stop at the cap — `new Response(stream).text()`
+  // Read incrementally and stop accumulating at the cap — `new Response(stream).text()`
   // would materialize the whole stream first, so a 120s `yes` run could
   // still accumulate hundreds of MB before truncation.
   const reader = stream.getReader();
   const decoder = new TextDecoder("utf-8");
   let out = "";
+  let capped = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (capped) continue;
       out += decoder.decode(value, { stream: true });
       if (Buffer.byteLength(out, "utf8") >= TRUNCATE_BYTES) {
-        // Stop consuming and cancel the stream so the writer sees a broken
-        // pipe instead of buffering indefinitely.
-        await reader.cancel().catch(() => {});
-        break;
+        // Past the cap, keep draining (discarding) instead of cancelling:
+        // cancelling the read end makes the writer hit EPIPE/SIGPIPE, so a
+        // hook whose output merely exceeded the cap would report a failure
+        // exit code (141) for a command that succeeded. A runaway writer is
+        // still bounded by the hook timeout, which kills the process group.
+        capped = true;
       }
     }
   } catch {
@@ -209,5 +213,3 @@ export async function runHook(hook: Hook, vars: HookVars, cwd?: string): Promise
     if (timer) clearTimeout(timer);
   }
 }
-
-export const HOOK_TRUNCATE_BYTES = TRUNCATE_BYTES;

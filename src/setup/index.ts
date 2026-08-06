@@ -470,7 +470,7 @@ export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
       if (!meta) continue;
       const settings = readJson(picoSettingsPath());
       if (!options.reconfigure && options.quick && meta.isConfigured(settings)) {
-        printSectionSummary(io, language, meta, settings);
+        printSectionSummary(io, meta, settings);
         continue;
       }
       await runSection(meta.key, prompt, io);
@@ -707,7 +707,7 @@ function printSetupIntro(io: SetupIo, language: SetupLanguage): void {
   writeLine(io, "");
 }
 
-function printSectionSummary(io: SetupIo, language: SetupLanguage, meta: SetupSectionMeta, settings: JsonObject): void {
+function printSectionSummary(io: SetupIo, meta: SetupSectionMeta, settings: JsonObject): void {
   const summary = meta.summary(settings);
   if (summary) {
     writeLine(io, `${meta.title}: ${summary}`);
@@ -1082,7 +1082,7 @@ function hasLspSection(_settings: JsonObject): boolean {
   return existsSync(picoLspConfigPath());
 }
 
-function summarizeLspSection(settings: JsonObject): string | undefined {
+function summarizeLspSection(): string | undefined {
   const config = readJson(picoLspConfigPath());
   const bits: string[] = [];
   if (typeof config.formatOnWrite === "boolean") bits.push(`formatOnWrite=${config.formatOnWrite ? "on" : "off"}`);
@@ -1415,9 +1415,4 @@ function printHeader(io: SetupIo, title: string): void {
 
 function writeLine(io: SetupIo, line: string): void {
   io.output.write(`${line}\n`);
-}
-
-export function __resetSetupFilesForTests(): void {
-  rmSync(picoSettingsPath(), { force: true });
-  rmSync(picoModelsPath(), { force: true });
 }

@@ -19,7 +19,7 @@ import {
   type ExtractableMessage,
 } from "./extract.ts";
 import { formatRecallBlock, systemPromptBlock } from "./prompt.ts";
-import { type MemoryWriteMetadata, type MemoryProvider } from "./provider.ts";
+import { type MemoryProvider } from "./provider.ts";
 import { clearSessionExtensionSubscriptions, subscribeSessionExtensionEvent } from "../events.ts";
 import { MemoryStore } from "./store.ts";
 import { CuratedMemoryStore } from "./curated-store.ts";
@@ -102,6 +102,17 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // A corrupt memory DB must not block startup silently: surface the
   // recovery notice to the user on the first session_start.
   let recoveryNoticeShown = false;
+  // manager.count() is a SQLite COUNT on every before_agent_start — cache it
+  // briefly; a few-seconds-stale header number is harmless.
+  let factCountCache: { at: number; value: number } | null = null;
+  const FACT_COUNT_TTL_MS = 5_000;
+  const cachedFactCount = (): number => {
+    const now = Date.now();
+    if (factCountCache && now - factCountCache.at < FACT_COUNT_TTL_MS) return factCountCache.value;
+    const value = manager.count();
+    factCountCache = { at: now, value };
+    return value;
+  };
   // Register delegation hook for subagent completion tracking.
   // Session-scoped: /reload re-runs the factory, so the subscription must not
   // accumulate across reloads (see clearSessionExtensionSubscriptions).
@@ -251,7 +262,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       });
       const recallBlock = buildMemoryContextBlock(formatRecallBlock(recall));
       const extras = [
-        systemPromptBlock(manager.count()),
+        systemPromptBlock(cachedFactCount()),
         curated.formatForSystemPrompt(),
         recallBlock,
       ].filter((s) => s.length > 0).join("\n\n");

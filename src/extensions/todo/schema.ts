@@ -43,4 +43,3 @@ export const TodoWriteParams = Type.Object({
 });
 
 export type Todo = Static<typeof TodoItem>;
-export type TodoWriteInput = Static<typeof TodoWriteParams>;

@@ -12,6 +12,9 @@ import { isFailedResult, type SingleResult } from "./results.ts";
 
 const EVIDENCE_TIMEOUT_MS = 60_000;
 const EVIDENCE_OUTPUT_CAP = 500;
+/** Cap on evidence commands per acceptance gate — frontmatter is
+ *  project-controlled and could list hundreds of unbounded commands. */
+const MAX_EVIDENCE_ITEMS = 20;
 /** Memory cap for in-flight evidence output — keeps a runaway `yes`-style
  *  command from accumulating unbounded strings during the 60s window
  *  (EVIDENCE_OUTPUT_CAP only truncates the returned value). */
@@ -223,7 +226,9 @@ export async function checkAcceptanceGate(
 	onEvidence?: (index: number, total: number, command: string) => void,
 ): Promise<GateResult> {
 	const evidenceResults: GateResult["evidenceResults"] = [];
-	const evidence = acceptance.evidence ?? [];
+	// Keep the first MAX_EVIDENCE_ITEMS commands only — a runaway evidence
+	// list would otherwise run each command serially (up to 60s each).
+	const evidence = (acceptance.evidence ?? []).slice(0, MAX_EVIDENCE_ITEMS);
 	const total = evidence.length;
 
 	for (const [i, ev] of evidence.entries()) {

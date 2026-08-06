@@ -110,37 +110,44 @@ function tryAcquireTrimLock(path: string): (() => void) | null {
 export function appendInputHistory(text: string, path = picoInputHistoryPath(), limit = DEFAULT_LIMIT): void {
   const normalized = normalizeHistoryText(text);
   if (!normalized) return;
-  mkdirSync(dirname(path), { recursive: true });
-  // Append a single JSONL line: small single-line writes are atomic on POSIX,
-  // so concurrent instances no longer drop entries via the old read-modify-
-  // write race. { mode: 0o600 } only applies on first creation — a file left
-  // at 0644 by an older version or a concurrent writer stays world-readable,
-  // so repair the mode here (history contains pasted prompts, possibly keys).
+  // History is a convenience, the user's prompt is not: a write failure
+  // (read-only dir, disk full) must never throw out of onSubmit and drop the
+  // message. Everything below is best-effort.
   try {
-    const mode = statSync(path).mode & 0o777;
-    if ((mode & 0o077) !== 0) chmodSync(path, 0o600);
-  } catch {
-    // File does not exist yet — appendFileSync below creates it with 0o600.
-  }
-  appendFileSync(path, `${JSON.stringify({ text: normalized })}\n`, { encoding: "utf-8", mode: 0o600 });
-  try {
-    // Trim to the newest `limit` entries once the file grows past the cap.
-    // The trim is a read-modify-write, so it must be serialized against other
-    // instances' trims (a concurrent trim's rename would clobber this one's
-    // entries). The lock is best-effort: a missed trim just leaves the file
-    // slightly over the cap until the next append.
-    const release = tryAcquireTrimLock(path);
-    if (!release) return;
+    mkdirSync(dirname(path), { recursive: true });
+    // Append a single JSONL line: small single-line writes are atomic on POSIX,
+    // so concurrent instances no longer drop entries via the old read-modify-
+    // write race. { mode: 0o600 } only applies on first creation — a file left
+    // at 0644 by an older version or a concurrent writer stays world-readable,
+    // so repair the mode here (history contains pasted prompts, possibly keys).
     try {
-      const raw = readFileSync(path, "utf-8");
-      if (raw.split("\n").filter((line) => line.trim().length > 0).length > limit) {
-        writeInputHistory(parseHistoryFile(raw, limit), path, limit);
-      }
-    } finally {
-      release();
+      const mode = statSync(path).mode & 0o777;
+      if ((mode & 0o077) !== 0) chmodSync(path, 0o600);
+    } catch {
+      // File does not exist yet — appendFileSync below creates it with 0o600.
     }
-  } catch {
-    // Read-back is best-effort; the append itself already succeeded.
+    appendFileSync(path, `${JSON.stringify({ text: normalized })}\n`, { encoding: "utf-8", mode: 0o600 });
+    try {
+      // Trim to the newest `limit` entries once the file grows past the cap.
+      // The trim is a read-modify-write, so it must be serialized against other
+      // instances' trims (a concurrent trim's rename would clobber this one's
+      // entries). The lock is best-effort: a missed trim just leaves the file
+      // slightly over the cap until the next append.
+      const release = tryAcquireTrimLock(path);
+      if (!release) return;
+      try {
+        const raw = readFileSync(path, "utf-8");
+        if (raw.split("\n").filter((line) => line.trim().length > 0).length > limit) {
+          writeInputHistory(parseHistoryFile(raw, limit), path, limit);
+        }
+      } finally {
+        release();
+      }
+    } catch {
+      // Read-back is best-effort; the append itself already succeeded.
+    }
+  } catch (err) {
+    console.warn(`[pico input-history] failed to persist input: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

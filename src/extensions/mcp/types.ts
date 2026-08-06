@@ -53,10 +53,6 @@ export interface McpTool {
   inputSchema?: { type: "object"; properties?: Record<string, unknown>; required?: string[] };
 }
 
-export interface McpListToolsResult {
-  tools: McpTool[];
-}
-
 // ─── MCP Tool Call ─────────────────────────────────────────────────────────
 
 export interface McpTextContent {

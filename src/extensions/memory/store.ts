@@ -7,8 +7,8 @@
  * - Hybrid retrieval via FactRetriever
  */
 import { Database } from "bun:sqlite";
-import { mkdirSync, renameSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import {
   CORRECTED_BOOST,
   CORRECTION_DELTA,
@@ -201,16 +201,43 @@ export class MemoryStore {
     } catch {
       notice += "Backup failed; started with an empty memory.";
     }
+    this._pruneCorruptBackups();
     console.warn(`[pico memory] ${notice}`);
     return notice;
+  }
+
+  /** Stale-bak cleanup window: corrupt backups older than 7 days are dropped. */
+  private static readonly BACKUP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+  /** Delete corrupt backups (db + WAL/SHM sidecars) older than the retention window. */
+  private _pruneCorruptBackups(): void {
+    try {
+      const cutoff = Date.now() - MemoryStore.BACKUP_RETENTION_MS;
+      const dir = dirname(this.dbPath);
+      const prefix = `${basename(this.dbPath)}.corrupt-`;
+      for (const name of readdirSync(dir)) {
+        if (!name.startsWith(prefix)) continue;
+        const full = join(dir, name);
+        const stat = statSync(full);
+        if (stat.mtimeMs < cutoff) rmSync(full, { force: true });
+      }
+    } catch {
+      // best-effort cleanup
+    }
   }
 
   private migrate(): void {
     for (const sql of MIGRATIONS) {
       try {
         this.db.exec(sql);
-      } catch {
-        // ALTER TABLE fails silently if column already exists
+      } catch (err) {
+        // ALTER TABLE fails idempotently when the column already exists —
+        // that's expected on re-opened stores and must stay silent. Anything
+        // else is a real migration failure worth surfacing.
+        const message = err instanceof Error ? err.message : String(err);
+        if (!/duplicate column name/i.test(message)) {
+          console.warn(`[pico memory] migration failed (${sql}): ${message}`);
+        }
       }
     }
   }
@@ -444,8 +471,10 @@ export class MemoryStore {
    */
   search(query: string, opts: SearchOptions = {}): Fact[] {
     // Expand query with synonyms/aliases so paraphrases (TS vs TypeScript)
-    // still match at the FTS5 layer.
-    const expandedQuery = expandQuery(filterStopwords(tokenize(query))).map((e) => e.term).join(" ");
+    // still match at the FTS5 layer. Computed once — both the FTS5 query and
+    // the negation-penalty term list derive from the same expansion.
+    const expanded = expandQuery(filterStopwords(tokenize(query)));
+    const expandedQuery = expanded.map((e) => e.term).join(" ");
     const fts = normaliseFtsQuery(expandedQuery);
     const minTrust = opts.minTrust ?? 0.3;
     const limit = Math.max(1, opts.limit ?? 10);
@@ -456,7 +485,7 @@ export class MemoryStore {
 
     // Negation re-rank: "我不用 bun" must not outrank "we use bun" for a
     // "bun" query just because its trust is higher (2.3.2).
-    const terms = expandQuery(filterStopwords(tokenize(query))).map((e) => normalizeTerm(e.term));
+    const terms = expanded.map((e) => normalizeTerm(e.term));
     const ranked = this._applyNegationPenalty(rows, terms, opts);
     this._bumpRetrieval(ranked);
     return ranked;

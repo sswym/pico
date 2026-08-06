@@ -198,10 +198,13 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         // A model-submitted plan can be arbitrarily large; the approval
         // dialog must not render megabytes of text into the TUI.
         const MAX_SUMMARY_CHARS = 4000;
+        // Slice by code points, not UTF-16 units: a raw slice can split a
+        // surrogate pair and render a lone half-emoji in the dialog.
+        const planChars = Array.from(plan);
         const summary = plan.trim().length === 0
           ? "(plan file is empty)"
-          : plan.length > MAX_SUMMARY_CHARS
-            ? `${plan.slice(0, MAX_SUMMARY_CHARS)}\n…[plan truncated for display — full text stays in ${path}]`
+          : planChars.length > MAX_SUMMARY_CHARS
+            ? `${planChars.slice(0, MAX_SUMMARY_CHARS).join("")}\n…[plan truncated for display — full text stays in ${path}]`
             : plan;
 
         let approved = false;

@@ -7,8 +7,8 @@
  *
  * Lazy server startup on first call. Graceful degradation when no server available.
  */
-import { readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
   defineTool,
@@ -18,13 +18,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
 import { positionToLsp, LspError, COMMAND_NOT_FOUND, type LspClient } from "./client.ts";
-import type { Diagnostic, Location, Position, WorkspaceSymbol } from "./types.ts";
+import type { Diagnostic, WorkspaceSymbol } from "./types.ts";
 import {
   createLspManager,
   ensureServer,
   syncDocumentForFile,
   stopServer,
-  getActiveClients,
   formatHoverResult,
   formatLocations,
   formatDiagnosticsForFile,
@@ -34,7 +33,8 @@ import { resolveFormattingOptions } from "./format-options.ts";
 import { getInstallHint, installServer, formatInstallHint } from "./install.ts";
 import { applyTextEditsToString } from "./edits.ts";
 import { DiagnosticsLedger } from "./diagnostics-ledger.ts";
-import { allowLspFormatOnWrite } from "../policy.ts";
+import { allowLspFormatOnWrite, allowProjectLsp } from "../policy.ts";
+import { sanitizeTerminalText } from "../ui/rendering.ts";
 import {
   normalizeLocations,
   resolveSymbolColumn,
@@ -100,12 +100,6 @@ const warnedMissingCommands = new Set<string>();
  *  "No language server available" (2.5.11). */
 const declinedMissingCommands = new Set<string>();
 
-/** Test hook: clear the once-per-command warning cache. */
-export function __resetWarnedMissingCommandsForTests(): void {
-  warnedMissingCommands.clear();
-  declinedMissingCommands.clear();
-}
-
 function shouldWarnAboutMissingCommand(command: string): boolean {
   if (warnedMissingCommands.has(command)) return false;
   warnedMissingCommands.add(command);
@@ -147,7 +141,6 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
    * would render twice). Real tool/write paths stay loud.
    */
   async function withMissingServerInstall<T>(
-    workspaceRoot: string,
     ctx: ExtensionContext,
     start: () => Promise<T | null>,
     opts?: { quietMissingCommand?: boolean },
@@ -188,7 +181,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       }
       const result = await installServer(cmd!);
       if (!result.ok) {
-        ctx.ui.notify(`Installation failed:\n${result.output}`, "error");
+        ctx.ui.notify(`Installation failed:\n${sanitizeTerminalText(result.output)}`, "error");
         return null;
       }
       ctx.ui.notify(`Installed ${cmd}. Starting language server…`, "info");
@@ -213,7 +206,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     ctx: ExtensionContext,
     opts?: { quietMissingCommand?: boolean },
   ) {
-    return await withMissingServerInstall(workspaceRoot, ctx, () => ensureServer(state, workspaceRoot), opts);
+    return await withMissingServerInstall(ctx, () => ensureServer(state, workspaceRoot), opts);
   }
 
   async function syncDocumentWithInstall(
@@ -221,7 +214,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     filePath: string,
     ctx: ExtensionContext,
   ) {
-    return await withMissingServerInstall(workspaceRoot, ctx, () => syncDocumentForFile(state, workspaceRoot, filePath));
+    return await withMissingServerInstall(ctx, () => syncDocumentForFile(state, workspaceRoot, filePath));
   }
 
   pi.registerTool(
@@ -296,7 +289,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             return ok(formatDiagnosticsForFile(params.file, diags));
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            return fail(`LSP diagnostics failed: ${msg}`);
+            return fail(`LSP diagnostics failed: ${msg}`, undefined, err);
           }
         }
 
@@ -325,7 +318,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               return formatWorkspaceSymbolsResult(params.query, result);
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
-              return fail(`Workspace symbol search failed: ${msg}`);
+              return fail(`Workspace symbol search failed: ${msg}`, undefined, err);
             }
           }
           if (!params.file) return fail("Provide a file path for document symbols, or a query for workspace search.");
@@ -337,7 +330,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             return formatDocumentSymbolsResult(params.file, result);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            return fail(`LSP symbols failed: ${msg}`);
+            return fail(`LSP symbols failed: ${msg}`, undefined, err);
           }
         }
 
@@ -409,7 +402,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           }
         } catch (err) {
           const msg = err instanceof LspError ? err.message : err instanceof Error ? err.message : String(err);
-          return fail(`LSP ${action} failed: ${msg}`, { serverName: doc.client.serverName, action, success: false });
+          return fail(`LSP ${action} failed: ${msg}`, { serverName: doc.client.serverName, action, success: false }, err);
         }
       },
     }),
@@ -546,6 +539,20 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
   pi.on("session_start", async (_event, ctx) => {
     ledger.clear();
+    // A project LSP config that is silently ignored looks like a broken
+    // tool — tell the user the safety switch is off and how to enable it
+    // (mirrors the project MCP pattern).
+    try {
+      const projectPath = join(ctx.cwd ?? "", ".pico", "lsp.json");
+      if (existsSync(projectPath) && !allowProjectLsp()) {
+        ctx.ui.notify(
+          "检测到项目 LSP 配置（.pico/lsp.json），但当前被安全策略禁用。运行 /doctor 查看如何开启（PICO_ENABLE_PROJECT_LSP）。",
+          "warning",
+        );
+      }
+    } catch {
+      // best-effort hint
+    }
     try {
       // Startup warmup is quiet: no missing-command nagging (and no
       // double-rendered early-frame warning) until the user actually
@@ -554,10 +561,31 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       if (client) {
         ctx.ui.setStatus("lsp", `LSP: ${client.serverName} ${client.displayVersion}`.trim());
       }
-    } catch {}
+    } catch (err) {
+      // COMMAND_NOT_FOUND is already handled quietly by
+      // withMissingServerInstall; anything else must not vanish silently.
+      if (!(err instanceof LspError) || err.errorCode !== COMMAND_NOT_FOUND) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[lsp] startup warmup failed: ${msg}`);
+      }
+    }
   });
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
+
+  // A session switch/fork must not carry the old project's server processes
+  // (and their open documents) into the new session — they would serve stale
+  // cwd state and leak until shutdown.
+  pi.on("session_before_switch", async (_event, ctx) => {
+    ctx.ui.setStatus("lsp", undefined);
+    await stopServer(state);
+    return {};
+  });
+  pi.on("session_before_fork", async (_event, ctx) => {
+    ctx.ui.setStatus("lsp", undefined);
+    await stopServer(state);
+    return {};
+  });
 
   pi.on("session_shutdown", async (_event, ctx) => {
     ctx.ui.setStatus("lsp", undefined);

@@ -9,7 +9,6 @@
  * ProviderManager falls back to builtin if this module is unavailable.
  */
 import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync } from "node:fs";
-import { join } from "node:path";
 import {
   type Fact,
   type ScoredFact,

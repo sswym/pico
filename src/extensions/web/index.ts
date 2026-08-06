@@ -15,7 +15,7 @@ import {
   type ExtensionAPI,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import { fetchAndConvert, formatFetchResult } from "./fetch.ts";
+import { fetchAndConvert, formatFetchResult, type FetchedPage } from "./fetch.ts";
 import {
   renderWebFetchCall,
   renderWebFetchResult,
@@ -89,29 +89,34 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       renderCall: renderWebFetchCall,
       renderResult: renderWebFetchResult,
       async execute(_id, params, signal) {
+        let page: FetchedPage;
         try {
-          const page = await fetchAndConvert(params.url, {
+          page = await fetchAndConvert(params.url, {
             signal,
             bypassCache: params.bypass_cache === true,
             allowPrivateNetwork: params.allow_private_network === true,
           });
-          return {
-            content: [{ type: "text" as const, text: formatFetchResult(page, params.prompt) }],
-            details: {
-              status: page.status,
-              url: page.url,
-              truncated: page.truncated,
-              contentType: page.contentType,
-            },
-            // 4xx/5xx are failures, not successful fetches.
-            isError: page.status >= 400,
-          };
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           // Throw so the failure is marked as an error upstream (a returned
           // isError flag is dropped by the agent loop).
-          throw new Error(`webFetch failed: ${msg}`);
+          throw new Error(`webFetch failed: ${msg}`, { cause: e });
         }
+        // 4xx/5xx are failures, not successful fetches — and a returned
+        // isError flag is dropped by the agent loop. The page rides along
+        // as the error cause so the details stay available.
+        if (page.status >= 400) {
+          throw new Error(`webFetch failed: HTTP ${page.status} ${page.statusText}`, { cause: page });
+        }
+        return {
+          content: [{ type: "text" as const, text: formatFetchResult(page, params.prompt) }],
+          details: {
+            status: page.status,
+            url: page.url,
+            truncated: page.truncated,
+            contentType: page.contentType,
+          },
+        };
       },
     }),
   );
@@ -152,7 +157,7 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           const msg = e instanceof Error ? e.message : String(e);
           // Throw so the failure is marked as an error upstream (a returned
           // isError flag is dropped by the agent loop).
-          throw new Error(`webSearch failed: ${msg}`);
+          throw new Error(`webSearch failed: ${msg}`, { cause: e });
         }
       },
     }),

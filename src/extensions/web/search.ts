@@ -138,7 +138,7 @@ async function exaSearch(query: string, max: number, opts: SearchOptions): Promi
     // waiting for EOF (`response.text()`) would time out even after the
     // result event already arrived. Body download stays inside the timeout
     // scope either way.
-    raw = await readBodyUntilParsed(response, timeout.signal);
+    raw = await readBodyUntilParsed(response);
   } finally {
     timeout.cleanup();
   }
@@ -167,7 +167,7 @@ async function exaSearch(query: string, max: number, opts: SearchOptions): Promi
  * Plain JSON resolves at EOF; SSE resolves as soon as a `data:` event parses,
  * even if the connection stays open with heartbeats.
  */
-async function readBodyUntilParsed(response: Response, signal: AbortSignal): Promise<string> {
+async function readBodyUntilParsed(response: Response): Promise<string> {
   if (!response.body) return await response.text();
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8");

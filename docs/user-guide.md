@@ -1,6 +1,6 @@
 # pico 用户手册
 
-> 面向使用者（开发者、项目成员）的功能详解。快速上手请看根目录 `README.md`；对外科普见 `docs/pico-intro.md`；内部技术复盘见 `docs/internal-tech-review.md`。
+> 面向使用者（开发者、项目成员）的功能详解。快速上手请看根目录 `README.md`；对外科普见 `docs/srcode-intro.md`；内部技术复盘见 `docs/internal-tech-review.md`。
 
 ## 目录
 

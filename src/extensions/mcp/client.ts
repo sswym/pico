@@ -23,11 +23,21 @@ const REQUEST_TIMEOUT_MS = 30_000;
 /** initialize covers cold starts (`npx -y` downloads first, then launches). */
 const INITIALIZE_TIMEOUT_MS = 60_000;
 const MAX_DIAGNOSTIC_LINES = 20;
+/** Cap per-line length so a chatty server cannot blow up the /mcp report. */
+const MAX_DIAGNOSTIC_LINE_CHARS = 200;
 /** Bound the unparsed stdout buffer: a chatty/broken server must not exhaust memory. */
 const MAX_STDOUT_BUFFER_BYTES = 1_048_576;
 
+/** Trim long lines and redact secret-looking values (server output can echo config/env). */
+function sanitizeDiagnosticLine(line: string): string {
+  const truncated = line.length > MAX_DIAGNOSTIC_LINE_CHARS
+    ? `${line.slice(0, MAX_DIAGNOSTIC_LINE_CHARS)}…`
+    : line;
+  return truncated.replace(/(api[_-]?key|token|secret|password|passwd)\s*[=:]\s*\S+/gi, "$1=***");
+}
+
 function appendDiagnostic(handle: McpServerHandle, line: string): void {
-  const text = line.trim();
+  const text = sanitizeDiagnosticLine(line).trim();
   if (!text) return;
   const diagnostics = handle.diagnostics ?? [];
   diagnostics.push(text);

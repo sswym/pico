@@ -23,8 +23,12 @@ export function tokenize(text: string): string[] {
   if (!text) return [];
   const normalized = text.toLowerCase().replace(CJK_PUNCT_RE, " ");
   const tokens: string[] = [...(normalized.match(/[\p{Script=Han}]+|[a-z0-9][a-z0-9._/-]*/gu) ?? [])];
-  for (const term of CJK_RETRIEVAL_TERMS) {
-    if (normalized.includes(term)) tokens.push(term);
+  // Every CJK_RETRIEVAL_TERMS entry contains Han characters — a text without
+  // any Han can never match one, so skip the per-term substring scans.
+  if (/\p{Script=Han}/u.test(normalized)) {
+    for (const term of CJK_RETRIEVAL_TERMS) {
+      if (normalized.includes(term)) tokens.push(term);
+    }
   }
   return tokens
     .map((w) => w.replace(/^[.,;:!?"'()[\]{}#@<>]+|[.,;:!?"'()[\]{}#@<>]+$/g, ""))
@@ -57,27 +61,6 @@ export function filterStopwords(tokens: string[]): string[] {
 
 /** Sparse vector: map of term -> weight. */
 export type SparseVector = Record<string, number>;
-
-/** Build IDF map from a corpus of pre-tokenized documents. */
-export function buildIdfMap(corpus: string[][]): Map<string, number> {
-  const n = corpus.length;
-  if (n === 0) return new Map();
-
-  const df = new Map<string, number>();
-  for (const doc of corpus) {
-    const unique = new Set(doc);
-    for (const term of unique) {
-      df.set(term, (df.get(term) ?? 0) + 1);
-    }
-  }
-
-  const idf = new Map<string, number>();
-  for (const [term, count] of df) {
-    // Standard IDF with smoothing
-    idf.set(term, Math.log((n + 1) / (count + 1)) + 1);
-  }
-  return idf;
-}
 
 /** Compute TF-IDF sparse vector for a tokenized document. */
 export function computeTfIdf(tokens: string[], idf: Map<string, number>): SparseVector {

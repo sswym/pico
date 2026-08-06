@@ -168,6 +168,3 @@ export function loadHooks(cwd: string): Hook[] {
   }
   return out;
 }
-
-export const HOOK_TIMEOUT_DEFAULT = TIMEOUT_DEFAULT;
-export const HOOK_TIMEOUT_MAX = TIMEOUT_MAX;

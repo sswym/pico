@@ -232,9 +232,14 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 		proc.stdout.on("data", (data) => {
 			const text = typeof data === "string" ? data : stdoutDecoder.decode(data as Uint8Array, { stream: true });
 			buffer += text;
-			const lines = buffer.split("\n");
-			buffer = lines.pop() || "";
-			for (const line of lines) processLine(line);
+			// Incremental line splitting: re-splitting the whole buffer on
+			// every chunk is O(n²) once output grows; only scan the appended
+			// text for complete lines and keep the trailing partial in buffer.
+			const lastNewline = buffer.lastIndexOf("\n");
+			if (lastNewline === -1) return;
+			const complete = buffer.slice(0, lastNewline);
+			buffer = buffer.slice(lastNewline + 1);
+			for (const line of complete.split("\n")) processLine(line);
 		});
 
 		proc.stderr.on("data", (data) => {

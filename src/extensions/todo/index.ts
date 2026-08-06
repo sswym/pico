@@ -5,7 +5,6 @@
  * list, plus a `/todo` slash command for the user to peek/clear it. State
  * lives in-process (TodoStore) keyed by current session id.
  */
-import { Type } from "@earendil-works/pi-ai";
 import {
   defineTool,
   type ExtensionAPI,

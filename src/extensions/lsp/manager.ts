@@ -4,11 +4,11 @@
  * Uses config.ts to discover and route servers. Each server is spawned lazily
  * when first needed. Supports multiple concurrent servers per file type.
  */
-import { readFileSync, readdirSync, promises as fsPromises } from "node:fs";
+import { readFileSync, promises as fsPromises } from "node:fs";
 import { spawn } from "node:child_process";
 import { join, extname } from "node:path";
 import type { LspServerConfig, LspConfig } from "./config.ts";
-import { loadConfig, getPrimaryServerForFile, getServersForFile, detectServers, resolveCommand, hasRootMarkers } from "./config.ts";
+import { loadConfig, getPrimaryServerForFile, detectServers, resolveCommand, hasRootMarkers } from "./config.ts";
 import { LspClient, locationToDisplay, lspPositionToDisplay, LspError, COMMAND_NOT_FOUND } from "./client.ts";
 
 // ── Runtime state ───────────────────────────────────────────────────────────
@@ -86,11 +86,6 @@ function recordInitFailure(state: LspManagerState, serverName: string, message: 
 
 /** Probe results cached per (command, cwd): warmup runs it on every session. */
 const unsupportedProbeCache = new Map<string, string | null>();
-
-/** Invalidate cached probe results after a successful install. */
-export function resetUnsupportedProbeCache(): void {
-  unsupportedProbeCache.clear();
-}
 
 /**
  * Async probe (2.5.11): the old spawnSync blocked the whole event loop for
@@ -551,24 +546,6 @@ export async function ensureNamedServer(
   return newManaged.client.ready ? newManaged.client : null;
 }
 
-/** Start or reuse the primary server for a specific file path. */
-export async function ensureServerForFile(
-  state: LspManagerState,
-  workspaceRoot: string,
-  filePath: string,
-): Promise<LspClient | null> {
-  if (!state.config) {
-    state.config = loadConfig(workspaceRoot);
-    state.configured = true;
-    setIdleTimeout(state, state.config.idleTimeoutMs);
-  }
-
-  const absPath = filePath.startsWith("/") ? filePath : join(workspaceRoot, filePath);
-  const primary = getPrimaryServerForFile(state.config, absPath);
-  if (!primary) return null;
-  return await ensureNamedServer(state, primary[0], workspaceRoot);
-}
-
 /** Shut down all managed servers. */
 export async function stopServer(state: LspManagerState): Promise<void> {
   stopIdleChecker(state);
@@ -604,21 +581,6 @@ export function getActiveClients(state: LspManagerState): Array<[string, LspClie
       managed.lastActivity = Date.now();
       result.push([name, managed.client]);
     }
-  }
-  return result;
-}
-
-/** Get servers that handle a specific file. */
-export function getServersForFilePath(
-  state: LspManagerState,
-  filePath: string,
-): Array<[string, ManagedServer]> {
-  if (!state.config) return [];
-  const matchingNames = getServersForFile(state.config, filePath).map(([n]) => n);
-  const result: Array<[string, ManagedServer]> = [];
-  for (const name of matchingNames) {
-    const managed = state.servers.get(name);
-    if (managed) result.push([name, managed]);
   }
   return result;
 }

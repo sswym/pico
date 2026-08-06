@@ -11,15 +11,18 @@ bun test                   # Bun 原生测试运行器，完全离线
 bun run verify             # 类型检查 + 全量测试
 bun test tests/memory.test.ts  # 运行单个测试文件
 PI_PACKAGE_DIR=node_modules/@earendil-works/pi-coding-agent bun run scripts/memory-e2e-test.ts  # 记忆系统端到端测试（驱动真实 CLI + sqlite 校验，需网络/模型，慢）
+bun run update-deps               # 升级 @earendil-works/pi-* 到最新版，显示 diff 后跑 bun run verify（scripts/update-deps.sh）
 ```
 
 无 lint、format 命令；类型检查通过 `bun run verify` 中的 `tsc --noEmit` 执行。
+
+**无 CI**：仓库没有 `.github/workflows`，`verify`（tsc + bun test）只在本地跑。改动后跑 `bun run verify` 是唯一门禁。
 
 ## 运行时与工具链
 
 - **Bun**（非 Node.js）。tsconfig 中 `types: ["bun"]`，所有 import 可带 `.ts` 后缀
 - **构建**：`scripts/build.ts` + `bun build --compile`，产出独立二进制（~102MB）
-- **包管理**：`bun.lock`，`@earendil-works/*` 系列上游依赖
+- **包管理**：`bun.lock`，`@earendil-works/*` 系列上游依赖（`pi-ai` / `pi-agent-core` / `pi-coding-agent` / `pi-tui` 4 包**版本锁步**在 `^0.83.0`，靠 `update-deps` 同步升级，不要单独锁某一包）
 - **零 lint/formatter 配置** — 不引入 ESLint/Prettier/biome
 - **缩进**：默认 2 空格；`src/extensions/subagent/`、`lsp/executor.ts` 沿用 Tab。`.editorconfig` 已记录此分布，新文件跟随所在目录，不要为改缩进产生纯格式 diff
 
@@ -30,7 +33,9 @@ PI_PACKAGE_DIR=node_modules/@earendil-works/pi-coding-agent bun run scripts/memo
 "noUncheckedIndexedAccess": true, // arr[0] 类型为 T | undefined
 "noImplicitOverride": true,
 "allowImportingTsExtensions": true,
-"strict": true
+"strict": true,
+// 显式关闭（默认反而开）：noUnusedLocals / noUnusedParameters / noPropertyAccessFromIndexSignature 均为 false
+// 其余非默认：module: "Preserve", moduleResolution: "bundler", skipLibCheck: true
 ```
 
 ## 架构
@@ -47,11 +52,26 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 
 ### 扩展注册顺序
 
-唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（19 个扩展，含 phase/dependsOn/safety 元数据，注册时校验重复与依赖顺序）。
+唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（**19 个扩展**）。每个带 `phase: "prompt" | "ui" | "tools" | "runtime" | "diagnostics"`、可选 `dependsOn` / `safety` 元数据；注册时校验**重名**与 **dependsOn 必须先于依赖者注册**。所有工厂以 `hidden: true` 注册，避免上游启动面板出现 `<inline:N>` 占位噪行。
 
 `vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → doctor`
 
+### 双运行模式（源码 vs 编译二进制）
+
+- **源码模式**：`bun run start` 直跑 TS。**编译模式**：`scripts/build.ts` 生成的单文件二进制 `build/pico`，资源（prompts/skills/theme/export-html）先内嵌成 `src/generated/embedded-assets.ts`，运行时由 `embedded-runtime.ts` 检测 Bun 内部 URL 特征（`$bunfs`）解压到临时目录，加载完成后注册 exit 清理。
+- **刻意不注册 SIGINT/SIGTERM**：以免抢占宿主优雅关闭（session flush、MCP shutdown）。不要给嵌入式运行时加信号清理。
+- 两级**递归护栏**（防 LLM 失控递归）：hook 进程与子代理子进程都在启动时拒绝运行（`PICO_HOOK_RECURSION_GUARD==1` / `PICO_SUBAGENT_DEPTH≥3`），这俩变量**不要手动设置**。
+
+### 子代理分层（src/extensions/subagent/）
+
+`index.ts` 只做 schema/描述/渲染适配，**执行全在 `orchestrator.ts`**；`process.ts` 负责子进程 spawn、`parallel.ts` + `worktree.ts`（git worktree 隔离）+ `concurrency.ts` 限并发、`chain.ts` 带 `{previous}` 内联 2MB 上限、`gates.ts` 校验 frontmatter `acceptance`、`session.ts` fork 父会话历史。改子代理前先读 `orchestrator.ts`，别在 `index.ts` 塞逻辑。
+
+### UI 渲染安全（src/extensions/ui/rendering.ts）
+
+工具/子代理输出上屏前必须先过 `sanitizeTerminalText`（剥除 OSC/DCS 序列，防剪贴板劫持/kitty 图形注入）；`truncateWithEllipsis` 按 code point 截断（防切断半 emoji）。新 UI 渲染路径必须走这两个函数。
+
 ### 核心模式
+
 
 - **ExtensionFactory**：`(pi: ExtensionAPI) => void | Promise<void>` — 通过 `pi.registerTool()`、`pi.registerCommand()`、`pi.on(event, handler)` 注入功能
 - **事件生命周期**：`before_agent_start` → `session_start` → `tool_call` → `tool_result` → `turn_end` → `agent_end` → `session_shutdown`（多个扩展在 shutdown 做清理/落盘）
@@ -143,3 +163,5 @@ function makeFakePi() {
 - 扩展间通过事件链解耦，不要在扩展间直接 import
 - 修改扩展时检查对应的 `tests/<feature>.test.ts`，可能需要同步更新 `__reset*ForTests()` 钩子
 - LSP 扩展最复杂（只读 action + 被阻断的写入/高风险 action、workspace edit 引擎、diagnostics ledger），改动前先读 `src/extensions/lsp/` 全部文件
+- `cache-optimizer` 有已记录缺陷（见先前审查 `(memory:#37)`）：`optimizeSystemPrompt` 会拆散 AGENTS.md/CLAUDE.md 的 `<project_instructions>` 包装、按候选顺序重排 system prompt 稳定段。它直接改每个请求的 prompt/token 成本，改动前先做边界审计（空输入/超长/中文/特殊字符）
+- 已知文档死链：README 与 `docs/user-guide.md` 引用 `docs/pico-intro.md`，实档为 `docs/srcode-intro.md` — 顺手修 README 时一并更正
