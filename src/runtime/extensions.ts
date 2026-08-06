@@ -14,6 +14,7 @@ import { observabilityExtension } from "../extensions/observability.ts";
 import { planExtension } from "../extensions/plan/index.ts";
 import { retroThemeExtension } from "../extensions/retro-theme/index.ts";
 import { rtkExtension } from "../extensions/rtk/index.ts";
+import skillExtension from "../extensions/skill/index.ts";
 import subagentExtension from "../extensions/subagent/index.ts";
 import { todoExtension } from "../extensions/todo/index.ts";
 import { vibeExtension } from "../extensions/vibe.ts";
@@ -98,6 +99,13 @@ export const defaultExtensions = [
     factory: subagentExtension,
     phase: "tools",
     safety: { touchesFilesystem: true, spawnsProcess: true },
+  },
+  {
+    name: "skill",
+    factory: skillExtension,
+    phase: "tools",
+    safety: { spawnsProcess: true },
+    dependsOn: ["subagent"],
   },
   {
     name: "vision",

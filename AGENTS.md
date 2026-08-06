@@ -40,7 +40,7 @@ bun run update-deps               # 升级 @earendil-works/pi-* 到最新版，�
 
 ## 架构
 
-pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 20 个 ExtensionFactory 插件注入功能。
+pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 21 个 ExtensionFactory 插件注入功能。
 
 ### 入口链
 
@@ -52,9 +52,9 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 
 ### 扩展注册顺序
 
-唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（**20 个扩展**）。每个带 `phase: "prompt" | "ui" | "tools" | "runtime" | "diagnostics"`、可选 `dependsOn` / `safety` 元数据；注册时校验**重名**与 **dependsOn 必须先于依赖者注册**。所有工厂以 `hidden: true` 注册，避免上游启动面板出现 `<inline:N>` 占位噪行。
+唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（**21 个扩展**）。每个带 `phase: "prompt" | "ui" | "tools" | "runtime" | "diagnostics"`、可选 `dependsOn` / `safety` 元数据；注册时校验**重名**与 **dependsOn 必须先于依赖者注册**。所有工厂以 `hidden: true` 注册，避免上游启动面板出现 `<inline:N>` 占位噪行。
 
-`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → doctor`
+`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → skill → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → doctor`
 
 ### 双运行模式（源码 vs 编译二进制）
 
@@ -82,7 +82,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 ### 关键目录
 
 ```
-src/extensions/    — 20 个功能扩展（memory、subagent、lsp、plan 等）
+src/extensions/    — 21 个功能扩展（memory、subagent、lsp、plan 等）
 src/runtime/       — 启动链：参数构建、嵌入资源解包、setup 命令、扩展注册表
 src/setup/         — `pico setup` 向导
 src/prompts/       — 系统提示词模板（.md）
