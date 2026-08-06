@@ -22,20 +22,39 @@ const plainTheme = {
 
 test("claude code dark theme uses the Claude color system", () => {
   expect(claudeCodeDarkTheme.name).toBe("claude-code-dark");
-  expect(claudeCodeDarkTheme.vars.bgPrimary).toBe("#151413");
-  expect(claudeCodeDarkTheme.vars.bgSecondary).toBe("#1d1b19");
-  expect(claudeCodeDarkTheme.vars.claudeAccent).toBe("#d19a66");
+  // UI colors measured from ~/claude-code/src/utils/theme.ts darkTheme:
+  // clawd_background, userMessageBackground, claude (brand orange).
+  expect(claudeCodeDarkTheme.vars.bgPrimary).toBe("#000000");
+  expect(claudeCodeDarkTheme.vars.bgSecondary).toBe("#373737");
+  expect(claudeCodeDarkTheme.vars.claudeAccent).toBe("#d77757");
   expect(claudeCodeDarkTheme.colors.accent).toBe("claudeAccent");
   expect(claudeCodeDarkTheme.colors.border).toBe("border");
   expect(claudeCodeDarkTheme.colors.text).toBe("textPrimary");
   expect(claudeCodeDarkTheme.colors.success).toBe("success");
   expect(claudeCodeDarkTheme.colors.error).toBe("error");
   expect(claudeCodeDarkTheme.colors.warning).toBe("warning");
-  expect(claudeCodeDarkTheme.colors.bashMode).toBe("claudeAccent");
-  expect(claudeCodeDarkTheme.colors.thinkingMax).toBe("claudeAccentHover");
+  expect(claudeCodeDarkTheme.colors.bashMode).toBe("bashBorder");
+  // Syntax highlighting is Monokai Extended (measured from
+  // ~/claude-code/packages/color-diff-napi MONOKAI_SCOPES).
+  expect(claudeCodeDarkTheme.vars.syntaxKeyword).toBe("#f92672");
+  expect(claudeCodeDarkTheme.vars.syntaxComment).toBe("#75715e");
+  // Markdown heading/link match Claude Code: bold/plain text, no extra tint.
+  expect(claudeCodeDarkTheme.colors.mdHeading).toBe("textPrimary");
+  expect(claudeCodeDarkTheme.colors.mdLink).toBe("textPrimary");
+  // Inline code spans use the permission blue-purple, like Claude Code.
+  expect(claudeCodeDarkTheme.colors.mdCode).toBe("permission");
+  // Editor border is a fixed gray regardless of thinking level (user request:
+  // input box uses #808080 at every thinking depth).
+  expect(claudeCodeDarkTheme.vars.thinkingBorder).toBe("#808080");
+  expect(claudeCodeDarkTheme.colors.thinkingOff).toBe("thinkingBorder");
+  expect(claudeCodeDarkTheme.colors.thinkingHigh).toBe("thinkingBorder");
+  expect(claudeCodeDarkTheme.colors.thinkingMax).toBe("thinkingBorder");
   // Diff context and code blocks stay quiet so the accent only marks action.
   expect(claudeCodeDarkTheme.colors.toolDiffContext).toBe("textMuted");
   expect(claudeCodeDarkTheme.colors.mdCodeBlock).toBe("syntaxText");
+  // Diff word colors match the official darkTheme diffAddedWord/RemovedWord.
+  expect(claudeCodeDarkTheme.vars.diffInsertedWord).toBe("#38a660");
+  expect(claudeCodeDarkTheme.vars.diffDeletedWord).toBe("#b3596b");
 });
 
 function fakeCtx(overrides: Record<string, unknown> = {}) {
@@ -283,7 +302,9 @@ test("retroThemeExtension installs theme, working indicator, and footer", async 
   // must be respected (2.1.1) — the test pins the "no user theme" case.
   const home = mkdtempSync(join(tmpdir(), "pico-theme-"));
   const prevHome = process.env.PICO_HOME;
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PICO_HOME = home;
+  delete process.env.PI_CODING_AGENT_DIR;
   try {
     let handler: any;
   const fakePi = {
@@ -320,6 +341,8 @@ test("retroThemeExtension installs theme, working indicator, and footer", async 
   } finally {
     if (prevHome === undefined) delete process.env.PICO_HOME;
     else process.env.PICO_HOME = prevHome;
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
     rmSync(home, { recursive: true, force: true });
   }
 });
@@ -327,7 +350,9 @@ test("retroThemeExtension installs theme, working indicator, and footer", async 
 test("retroThemeExtension does not override a user-configured theme (2.1.1)", async () => {
   const home = mkdtempSync(join(tmpdir(), "pico-theme-"));
   const prevHome = process.env.PICO_HOME;
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PICO_HOME = home;
+  delete process.env.PI_CODING_AGENT_DIR;
   try {
     const agentDir = join(home, "agent");
     mkdirSync(agentDir, { recursive: true });
@@ -358,6 +383,8 @@ test("retroThemeExtension does not override a user-configured theme (2.1.1)", as
   } finally {
     if (prevHome === undefined) delete process.env.PICO_HOME;
     else process.env.PICO_HOME = prevHome;
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
     rmSync(home, { recursive: true, force: true });
   }
 });
