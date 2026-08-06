@@ -34,6 +34,10 @@ export function picoSessionDir(): string {
   return join(picoAgentHome(), "sessions");
 }
 
+export function picoSubagentSessionDir(): string {
+  return join(picoHome(), "subagent-sessions");
+}
+
 export function picoSettingsPath(): string {
   return join(picoAgentHome(), "settings.json");
 }

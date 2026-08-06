@@ -45,7 +45,10 @@ export function summarizeParallelResults(
 			? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}`
 			: "completed";
 		const noteLine = r.contextFallback ? `\n_note: ${r.contextFallback}_\n` : "";
-		return `### [${r.agent}] ${status}${noteLine}\n\n${output}`;
+		const sessionLine = r.sessionFile
+			? `\n_session: ${r.sessionFile} (continue with "pico --session <path>")_\n`
+			: "";
+		return `### [${r.agent}] ${status}${noteLine}${sessionLine}\n\n${output}`;
 	});
 	let text = `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}`;
 	if (mergeNotes.length > 0) {

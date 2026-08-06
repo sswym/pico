@@ -413,7 +413,7 @@ test("process helpers build process args and apply timeout exits", () => {
     thinking: "medium",
   };
 
-  expect(buildAgentProcessArgs(agent, "do work", "/tmp/session.json", "/tmp/prompt.md")).toEqual([
+  expect(buildAgentProcessArgs(agent, "do work", "/tmp/session.json", "/tmp/prompt.md", undefined)).toEqual([
     "--mode",
     "json",
     "-p",
@@ -431,13 +431,32 @@ test("process helpers build process args and apply timeout exits", () => {
     "/tmp/prompt.md",
     "Task: do work",
   ]);
-  expect(buildAgentProcessArgs({ ...agent, tools: undefined }, "do work", undefined, undefined)).toContain("--no-session");
+  expect(
+    buildAgentProcessArgs({ ...agent, tools: undefined }, "do work", undefined, undefined, undefined),
+  ).toContain("--no-session");
+  // A plain session file (no fork) also switches to --session.
+  expect(
+    buildAgentProcessArgs(agent, "do work", undefined, undefined, "/tmp/plain-session.jsonl"),
+  ).toEqual(
+    expect.arrayContaining(["--session", "/tmp/plain-session.jsonl"]),
+  );
+  expect(
+    buildAgentProcessArgs(agent, "do work", "/tmp/fork.jsonl", undefined, "/tmp/plain-session.jsonl"),
+  ).toEqual(
+    expect.arrayContaining(["--session", "/tmp/fork.jsonl"]),
+  );
 
   const result = createInitialResult(agent, "worker", "run", undefined);
-  applyProcessExit(result, 1, true, 2500);
+  applyProcessExit(result, 1, true, 2500, undefined);
   expect(result.exitCode).toBe(1);
   expect(result.stopReason).toBe("timeout");
   expect(result.errorMessage).toBe("Agent exceeded maxExecutionTimeMs (2500ms)");
+
+  const budgetResult = createInitialResult(agent, "worker", "run", undefined);
+  budgetResult.stopReason = "budget";
+  applyProcessExit(budgetResult, 1, false, 2500, 7);
+  expect(budgetResult.stopReason).toBe("budget");
+  expect(budgetResult.errorMessage).toBe("Agent exceeded request budget (7 requests)");
 });
 
 test("process helpers honor systemPromptMode / inheritProjectContext / inheritSkills", () => {
@@ -455,6 +474,7 @@ test("process helpers honor systemPromptMode / inheritProjectContext / inheritSk
     "t",
     undefined,
     "/tmp/prompt.md",
+    undefined,
   );
   expect(replace).toContain("--system-prompt");
   expect(replace).toContain("/tmp/prompt.md");
@@ -470,11 +490,12 @@ test("process helpers honor systemPromptMode / inheritProjectContext / inheritSk
     "t",
     undefined,
     "/tmp/prompt.md",
+    undefined,
   );
   expect(stripped).toContain("--no-context-files");
   expect(stripped).toContain("--no-skills");
 
-  const defaults = buildAgentProcessArgs(agent, "t", undefined, "/tmp/prompt.md");
+  const defaults = buildAgentProcessArgs(agent, "t", undefined, "/tmp/prompt.md", undefined);
   expect(defaults).toContain("--append-system-prompt");
   expect(defaults).not.toContain("--system-prompt");
   expect(defaults).not.toContain("--no-context-files");
@@ -509,7 +530,7 @@ test("runJsonProcess parses streamed json lines and captures stderr", async () =
   proc.close(0);
 
   const processResult = await run;
-  expect(processResult).toEqual({ exitCode: 0, wasAborted: false, timedOut: false });
+  expect(processResult).toEqual({ exitCode: 0, wasAborted: false, timedOut: false, budgetExceeded: false });
   expect(updates).toBe(1);
   expect(getFinalOutput(result.messages)).toBe("hello");
   expect(result.stderr).toBe("warn\n");
@@ -535,7 +556,7 @@ test("runJsonProcess handles process errors, aborts, and timeouts", async () => 
     spawn: () => errorProc,
   });
   errorProc.error(new Error("spawn failed"));
-  expect(await errorRun).toEqual({ exitCode: 1, wasAborted: false, timedOut: false });
+  expect(await errorRun).toEqual({ exitCode: 1, wasAborted: false, timedOut: false, budgetExceeded: false });
 
   const controller = new AbortController();
   controller.abort();
@@ -554,7 +575,7 @@ test("runJsonProcess handles process errors, aborts, and timeouts", async () => 
     clearTimeoutFn: (() => {}) as any,
   });
   abortProc.close(null);
-  expect(await abortRun).toEqual({ exitCode: 1, wasAborted: true, timedOut: false });
+  expect(await abortRun).toEqual({ exitCode: 1, wasAborted: true, timedOut: false, budgetExceeded: false });
   // The mocked setTimeoutFn fires the escalation immediately (simulating a
   // process still alive 5s after SIGTERM), so the unconditional SIGKILL
   // escalation must have run.
@@ -577,7 +598,7 @@ test("runJsonProcess handles process errors, aborts, and timeouts", async () => 
   });
   timeoutHandler!();
   timeoutProc.close(143);
-  expect(await timeoutRun).toEqual({ exitCode: 143, wasAborted: false, timedOut: true });
+  expect(await timeoutRun).toEqual({ exitCode: 143, wasAborted: false, timedOut: true, budgetExceeded: false });
   expect(timeoutProc.kills).toEqual(["SIGTERM"]);
 });
 
@@ -602,7 +623,7 @@ test("runJsonProcess maps signal-death (close with null code) to a non-zero exit
     spawn: () => proc,
   });
   proc.close(null);
-  expect(await run).toEqual({ exitCode: 1, wasAborted: false, timedOut: false });
+  expect(await run).toEqual({ exitCode: 1, wasAborted: false, timedOut: false, budgetExceeded: false });
 });
 
 test("runJsonProcess caps the partial-line stdout buffer without dropping later events", async () => {
@@ -633,7 +654,7 @@ test("runJsonProcess caps the partial-line stdout buffer without dropping later 
   proc.stdoutData('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"after"}],"usage":{"input":1,"output":2}}}\n');
   proc.close(0);
 
-  expect(await run).toEqual({ exitCode: 0, wasAborted: false, timedOut: false });
+  expect(await run).toEqual({ exitCode: 0, wasAborted: false, timedOut: false, budgetExceeded: false });
   expect(updates).toBe(1);
   expect(getFinalOutput(result.messages)).toBe("after");
 });
@@ -675,7 +696,7 @@ test("runJsonProcess detaches the abort listener when the hang path resolves", a
   expect(listeners.size).toBe(1);
   proc.exit(0); // child gone; close never arrives
   hangHandler!(); // 10s grace elapses — the hang path resolves
-  expect(await run).toEqual({ exitCode: 0, wasAborted: false, timedOut: false });
+  expect(await run).toEqual({ exitCode: 0, wasAborted: false, timedOut: false, budgetExceeded: false });
   expect(listeners.size).toBe(0);
 });
 
@@ -1614,4 +1635,214 @@ test("2.6.3: stderr is capped with a tail-preserving marker", async () => {
   await run;
   expect(result.stderr).toContain("[stderr truncated");
   expect(Buffer.byteLength(result.stderr, "utf8")).toBeLessThan(512 * 1024);
+});
+
+// ── 2.7.x: structured output schema (G5) ────────────────────────────────────
+
+test("validateOutputSchema enforces types, required fields, and array items", async () => {
+  const { validateOutputSchema } = await import("../src/extensions/subagent/schema.ts");
+  const schema = {
+    type: "object",
+    required: ["summary", "files"],
+    properties: {
+      summary: { type: "string" },
+      files: { type: "array", items: { type: "string" } },
+      score: { type: "number" },
+    },
+  };
+  expect(validateOutputSchema(schema, { summary: "ok", files: ["a.ts"] }).success).toBe(true);
+  expect(validateOutputSchema(schema, { summary: 3, files: ["a.ts"] })).toEqual({
+    success: false,
+    errors: ["$.summary: expected string, got number"],
+  });
+  const missing = validateOutputSchema(schema, { summary: "ok" });
+  expect(missing.success).toBe(false);
+  expect(missing.success ? [] : missing.errors).toContain('$: missing required field "files"');
+  const badItem = validateOutputSchema(schema, { summary: "ok", files: [1] });
+  expect(badItem.success).toBe(false);
+  expect(badItem.success ? [] : badItem.errors).toEqual(["$.files[0]: expected string, got number"]);
+  expect(validateOutputSchema("not-an-object", {})).toEqual({
+    success: false,
+    errors: ["$: invalid output schema (must be an object)"],
+  });
+  expect(validateOutputSchema({ type: "integer" }, 3.5)).toEqual({
+    success: false,
+    errors: ["$: expected integer, got number"],
+  });
+});
+
+test("applyOutputSchemaCheck marks non-JSON and schema-invalid output as schema_violation", async () => {
+  const { applyOutputSchemaCheck } = await import("../src/extensions/subagent/orchestrator.ts");
+  const schema = { type: "object", required: ["result"], properties: { result: { type: "string" } } };
+  const makeResult = (text: string): SingleResult => ({
+    agent: "worker",
+    agentSource: "user",
+    task: "run",
+    exitCode: 0,
+    messages: [{ role: "assistant", content: [{ type: "text", text }] }] as never[],
+    stderr: "",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+  });
+  const valid = makeResult('{"result":"ok"}');
+  applyOutputSchemaCheck(schema, valid);
+  expect(valid.stopReason).toBeUndefined();
+
+  const notJson = makeResult("plain prose");
+  applyOutputSchemaCheck(schema, notJson);
+  expect(notJson.stopReason).toBe("schema_violation");
+  expect(notJson.errorMessage).toContain("not valid JSON");
+  expect(isFailedResult(notJson)).toBe(true);
+
+  const wrongShape = makeResult('{"other": 1}');
+  applyOutputSchemaCheck(schema, wrongShape);
+  expect(wrongShape.stopReason).toBe("schema_violation");
+  expect(wrongShape.errorMessage).toContain('missing required field "result"');
+});
+
+// ── 2.7.x: config additions (G7 / G8 / G4) ───────────────────────────────────
+
+test("positiveInt coerces valid positive integers only", async () => {
+  const { positiveInt } = await import("../src/extensions/subagent/config.ts");
+  expect(positiveInt(4)).toBe(4);
+  expect(positiveInt("6")).toBe(6);
+  expect(positiveInt(0)).toBeUndefined();
+  expect(positiveInt(-2)).toBeUndefined();
+  expect(positiveInt(2.5)).toBe(2);
+  expect(positiveInt("abc")).toBeUndefined();
+  expect(positiveInt(undefined)).toBeUndefined();
+});
+
+test("resolveSpawnWhitelist returns undefined unless a non-empty list is configured", async () => {
+  const { resolveSpawnWhitelist } = await import("../src/extensions/subagent/config.ts");
+  expect(resolveSpawnWhitelist({})).toBeUndefined();
+  expect(resolveSpawnWhitelist({ spawns: [] })).toBeUndefined();
+  expect(resolveSpawnWhitelist({ spawns: ["  ", ""] })).toBeUndefined();
+  expect(resolveSpawnWhitelist({ spawns: ["scout", " planner "] })).toEqual(["scout", "planner"]);
+});
+
+test("applyOverrides applies maxRequests overrides", () => {
+  const base = {
+    name: "worker",
+    description: "",
+    source: "user" as const,
+    filePath: "worker.md",
+    systemPrompt: "",
+  };
+  const specific = applyOverrides([base], { agents: { worker: { maxRequests: 50 } } });
+  expect(specific[0]!.maxRequests).toBe(50);
+  const defaults = applyOverrides([base], { defaults: { maxRequests: 120 } });
+  expect(defaults[0]!.maxRequests).toBe(120);
+  const invalid = applyOverrides([base], { agents: { worker: { maxRequests: -1 } } });
+  expect(invalid[0]!.maxRequests).toBeUndefined();
+});
+
+// ── 2.7.x: soft request budget (G4) ─────────────────────────────────────────
+
+test("runJsonProcess kills the child when budgetCheck fires", async () => {
+  const agent = {
+    name: "worker",
+    description: "",
+    source: "user" as const,
+    filePath: "worker.md",
+    systemPrompt: "",
+  };
+  const result = createInitialResult(agent, "worker", "run", undefined);
+  const proc = new FakeProcess();
+  let turns = 0;
+  const run = runJsonProcess({
+    command: "pico",
+    args: [],
+    cwd: "/repo",
+    result,
+    spawn: () => proc,
+    budgetCheck: () => {
+      turns++;
+      return turns >= 2;
+    },
+  });
+  proc.stdoutData('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"one"}]}}\n');
+  proc.stdoutData('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"two"}]}}\n');
+  proc.close(143);
+  const processResult = await run;
+  expect(processResult.budgetExceeded).toBe(true);
+  expect(processResult.timedOut).toBe(false);
+  expect(processResult.wasAborted).toBe(false);
+  expect(proc.kills).toEqual(["SIGTERM"]);
+  expect(result.stopReason).toBe("budget");
+  expect(isFailedResult(result)).toBe(true);
+});
+
+// ── 2.7.x: spawn allowlist (G7) ──────────────────────────────────────────────
+
+test("runSubagentRequest refuses agents outside the spawn allowlist", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-subagent-spawns-"));
+  const savedHome = process.env.PICO_HOME;
+  const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PICO_HOME = home;
+  process.env.PI_CODING_AGENT_DIR = join(home, "agent");
+  try {
+    writeFileSync(
+      join(home, "subagent.json"),
+      JSON.stringify({ spawns: ["scout"] }),
+    );
+    const result = await runSubagentRequest(
+      { agent: "worker", task: "do it" },
+      undefined,
+      undefined,
+      { cwd: process.cwd(), hasUI: false, ui: { confirm: async () => true } },
+    );
+    const text = result.content.find((p) => p.type === "text")?.text ?? "";
+    expect(text).toContain("not in the spawn allowlist");
+    expect(text).toContain("worker");
+    expect(text).toContain("scout");
+  } finally {
+    if (savedHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = savedHome;
+    if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("discoverAgents parses output schema and maxRequests from frontmatter", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-agents-output-"));
+  const agentsDir = join(home, "agent", "agents");
+  mkdirSync(agentsDir, { recursive: true });
+  const savedHome = process.env.PICO_HOME;
+  const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PICO_HOME = home;
+  process.env.PI_CODING_AGENT_DIR = join(home, "agent");
+  try {
+    writeFileSync(
+      join(agentsDir, "structured.md"),
+      [
+        "---",
+        "name: structured",
+        "description: structured output agent",
+        "maxRequests: 25",
+        "output:",
+        "  type: object",
+        "  required: [summary]",
+        "  properties:",
+        "    summary:",
+        "      type: string",
+        "---",
+        "body",
+      ].join("\n"),
+    );
+    const agent = discoverAgents(process.cwd(), "user").agents.find((a) => a.name === "structured");
+    expect(agent).toBeDefined();
+    expect(agent!.maxRequests).toBe(25);
+    expect(agent!.outputSchema).toEqual({
+      type: "object",
+      required: ["summary"],
+      properties: { summary: { type: "string" } },
+    });
+  } finally {
+    if (savedHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = savedHome;
+    if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+    rmSync(home, { recursive: true, force: true });
+  }
 });

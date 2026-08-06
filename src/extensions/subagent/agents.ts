@@ -41,6 +41,11 @@ export interface AgentConfig {
 	inheritSkills?: boolean; // whether to pass skills catalog
 	outputMode?: "inline" | "file-only"; // large output handling
 	acceptance?: AcceptanceConfig; // structured acceptance contract
+	/** JSON Schema subset (type/required/properties/items) validated against
+	 *  the final assistant output; failure marks the run schema_violation. */
+	outputSchema?: unknown;
+	/** Soft assistant-request budget; the run stops at this many turns. */
+	maxRequests?: number;
 }
 
 export interface AgentDiscoveryResult {
@@ -151,6 +156,8 @@ function loadEmbeddedAgents(): AgentConfig[] {
 		}
 
 		const outputMode = frontmatter.outputMode === "file-only" ? "file-only" : undefined;
+		const outputSchema =
+			frontmatter.output && typeof frontmatter.output === "object" ? frontmatter.output : undefined;
 
 		agents.push({
 			name: frontmatter.name,
@@ -169,6 +176,8 @@ function loadEmbeddedAgents(): AgentConfig[] {
 			inheritSkills: toBool(frontmatter.inheritSkills),
 			outputMode,
 			acceptance,
+			outputSchema,
+			maxRequests: toNumber(frontmatter.maxRequests),
 		});
 	}
 	return agents;
@@ -280,6 +289,8 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 
 		// "outputMode" field: only "file-only" is meaningful; everything else stays inline.
 		const outputMode = frontmatter.outputMode === "file-only" ? "file-only" : undefined;
+		const outputSchema =
+			frontmatter.output && typeof frontmatter.output === "object" ? frontmatter.output : undefined;
 
 		agents.push({
 			name: frontmatter.name,
@@ -298,9 +309,10 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			inheritSkills: toBool(frontmatter.inheritSkills),
 			outputMode,
 			acceptance,
+			outputSchema,
+			maxRequests: toNumber(frontmatter.maxRequests),
 		});
 	}
-
 	return agents;
 }
 

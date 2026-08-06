@@ -64,7 +64,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 
 ### 子代理分层（src/extensions/subagent/）
 
-`index.ts` 只做 schema/描述/渲染适配，**执行全在 `orchestrator.ts`**；`process.ts` 负责子进程 spawn、`parallel.ts` + `worktree.ts`（git worktree 隔离）+ `concurrency.ts` 限并发、`chain.ts` 带 `{previous}` 内联 2MB 上限、`gates.ts` 校验 frontmatter `acceptance`、`session.ts` fork 父会话历史。改子代理前先读 `orchestrator.ts`，别在 `index.ts` 塞逻辑。
+`index.ts` 只做 schema/描述/渲染适配，**执行全在 `orchestrator.ts`**；`process.ts` 负责子进程 spawn、`parallel.ts` + `worktree.ts`（git worktree 隔离）+ `concurrency.ts` 限并发、`chain.ts` 带 `{previous}` 内联 2MB 上限、`gates.ts` 校验 frontmatter `acceptance`、`session.ts` fork 父会话历史、`schema.ts` 校验 frontmatter `output`（JSON Schema 子集）、`config.ts` 读 `~/.pico/subagent.json`（agents 覆盖 + `spawns` 白名单 + `parallel` 上限 + `sessions` 开关）。改子代理前先读 `orchestrator.ts`，别在 `index.ts` 塞逻辑。
 
 ### UI 渲染安全（src/extensions/ui/rendering.ts）
 

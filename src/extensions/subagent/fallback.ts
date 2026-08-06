@@ -1,7 +1,8 @@
 import type { AgentConfig } from "./agents.ts";
 import { isFailedResult, type SingleResult } from "./results.ts";
 
-const PROVIDER_FAILURE_PATTERN = /rate[\s._-]?limit|overloaded|503|429|529|capacity|quota/i;
+const PROVIDER_FAILURE_PATTERN =
+	/rate[\s._-]?limit|overloaded|503|429|529|capacity|quota|insufficient_quota|401|403|unauthorized|authentication|auth[\s._-]?fail|context[\s._-]?(length|window)|contextWindow/i;
 
 export function isProviderFailure(result: SingleResult): boolean {
 	return result.stopReason === "error" && PROVIDER_FAILURE_PATTERN.test(result.errorMessage || "");

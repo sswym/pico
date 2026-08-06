@@ -16,11 +16,57 @@ export interface AgentOverride {
 	maxExecutionTimeMs?: number;
 	fallbackModels?: string[];
 	tools?: string[];
+	/** Soft assistant-request budget: the run is stopped once this many
+	 *  turns have been consumed (partial output preserved, stopReason
+	 *  "budget"). Mirrors oh-my-pi's softRequestBudget, minus the in-flight
+	 *  wrap-up steering (json mode is stdout-only, no stdin injection). */
+	maxRequests?: number;
+}
+
+export interface ParallelConfig {
+	/** Max tasks accepted in one parallel `tasks[]` call. */
+	maxTasks?: number;
+	/** Max concurrently running subagents. */
+	concurrency?: number;
+}
+
+export interface SessionsConfig {
+	/** Persist each subagent's session file (default true). On success the
+	 *  file is deleted; on failure/abort it is kept and the path is reported
+	 *  so the run can be continued with `pico --session <path>`. */
+	enabled?: boolean;
 }
 
 export interface SubagentConfig {
 	agents?: Record<string, AgentOverride>;
 	defaults?: Partial<AgentOverride>;
+	/** Instance-level spawn allowlist. When set, the subagent tool refuses
+	 *  agents not listed here (and so do nested subagent processes, which
+	 *  inherit the same config). Missing/empty = all agents allowed. */
+	spawns?: string[];
+	parallel?: ParallelConfig;
+	sessions?: SessionsConfig;
+}
+
+/** Coerce a config value to a positive integer; invalid values are dropped
+ *  (callers fall back to defaults). Exported for orchestrator use. */
+export function positiveInt(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+		return Math.trunc(value);
+	}
+	if (typeof value === "string" && value.trim() !== "") {
+		const n = Number(value);
+		if (Number.isFinite(n) && n > 0) return Math.trunc(n);
+	}
+	return undefined;
+}
+
+/** Effective spawn allowlist; undefined = unrestricted. */
+export function resolveSpawnWhitelist(config: SubagentConfig): string[] | undefined {
+	const spawns = config.spawns;
+	if (!Array.isArray(spawns)) return undefined;
+	const names = spawns.map((s) => s.trim()).filter(Boolean);
+	return names.length > 0 ? names : undefined;
 }
 
 const warnedPaths = new Set<string>();
@@ -90,6 +136,7 @@ export function applyOverrides(agents: AgentConfig[], config: SubagentConfig): A
 				positiveNumber(specific?.maxExecutionTimeMs ?? defaults?.maxExecutionTimeMs) ?? agent.maxExecutionTimeMs,
 			fallbackModels: stringArray(specific?.fallbackModels ?? defaults?.fallbackModels) ?? agent.fallbackModels,
 			tools: stringArray(specific?.tools) ?? agent.tools,
+			maxRequests: positiveNumber(specific?.maxRequests ?? defaults?.maxRequests) ?? agent.maxRequests,
 		};
 	});
 }

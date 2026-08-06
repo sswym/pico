@@ -27,6 +27,9 @@ export interface SingleResult {
 	phase?: string;
 	outputFile?: string;
 	contextFallback?: string;
+	/** Path of the subagent's session JSONL, kept after a failed/aborted run
+	 *  so it can be continued with `pico --session <path>`. */
+	sessionFile?: string;
 }
 
 export interface SubagentDetails {
@@ -58,7 +61,9 @@ export function isFailedResult(result: SingleResult): boolean {
 		result.stopReason === "error" ||
 		result.stopReason === "aborted" ||
 		result.stopReason === "timeout" ||
-		result.stopReason === "gate_failed"
+		result.stopReason === "gate_failed" ||
+		result.stopReason === "budget" ||
+		result.stopReason === "schema_violation"
 	);
 }
 

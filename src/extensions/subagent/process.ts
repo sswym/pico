@@ -19,6 +19,10 @@ export interface RunJsonProcessOptions {
 	result: SingleResult;
 	signal?: AbortSignal;
 	timeoutMs?: number;
+	/** When this returns true (checked on every parsed event), the child is
+	 *  killed and the run is flagged as budget-exceeded. Used for the soft
+	 *  per-agent request budget (maxRequests). */
+	budgetCheck?: () => boolean;
 	spawn: (command: string, args: string[], options: { cwd: string; shell: false; stdio: ["ignore", "pipe", "pipe"]; detached: true }) => SpawnedProcessLike;
 	onMessage?: () => void;
 	setTimeoutFn?: typeof setTimeout;
@@ -29,6 +33,7 @@ export interface RunJsonProcessResult {
 	exitCode: number;
 	wasAborted: boolean;
 	timedOut: boolean;
+	budgetExceeded: boolean;
 }
 
 /** 2.6.3: stderr accumulates unboundedly and floods failed-result messages. */
@@ -140,10 +145,12 @@ export function buildAgentProcessArgs(
 	task: string,
 	forkSessionPath: string | undefined,
 	systemPromptPath: string | undefined,
+	sessionFile: string | undefined,
 ): string[] {
 	const args: string[] = ["--mode", "json", "-p"];
-	if (forkSessionPath) {
-		args.push("--session", forkSessionPath);
+	const sessionPath = forkSessionPath ?? sessionFile;
+	if (sessionPath) {
+		args.push("--session", sessionPath);
 	} else {
 		args.push("--no-session");
 	}
@@ -171,11 +178,17 @@ export function applyProcessExit(
 	exitCode: number,
 	timedOut: boolean,
 	maxExecutionTimeMs: number | undefined,
+	maxRequests: number | undefined,
 ): void {
 	result.exitCode = exitCode;
-	if (!timedOut) return;
-	result.stopReason = "timeout";
-	result.errorMessage = `Agent exceeded maxExecutionTimeMs (${maxExecutionTimeMs}ms)`;
+	if (timedOut) {
+		result.stopReason = "timeout";
+		result.errorMessage = `Agent exceeded maxExecutionTimeMs (${maxExecutionTimeMs}ms)`;
+		return;
+	}
+	if (result.stopReason === "budget") {
+		result.errorMessage = `Agent exceeded request budget (${maxRequests} requests)`;
+	}
 }
 
 export async function runJsonProcess(options: RunJsonProcessOptions): Promise<RunJsonProcessResult> {
@@ -183,6 +196,7 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 	const clearTimer = options.clearTimeoutFn ?? clearTimeout;
 	let wasAborted = false;
 	let timedOut = false;
+	let budgetExceeded = false;
 	let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
 		const exitCode = await new Promise<number>((resolve) => {
@@ -201,8 +215,9 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 			// tool call indefinitely.
 			let hangTimer: ReturnType<typeof setTimeout> | undefined;
 
-			const killProc = (reason: "abort" | "timeout") => {
+			const killProc = (reason: "abort" | "timeout" | "budget") => {
 				if (reason === "abort") wasAborted = true;
+				else if (reason === "budget") budgetExceeded = true;
 				else timedOut = true;
 				killProcessGroup(proc, "SIGTERM");
 				// Escalate to SIGKILL if the child ignores SIGTERM. `proc.killed`
@@ -223,7 +238,13 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 			};
 
 		const processLine = (line: string) => {
-			if (applyJsonModeLine(options.result, line)) options.onMessage?.();
+			if (applyJsonModeLine(options.result, line)) {
+				options.onMessage?.();
+				if (options.budgetCheck?.()) {
+					killProc("budget");
+					options.result.stopReason = "budget";
+				}
+			}
 		};
 
 		// Chunks can split a multi-byte UTF-8 character; decoding each chunk
@@ -314,5 +335,5 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 		}
 	});
 
-	return { exitCode, wasAborted, timedOut };
+	return { exitCode, wasAborted, timedOut, budgetExceeded };
 }

@@ -49,6 +49,9 @@ const SubagentParams = Type.Object({
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
 	context: Type.Optional(StringEnum(["fresh", "fork"] as const, { description: '"fork" to inherit parent session context. Default: fresh.' })),
 	isolation: Type.Optional(StringEnum(["none", "worktree"] as const, { description: '"worktree" to isolate parallel tasks in git worktrees. Default: none.', default: "none" })),
+	sharedContext: Type.Optional(
+		Type.String({ description: "Shared background prepended to every task in parallel (tasks) mode" }),
+	),
 });
 
 export default function (pi: ExtensionAPI) {

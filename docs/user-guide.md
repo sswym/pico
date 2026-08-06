@@ -139,8 +139,14 @@
 // 单一
 subagent(agent="scout", task="...")
 
-// 并行——单批最多 8 个代理，并发上限 4
+// 并行——单批最多 8 个代理，并发上限 4（均可通过 subagent.json 调整）
 subagent(tasks=[{agent: "scout", task: "..."}, {agent: "scout", task: "..."}])
+
+// 并行 + 共享背景——sharedContext 会前置拼入每个任务（2.7.2）
+subagent(
+  sharedContext: "项目背景：认证模块现状与约束……",
+  tasks=[{agent: "scout", task: "调研 A"}, {agent: "scout", task: "调研 B"}],
+)
 
 // 链式——步骤 N 的输出填入步骤 N+1 的 {previous}；具名输出用 {outputs.<key>}
 subagent(chain=[
@@ -160,7 +166,19 @@ subagent(chain=[
 
 每个子代理在独立的 `pi` 进程中运行（`--mode json` 事件流），拥有自己的上下文窗口。Ctrl+C 会传播以终止子进程。
 
-**agent frontmatter 支持**：`model`、`tools`、`thinking`、`maxExecutionTimeMs`、`maxTokens`、`fallbackModels`、`systemPromptMode`（append/replace）、`inheritProjectContext`、`inheritSkills`、`outputMode`（file-only）、`acceptance`（验收门：`criteria`/`evidence`/`selfRepair`/`maxRepairAttempts`）。用户级覆盖：`~/.pico/agent/agents/<name>.md`（同名替换）或 `~/.pico/subagent.json`（部分字段覆盖）。
+**agent frontmatter 支持**：`model`、`tools`、`thinking`、`maxExecutionTimeMs`、`maxTokens`、`fallbackModels`、`systemPromptMode`（append/replace）、`inheritProjectContext`、`inheritSkills`、`outputMode`（file-only）、`acceptance`（验收门：`criteria`/`evidence`/`selfRepair`/`maxRepairAttempts`）、`output`（结构化输出 JSON Schema 子集：`type`/`required`/`properties`/`items`，最终输出需为符合 schema 的 JSON，否则该次运行标记 `schema_violation` 失败）、`maxRequests`（软请求预算：达到该轮次后终止并保留部分输出，`stopReason: "budget"`）。用户级覆盖：`~/.pico/agent/agents/<name>.md`（同名替换）或 `~/.pico/subagent.json`（部分字段覆盖）。
+
+**`~/.pico/subagent.json` 扩展配置**（除 `agents`/`defaults` 覆盖外）：
+
+```jsonc
+{
+  "spawns": ["scout", "planner", "worker"], // 实例级 spawn 白名单；缺省/空 = 全部允许（2.7.1）
+  "parallel": { "maxTasks": 8, "concurrency": 4 }, // 并行上限（缺省 8/4）
+  "sessions": { "enabled": true } // 子代理会话落盘（缺省 true）
+}
+```
+
+**会话续跑（session persistence）**：默认每个子代理使用独立会话文件（`~/.pico/subagent-sessions/`）。运行成功即删除；失败/中断/超时时文件保留，结果文本与工具详情会给出路径，可用 `pico --session <path> "继续任务"` 续跑（2.7.x）。`context: "fork"` 的分支会话不受此机制管理。
 
 **项目级代理**：若项目根目录下存在 `.pico/agents/*.md`，且传入 `agentScope: "both"`（或 `"project"`），同名项目代理将覆盖内置角色。项目代理是仓库可控代码（可执行任意验收命令），调用前需要确认：
 
