@@ -243,6 +243,8 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           return fail(
             "This lsp tool is read-only. Use explicit edit/write tools for file changes until LSP write actions have a separate permission tier.",
             { action, success: false },
+            undefined,
+            "blocked",
           );
         }
 

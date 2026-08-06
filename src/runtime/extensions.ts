@@ -10,6 +10,7 @@ import lspExtension from "../extensions/lsp/index.ts";
 import { logoExtension } from "../extensions/logo/index.ts";
 import { mcpExtension } from "../extensions/mcp/index.ts";
 import { memoryExtension } from "../extensions/memory/index.ts";
+import { observabilityExtension } from "../extensions/observability.ts";
 import { planExtension } from "../extensions/plan/index.ts";
 import { retroThemeExtension } from "../extensions/retro-theme/index.ts";
 import { rtkExtension } from "../extensions/rtk/index.ts";
@@ -137,6 +138,7 @@ export const defaultExtensions = [
     phase: "runtime",
     safety: { touchesFilesystem: true, spawnsProcess: true },
   },
+  { name: "observability", factory: observabilityExtension, phase: "runtime" },
   { name: "doctor", factory: doctorExtension, phase: "diagnostics" },
 ] satisfies readonly PicoExtension[];
 

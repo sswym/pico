@@ -3,6 +3,7 @@ import { flattenDocumentSymbols, formatDocumentSymbols, getActiveClients } from 
 import { loadConfig } from "./config.ts";
 import { lspPositionToDisplay, uriToPath } from "./client.ts";
 import { existsSync } from "node:fs";
+import { toolError, type ErrorCode } from "../errors.ts";
 import {
 	extractLocationFields,
 	isFlatSymbolInfoArray,
@@ -30,37 +31,58 @@ export function ok(text: string, details?: LspDetails) {
 	return { content: [{ type: TEXT, text }], details: details ?? { success: true } };
 }
 
-export function fail(text: string, _details?: LspDetails, cause?: unknown): never {
+export function fail(text: string, _details?: LspDetails, cause?: unknown, code: ErrorCode = "invalid_request"): never {
 	// Throwing is the only way the agent loop learns a tool call failed — a
 	// returned isError flag is dropped upstream and the failure would render
-	// as a success.
-	throw new Error(text, cause === undefined ? undefined : { cause });
+	// as a success. Throws a coded ToolError (errors.ts) for stable routing.
+	throw toolError(code, text, cause === undefined ? undefined : { cause });
 }
 
-const LSP_READONLY_ACTIONS = new Set<Action>([
-	"hover",
-	"definition",
-	"type_definition",
-	"implementation",
-	"references",
-	"diagnostics",
-	"symbols",
-	"capabilities",
-	"status",
-]);
+export interface LspActionMeta {
+	readonly: boolean;      // 纯只读操作
+	writeCapable: boolean;  // 可能写盘/高风险的写操作
+}
 
-const LSP_WRITE_OR_HIGH_RISK_ACTIONS = new Set<Action>([
-	"rename",
-	"rename_file",
-	"request",
-]);
+/**
+ * 单一事实来源：14 个 action 的权限元数据（code_actions 的 apply 动态特判，
+ * 见 isLspReadonlyInput / isLspWriteOrHighRiskInput）。
+ */
+export const LSP_ACTION_METADATA: Record<Action, LspActionMeta> = {
+	hover: { readonly: true, writeCapable: false },
+	definition: { readonly: true, writeCapable: false },
+	type_definition: { readonly: true, writeCapable: false },
+	implementation: { readonly: true, writeCapable: false },
+	references: { readonly: true, writeCapable: false },
+	diagnostics: { readonly: true, writeCapable: false },
+	symbols: { readonly: true, writeCapable: false },
+	capabilities: { readonly: true, writeCapable: false },
+	status: { readonly: true, writeCapable: false },
+	// code_actions 动态特判：无 apply → 只读；apply=true → 写。表中同时标记
+	// 两种能力，实际取值由 isLspReadonlyInput / isLspWriteOrHighRiskInput 的
+	// apply 分支决定。
+	code_actions: { readonly: true, writeCapable: true },
+	rename: { readonly: false, writeCapable: true },
+	rename_file: { readonly: false, writeCapable: true },
+	// request 可调用任意 LSP 方法（含 workspace/applyEdit 等写方法），按高风险处理。
+	request: { readonly: false, writeCapable: true },
+	// reload 只重启服务器、不读写文件系统：既非只读也非写。
+	reload: { readonly: false, writeCapable: false },
+};
 
-export const READONLY_ACTIONS = ACTIONS.filter((action) =>
-	action === "code_actions" || LSP_READONLY_ACTIONS.has(action),
-);
+function isReadonlyAction(action: Action): boolean {
+	return LSP_ACTION_METADATA[action].readonly;
+}
 
+function isWriteOrHighRiskAction(action: Action): boolean {
+	return LSP_ACTION_METADATA[action].writeCapable;
+}
+
+export const READONLY_ACTIONS = ACTIONS.filter((action) => isReadonlyAction(action));
+
+// code_actions 的 writeCapable 由 apply=true 输入触发，本身不是独立 action 名，
+// 保留既有展示串 "code_actions apply=true"，故从写集合中剔除该 action 名。
 export const BLOCKED_WRITE_OR_HIGH_RISK_ACTIONS = [
-	...LSP_WRITE_OR_HIGH_RISK_ACTIONS,
+	...ACTIONS.filter((action) => isWriteOrHighRiskAction(action) && action !== "code_actions"),
 	"code_actions apply=true",
 ] as const;
 
@@ -74,7 +96,7 @@ export function isLspReadonlyInput(input: unknown): boolean {
 	const action = asAction(record.action);
 	if (!action) return false;
 	if (action === "code_actions") return record.apply !== true;
-	return LSP_READONLY_ACTIONS.has(action);
+	return isReadonlyAction(action);
 }
 
 export function isLspWriteOrHighRiskInput(input: unknown): boolean {
@@ -82,7 +104,7 @@ export function isLspWriteOrHighRiskInput(input: unknown): boolean {
 	const action = asAction(record.action);
 	if (!action) return false;
 	if (action === "code_actions") return record.apply === true;
-	return LSP_WRITE_OR_HIGH_RISK_ACTIONS.has(action);
+	return isWriteOrHighRiskAction(action);
 }
 
 export function executeStatusAction(state: LspManagerState, cwd: string) {

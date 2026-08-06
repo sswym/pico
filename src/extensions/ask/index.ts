@@ -31,6 +31,7 @@ import {
   ASK_TOOL_PROMPT,
 } from "./prompt.ts";
 import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
+import { toolError } from "../errors.ts";
 
 // keep typebox import alive in case verbatimModuleSyntax elides it
 void Type;
@@ -58,7 +59,7 @@ function errorResult(message: string): never {
   // Throwing is the only way the agent loop learns a tool call failed — a
   // returned isError flag is dropped upstream and the failure would render
   // as a success.
-  throw new Error(message);
+  return toolError("invalid_request", message);
 }
 
 function jsonResult(payload: unknown) {

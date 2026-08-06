@@ -8,6 +8,7 @@ import {
   safetyStatuses,
 } from "../policy.ts";
 import { readSettings } from "../settings.ts";
+import { validateCurrentSettings } from "../settings-schema.ts";
 import { picoSettingsPath } from "../paths.ts";
 import {
   formatConfigYmlConflictLines,
@@ -29,6 +30,10 @@ export function buildDoctorReport(cwd: string): string {
   const safetyLines = safetyStatuses().map((status) => (
     `  ${status.settingsKey}: ${enabled(status.enabled)} (${status.source}; env ${status.envName})`
   ));
+  const settingsValidation = validateCurrentSettings();
+  const settingsValidationLines = settingsValidation.valid
+    ? ["  ok"]
+    : settingsValidation.issues.map((issue) => `  ${issue.key}: ${issue.message}`);
   return [
     "pico doctor",
     "",
@@ -44,6 +49,9 @@ export function buildDoctorReport(cwd: string): string {
     "",
     "Capabilities:",
     capabilitySummary().split("\n").map((line) => `  ${line}`).join("\n"),
+    "",
+    "Settings validation:",
+    ...settingsValidationLines,
     ...formatConfigYmlConflictLines(),
     ...formatReasoningCompatLines(),
   ].join("\n");

@@ -23,6 +23,7 @@ import {
   renderWebSearchResult,
 } from "./render.ts";
 import { formatSearchResults, webSearchWithNotes, capSearchOutput } from "./search.ts";
+import { toolError } from "../errors.ts";
 
 const WebFetchParams = Type.Object({
   url: Type.String({
@@ -100,13 +101,13 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           const msg = e instanceof Error ? e.message : String(e);
           // Throw so the failure is marked as an error upstream (a returned
           // isError flag is dropped by the agent loop).
-          throw new Error(`webFetch failed: ${msg}`, { cause: e });
+          return toolError("network", `webFetch failed: ${msg}`, { cause: e });
         }
         // 4xx/5xx are failures, not successful fetches — and a returned
         // isError flag is dropped by the agent loop. The page rides along
         // as the error cause so the details stay available.
         if (page.status >= 400) {
-          throw new Error(`webFetch failed: HTTP ${page.status} ${page.statusText}`, { cause: page });
+          return toolError("invalid_request", `webFetch failed: HTTP ${page.status} ${page.statusText}`, { cause: page });
         }
         return {
           content: [{ type: "text" as const, text: formatFetchResult(page, params.prompt) }],
@@ -157,7 +158,7 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           const msg = e instanceof Error ? e.message : String(e);
           // Throw so the failure is marked as an error upstream (a returned
           // isError flag is dropped by the agent loop).
-          throw new Error(`webSearch failed: ${msg}`, { cause: e });
+          return toolError("network", `webSearch failed: ${msg}`, { cause: e });
         }
       },
     }),

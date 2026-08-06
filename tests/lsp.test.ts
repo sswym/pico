@@ -15,15 +15,21 @@ import { applyTextEditsToString } from "../src/extensions/lsp/edits.ts";
 import { DiagnosticsLedger } from "../src/extensions/lsp/diagnostics-ledger.ts";
 import { extractLocationFields, normalizeLocations, resolveSymbolColumn } from "../src/extensions/lsp/actions.ts";
 import {
+  ACTIONS,
+  BLOCKED_WRITE_OR_HIGH_RISK_ACTIONS,
   executeCapabilitiesAction,
   executeRequestAction,
   executeStatusAction,
   executeWorkspaceDiagnosticsAction,
+  fail,
   formatDocumentSymbolsResult,
   formatWorkspaceSymbolsResult,
   isLspReadonlyInput,
   isLspWriteOrHighRiskInput,
+  LSP_ACTION_METADATA,
+  READONLY_ACTIONS,
 } from "../src/extensions/lsp/executor.ts";
+import { ToolError } from "../src/extensions/errors.ts";
 import { isLspReadonlyToolCall, isLspWriteOrHighRiskToolCall, lspExtension, resolveSessionFilePath, waitForFreshDiagnostics } from "../src/extensions/lsp/index.ts";
 import {
   __checkInitBackoffForTests,
@@ -208,6 +214,63 @@ describe("LSP action risk classification", () => {
     // Tool failures are expressed by throwing (the agent loop derives isError
     // from thrown exceptions, not returned objects).
     await expect(run).rejects.toThrow(/read-only/i);
+  });
+});
+
+describe("LSP action metadata table", () => {
+  test("LSP_ACTION_METADATA flags representative actions", () => {
+    expect(LSP_ACTION_METADATA.hover).toEqual({ readonly: true, writeCapable: false });
+    expect(LSP_ACTION_METADATA.rename).toEqual({ readonly: false, writeCapable: true });
+    expect(LSP_ACTION_METADATA.request).toEqual({ readonly: false, writeCapable: true });
+  });
+
+  test("LSP_ACTION_METADATA covers every action with the expected permissions", () => {
+    const expected: Record<string, { readonly: boolean; writeCapable: boolean }> = {
+      hover: { readonly: true, writeCapable: false },
+      definition: { readonly: true, writeCapable: false },
+      type_definition: { readonly: true, writeCapable: false },
+      implementation: { readonly: true, writeCapable: false },
+      references: { readonly: true, writeCapable: false },
+      diagnostics: { readonly: true, writeCapable: false },
+      symbols: { readonly: true, writeCapable: false },
+      capabilities: { readonly: true, writeCapable: false },
+      status: { readonly: true, writeCapable: false },
+      code_actions: { readonly: true, writeCapable: true },
+      rename: { readonly: false, writeCapable: true },
+      rename_file: { readonly: false, writeCapable: true },
+      request: { readonly: false, writeCapable: true },
+      reload: { readonly: false, writeCapable: false },
+    };
+    expect(Object.keys(LSP_ACTION_METADATA).sort()).toEqual(Object.keys(expected).sort());
+    for (const action of ACTIONS) {
+      expect(LSP_ACTION_METADATA[action]).toEqual(expected[action]!);
+    }
+  });
+
+  test("READONLY_ACTIONS keeps its public value", () => {
+    expect(READONLY_ACTIONS).toEqual([
+      "hover", "definition", "type_definition", "implementation", "references",
+      "diagnostics", "symbols", "code_actions", "capabilities", "status",
+    ]);
+  });
+
+  test("BLOCKED_WRITE_OR_HIGH_RISK_ACTIONS keeps its public value", () => {
+    expect(BLOCKED_WRITE_OR_HIGH_RISK_ACTIONS).toEqual([
+      "rename", "rename_file", "request", "code_actions apply=true",
+    ]);
+  });
+
+  test("fail() throws a coded ToolError", () => {
+    expect(() => fail("boom")).toThrow("boom");
+    let thrown: unknown;
+    try {
+      fail("blocked by policy", undefined, undefined, "blocked");
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(ToolError);
+    expect((thrown as ToolError).code).toBe("blocked");
+    expect((thrown as ToolError).message).toBe("blocked by policy");
   });
 });
 

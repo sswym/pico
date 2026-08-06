@@ -3,6 +3,7 @@ import type { ProviderManager } from "./provider-manager.ts";
 import type { CuratedMemoryStore, CuratedTarget } from "./curated-store.ts";
 import { VALID_CATEGORIES, type Category, type Scope } from "./schema.ts";
 import { projectScopeKey } from "./query-scope.ts";
+import { toolError, type ErrorCode } from "../errors.ts";
 
 export interface MemoryToolParams {
   action:
@@ -44,12 +45,12 @@ function jsonResult(payload: unknown) {
   };
 }
 
-function errorResult(message: string): never {
+function errorResult(message: string, code: ErrorCode = "invalid_request"): never {
   // Throw instead of returning an isError payload: the upstream agent loop
   // only derives tool failures from thrown exceptions, so a returned error
   // object would render as a successful call (the model still sees the text
   // either way).
-  throw new Error(message);
+  return toolError(code, message);
 }
 
 function asCategory(raw: unknown): Category | undefined {
