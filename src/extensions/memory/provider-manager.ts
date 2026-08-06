@@ -28,6 +28,9 @@ import { picoMemoryDbPath, picoSettingsPath } from "../paths.ts";
 export interface MemorySettings {
   /** Backend identifier: "builtin" | provider name. Default "builtin". */
   backend?: string;
+  /** Temporal decay half-life in days for search ranking. 0 disables decay
+   *  entirely; absent means the store default (180 days). */
+  temporalDecayHalfLifeDays?: number;
 }
 
 export interface ProviderInfo {
@@ -52,7 +55,14 @@ export function registerMemoryProviderFactory(name: string, factory: MemoryProvi
   FACTORY_REGISTRY.set(name, factory);
 }
 
-registerMemoryProviderFactory("builtin", () => new BuiltinMemoryProvider(resolveDbPath()));
+registerMemoryProviderFactory("builtin", () => {
+  // Read settings at factory time so temporal-decay config survives provider
+  // (re)construction without re-reading the file on every session.
+  const settings = readMemorySettings();
+  return new BuiltinMemoryProvider(resolveDbPath(), {
+    temporalDecayHalfLifeDays: settings.temporalDecayHalfLifeDays,
+  });
+});
 registerMemoryProviderFactory("holographic", () => new HolographicMemoryProvider());
 
 function readMemorySettings(): MemorySettings {

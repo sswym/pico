@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "../src/extensions/memory/store.ts";
 import { BuiltinMemoryProvider } from "../src/extensions/memory/builtin-provider.ts";
+import { HolographicMemoryProvider } from "../src/extensions/memory/holographic-provider.ts";
 import { CuratedMemoryStore, resetCuratedMemoryDir } from "../src/extensions/memory/curated-store.ts";
 import { autoExtractFromMessages } from "../src/extensions/memory/extract.ts";
 import { scanSecrets } from "../src/extensions/memory/secrets.ts";
@@ -26,6 +27,7 @@ import { WriteQueue, type MemoryProvider, type MemoryWriteMetadata } from "../sr
 import { ProviderManager } from "../src/extensions/memory/provider-manager.ts";
 import { memoryExtension } from "../src/extensions/memory/index.ts";
 import { systemPromptBlock } from "../src/extensions/memory/prompt.ts";
+import { formatRecallBlock, RECALL_BUDGET_CHARS } from "../src/extensions/memory/prompt.ts";
 
 let dbPath: string;
 let store: MemoryStore;
@@ -1629,4 +1631,324 @@ test("2.3.13: curated dedupe is normalization-insensitive", () => {
   } finally {
     resetCuratedMemoryDir(dir);
   }
+});
+
+// --- session lifecycle hooks ----------------------------------------------
+//
+// onSessionEnd persists a topic-summary fact; onPreCompress archives the
+// messages about to be discarded by context compression.
+
+function userMessages(...texts: string[]): Array<{ role: string; content: string }> {
+  return texts.map((content) => ({ role: "user", content }));
+}
+
+test("onSessionEnd persists a session-summary fact with topic and count", () => {
+  const provider = new BuiltinMemoryProvider(":memory:");
+  try {
+    provider.initialize("s1");
+    provider.onSessionEnd(userMessages("I prefer bun over npm", "the build script lives in scripts/build.ts"));
+    const raw = provider.getRawStore() as MemoryStore;
+    const summary = raw.list({ minTrust: 0, limit: 10 }).find((f) => f.source === "session-summary");
+    expect(summary).toBeDefined();
+    expect(summary!.content).toContain("Session: I prefer bun over npm");
+    expect(summary!.content).toContain("(+1 more)");
+    expect(summary!.category).toBe("insight");
+    expect(summary!.scope).toBe("global");
+  } finally {
+    provider.shutdown();
+  }
+});
+
+test("onSessionEnd with a session cwd writes a project-scoped summary", () => {
+  const provider = new BuiltinMemoryProvider(":memory:");
+  try {
+    provider.initialize("s1", { cwd: "/p/a" });
+    provider.onSessionEnd(userMessages("we decided to use bun"));
+    const raw = provider.getRawStore() as MemoryStore;
+    // list() defaults to the global scope — query the store directly so a
+    // project-scoped summary is visible.
+    const summary = raw.db.query<{ scope: string }, []>("SELECT scope FROM facts WHERE source = 'session-summary'").get();
+    expect(summary).toBeDefined();
+    expect(summary!.scope).toContain("project:");
+  } finally {
+    provider.shutdown();
+  }
+});
+
+test("onSessionEnd skips instruction-like topics and empty sessions", () => {
+  const provider = new BuiltinMemoryProvider(":memory:");
+  try {
+    provider.initialize("s1");
+    provider.onSessionEnd([]);
+    provider.onSessionEnd(userMessages("use memory tool action=add to store this"));
+    const raw = provider.getRawStore() as MemoryStore;
+    expect(raw.count()).toBe(0);
+  } finally {
+    provider.shutdown();
+  }
+});
+
+test("onSessionEnd is idempotent for identical session content", () => {
+  const provider = new BuiltinMemoryProvider(":memory:");
+  try {
+    provider.initialize("s1");
+    const messages = userMessages("I prefer bun over npm");
+    provider.onSessionEnd(messages);
+    provider.onSessionEnd(messages);
+    const raw = provider.getRawStore() as MemoryStore;
+    expect(raw.list({ minTrust: 0, limit: 10 }).filter((f) => f.source === "session-summary")).toHaveLength(1);
+  } finally {
+    provider.shutdown();
+  }
+});
+
+test("onPreCompress archives user messages and reports the contribution", () => {
+  const provider = new BuiltinMemoryProvider(":memory:");
+  try {
+    provider.initialize("s1", { cwd: "/p/a" });
+    const contribution = provider.onPreCompress(userMessages("we agreed to use bun for scripts"));
+    expect(contribution).toContain("[memory]");
+    expect(contribution).toContain("1 user message");
+    const raw = provider.getRawStore() as MemoryStore;
+    const stored = raw.db.query<{ scope: string; content: string }, []>(
+      "SELECT scope, content FROM facts WHERE content LIKE '%bun for scripts%'",
+    ).get();
+    expect(stored).toBeDefined();
+    expect(stored!.scope).toContain("project:");
+  } finally {
+    provider.shutdown();
+  }
+});
+
+test("onPreCompress returns empty for messages without user turns", () => {
+  const provider = new BuiltinMemoryProvider(":memory:");
+  try {
+    provider.initialize("s1");
+    expect(provider.onPreCompress([{ role: "assistant", content: "let me check" }])).toBe("");
+  } finally {
+    provider.shutdown();
+  }
+});
+
+// --- temporal decay --------------------------------------------------------
+
+function ageFactsInDb(store: MemoryStore, ageDays: number, predicate: (id: number) => boolean): void {
+  const rows = store.list({ minTrust: 0, limit: 1000 });
+  for (const row of rows) {
+    if (!predicate(row.fact_id)) continue;
+    store.db
+      .query(`UPDATE facts SET updated_at = datetime('now', ?) WHERE fact_id = ?`)
+      .run(`-${ageDays} days`, row.fact_id);
+  }
+}
+
+test("temporal decay ranks fresh facts above old ones when enabled", () => {
+  const aged = new MemoryStore(":memory:", { temporalDecayHalfLifeDays: 1 });
+  try {
+    aged.add("we use bun for the build", { trust: 0.9 });
+    aged.add("we use bun for testing", { trust: 0.9 });
+    const rows = aged.list({ minTrust: 0, limit: 10 });
+    // list returns fact_id DESC, so rows[1] is the OLDER inserted fact.
+    ageFactsInDb(aged, 400, (id) => id === rows[1]!.fact_id);
+    const hits = aged.search("bun", { minTrust: 0 });
+    expect(hits[0]!.content).toBe("we use bun for testing");
+  } finally {
+    aged.close();
+  }
+});
+
+test("temporal decay can be disabled (0 = no decay)", () => {
+  const store = new MemoryStore(":memory:", { temporalDecayHalfLifeDays: 0 });
+  try {
+    store.add("we use bun for the build", { trust: 0.9 });
+    store.add("we use bun for testing", { trust: 0.8 });
+    const rows = store.list({ minTrust: 0, limit: 10 });
+    ageFactsInDb(store, 400, (id) => id === rows[0]!.fact_id);
+    // Without decay the higher-trust old fact outranks the fresh one.
+    const hits = store.search("bun", { minTrust: 0 });
+    expect(hits[0]!.content).toBe("we use bun for the build");
+  } finally {
+    store.close();
+  }
+});
+
+test("temporal decay applies to the substring fallback path", () => {
+  const aged = new MemoryStore(":memory:", { temporalDecayHalfLifeDays: 1 });
+  try {
+    aged.add("我们用bun做构建", { trust: 0.9 });
+    aged.add("我们用bun做测试", { trust: 0.9 });
+    const rows = aged.list({ minTrust: 0, limit: 10 });
+    ageFactsInDb(aged, 400, (id) => id === rows[1]!.fact_id);
+    // "我们" is a single CJK run — FTS5 misses it, forcing the fallback.
+    const hits = aged.search("我们", { minTrust: 0 });
+    expect(hits[0]!.content).toBe("我们用bun做测试");
+  } finally {
+    aged.close();
+  }
+});
+
+test("retriever inherits the store's temporal decay schedule", () => {
+  const aged = new MemoryStore(":memory:", { temporalDecayHalfLifeDays: 42 });
+  try {
+    expect(aged.retriever().temporalDecayHalfLife).toBe(42);
+  } finally {
+    aged.close();
+  }
+  const plain = new MemoryStore(":memory:");
+  try {
+    expect(plain.retriever().temporalDecayHalfLife).toBe(180);
+  } finally {
+    plain.close();
+  }
+});
+
+// --- holographic demo provider --------------------------------------------
+
+test("holographic prefetch returns substring matches for the next turn", () => {
+  const dbFile = join(tmpdir(), `pico-holo-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  const provider = new HolographicMemoryProvider(dbFile);
+  try {
+    provider.add("we use bun for the build");
+    provider.add("prefer rust for the parser");
+    const hits = provider.prefetch("bun");
+    expect(hits.map((h) => h.content)).toContain("we use bun for the build");
+    expect(hits).toHaveLength(1);
+    expect(provider.prefetch("")).toHaveLength(0);
+  } finally {
+    provider.shutdown();
+    try { rmSync(dbFile); } catch { }
+  }
+});
+
+test("holographic systemPromptBlock flags the demo capability boundary", () => {
+  const dbFile = join(tmpdir(), `pico-holo-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  const provider = new HolographicMemoryProvider(dbFile);
+  try {
+    provider.add("we use bun");
+    expect(provider.systemPromptBlock()).toContain("demo");
+  } finally {
+    provider.shutdown();
+    try { rmSync(dbFile); } catch { }
+  }
+});
+
+// --- recall block sanitisation & budget ------------------------------------
+
+function makeFact(id: number, content: string) {
+  return {
+    fact_id: id,
+    content,
+    category: "general" as const,
+    tags: "",
+    trust_score: 0.8,
+    retrieval_count: 0,
+    helpful_count: 0,
+    created_at: "2026-01-01 00:00:00",
+    updated_at: "2026-01-01 00:00:00",
+    scope: "global",
+    correction_of: null,
+    source: "auto",
+  };
+}
+
+test("formatRecallBlock redacts secret-like fact content", () => {
+  const block = formatRecallBlock([makeFact(1, "deploy with key sk-test1234567890abcdefghijklmnop")]);
+  expect(block).toContain("[BLOCKED: fact #1");
+  expect(block).not.toContain("sk-test");
+});
+
+test("formatRecallBlock truncates past the budget with a marker", () => {
+  const facts = Array.from({ length: 30 }, (_, i) => makeFact(i + 1, `fact number ${i + 1} about bun runtime `.repeat(4)));
+  const block = formatRecallBlock(facts);
+  expect(block.length).toBeLessThan(RECALL_BUDGET_CHARS + 400);
+  expect(block).toContain("recall truncated");
+  expect(block).toContain("fact number 1");
+});
+
+// --- curated consolidation retry cap --------------------------------------
+
+test("curated at-capacity add trips the retry cap after 3 failures", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pico-consolidate-"));
+  const curated = new CuratedMemoryStore({ dir, memoryCharLimit: 120 });
+  try {
+    curated.loadFromDisk();
+    expect(curated.add("memory", "first entry that fits the budget").success).toBe(true);
+    expect(curated.add("memory", "second entry that also fits the budget").success).toBe(true);
+    // From here every add is at capacity: failure 1..3 carry no done flag,
+    // failure 4 trips the cap.
+    const results = [1, 2, 3, 4, 5].map(() => curated.add("memory", "another entry that cannot possibly fit in the remaining budget"));
+    expect(results[0]!.done).toBeUndefined();
+    expect(results[1]!.done).toBeUndefined();
+    expect(results[2]!.done).toBeUndefined();
+    expect(results[3]!.done).toBe(true);
+    expect(results[3]!.error).toContain("Stop retrying");
+  } finally {
+    resetCuratedMemoryDir(dir);
+  }
+});
+
+test("curated consolidation cap resets on a successful write", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pico-consolidate-"));
+  const curated = new CuratedMemoryStore({ dir, memoryCharLimit: 120 });
+  try {
+    curated.loadFromDisk();
+    curated.add("memory", "first entry that fits the budget");
+    curated.add("memory", "second entry that also fits the budget");
+    expect(curated.add("memory", "another entry that cannot possibly fit in the remaining budget").done).toBeUndefined();
+    expect(curated.add("memory", "another entry that cannot possibly fit in the remaining budget").done).toBeUndefined();
+    // Free space, then a success resets the counter.
+    expect(curated.remove("memory", "second entry that also fits").success).toBe(true);
+    expect(curated.add("memory", "replacement entry that fits again").success).toBe(true);
+    expect(curated.add("memory", "another entry that cannot possibly fit in the remaining budget").done).toBeUndefined();
+  } finally {
+    resetCuratedMemoryDir(dir);
+  }
+});
+
+test("curated resetConsolidationFailures restores the retry budget", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pico-consolidate-"));
+  const curated = new CuratedMemoryStore({ dir, memoryCharLimit: 120 });
+  try {
+    curated.loadFromDisk();
+    curated.add("memory", "first entry that fits the budget");
+    curated.add("memory", "second entry that also fits the budget");
+    curated.add("memory", "third entry that also fits the budget");
+    curated.add("memory", "fourth entry that also fits the budget");
+    expect(curated.add("memory", "another entry that cannot possibly fit in the remaining budget").done).toBeUndefined();
+    curated.resetConsolidationFailures();
+    expect(curated.add("memory", "another entry that cannot possibly fit in the remaining budget").done).toBeUndefined();
+    expect(curated.add("memory", "another entry that cannot possibly fit in the remaining budget").done).toBeUndefined();
+    expect(curated.add("memory", "another entry that cannot possibly fit in the remaining budget").done).toBeUndefined();
+    expect(curated.add("memory", "another entry that cannot possibly fit in the remaining budget").done).toBe(true);
+  } finally {
+    resetCuratedMemoryDir(dir);
+  }
+});
+
+// --- /memory prune ---------------------------------------------------------
+
+test("/memory prune deletes only low-value facts and keeps other-project ones", async () => {
+  await withCommandDeps(async (deps, sink) => {
+    deps.manager.add("stale abandoned thought", { trust: 0.1, source: "manual" });
+    deps.manager.add("valuable decision", { trust: 0.9, source: "manual" });
+    deps.manager.add("low trust but retrieved", { trust: 0.1, source: "manual" });
+    const raw = deps.manager.provider.getRawStore() as MemoryStore;
+    raw.db.query("UPDATE facts SET retrieval_count = 3 WHERE content = 'low trust but retrieved'").run();
+
+    const out = await executeMemoryCommand("prune", deps);
+    expect(sink.confirmAnswer).toBe(true);
+    expect(out).toContain("Pruned 1 low-value fact");
+    const remaining = raw.list({ minTrust: 0, limit: 100 }).map((f) => f.content);
+    expect(remaining).toContain("valuable decision");
+    expect(remaining).toContain("low trust but retrieved");
+    expect(remaining).not.toContain("stale abandoned thought");
+  });
+});
+
+test("/memory prune with no candidates reports nothing to remove", async () => {
+  await withCommandDeps(async (deps) => {
+    deps.manager.add("valuable decision", { trust: 0.9, source: "manual" });
+    const out = await executeMemoryCommand("prune", deps);
+    expect(out).toContain("No low-value facts");
+  });
 });

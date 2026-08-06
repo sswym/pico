@@ -101,6 +101,9 @@ export interface CuratedWriteResult {
   usage: string;
   currentEntries?: string[];
   driftBackup?: string;
+  /** True when the store is at capacity and consolidation has failed too many
+   *  times this turn — the caller should stop retrying memory writes. */
+  done?: boolean;
 }
 
 /** Thrown by write() when the on-disk file changed since the last read. */
@@ -115,6 +118,10 @@ export class CuratedMemoryStore {
   readonly dir: string;
   readonly memoryCharLimit: number;
   readonly userCharLimit: number;
+  /** Per-turn count of at-capacity consolidation failures. Successful writes
+   *  reset it; turn boundaries reset it via resetConsolidationFailures(). */
+  private consolidationFailures = 0;
+  private static readonly _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3;
 
   private memoryEntries: string[] = [];
   private userEntries: string[] = [];
@@ -202,6 +209,7 @@ export class CuratedMemoryStore {
       }
       throw err;
     }
+    this.consolidationFailures = 0;
     return this.result(target, true, "Entry added.");
   }
 
@@ -238,6 +246,7 @@ export class CuratedMemoryStore {
       }
       throw err;
     }
+    this.consolidationFailures = 0;
     return this.result(target, true, "Entry replaced.");
   }
 
@@ -265,6 +274,7 @@ export class CuratedMemoryStore {
       }
       throw err;
     }
+    this.consolidationFailures = 0;
     return this.result(target, true, "Entry removed.");
   }
 
@@ -349,7 +359,26 @@ export class CuratedMemoryStore {
     const used = entries.length === 0 ? 0 : entries.join(ENTRY_DELIMITER).length;
     const limit = this.charLimit(target);
     if (used <= limit) return null;
+    this.consolidationFailures++;
+    if (this.consolidationFailures > CuratedMemoryStore._MAX_CONSOLIDATION_FAILURES_PER_TURN) {
+      // Mirrors hermes #42405: an at-capacity retry loop burns context and
+      // suppresses the user's reply. Beyond the cap, stop guiding the model
+      // back to memory — a failed side effect must not block the turn.
+      return this.result(
+        target,
+        false,
+        undefined,
+        `Memory consolidation failed ${this.consolidationFailures} times this turn. Stop retrying memory calls — leave memory unchanged for now and continue with your reply. The fact can be saved in a later turn.`,
+        this.entriesFor(target),
+        true,
+      );
+    }
     return this.result(target, false, undefined, `Memory at ${used}/${limit} chars. Remove or replace entries first.`, this.entriesFor(target));
+  }
+
+  /** Reset the per-turn consolidation-failure counter (call at turn start). */
+  resetConsolidationFailures(): void {
+    this.consolidationFailures = 0;
   }
 
   private result(
@@ -358,6 +387,7 @@ export class CuratedMemoryStore {
     message?: string,
     error?: string,
     currentEntries?: string[],
+    done?: boolean,
   ): CuratedWriteResult {
     return {
       success,
@@ -367,6 +397,7 @@ export class CuratedMemoryStore {
       entryCount: this.entriesFor(target).length,
       usage: this.usage(target),
       currentEntries,
+      done,
     };
   }
 

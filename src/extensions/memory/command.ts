@@ -98,6 +98,7 @@ function usageLines(): string[] {
     `  /memory add [category] [--scope project] <text>  — add a fact`,
     `    categories: ${CATEGORY_LIST}`,
     "  /memory remove <id>       — delete a fact (asks first; project-scoped facts are protected)",
+    "  /memory prune             — delete low-value facts (trust < 0.2, never retrieved; asks first)",
     "  /memory clear [--scope project] — wipe memory (asks first; backs up first)",
     "  /memory count             — show count + db path",
     "  /memory status            — show provider and note status",
@@ -352,6 +353,48 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
           curated.clear();
           lines.push("Memory cleared.");
         }
+        break;
+      }
+      case "prune": {
+        // Manual stand-in for automatic forgetting: drop facts that have
+        // never been retrieved and carry near-zero trust — they cost recall
+        // slots without ever earning their keep.
+        const facts = manager.list({ limit: 50_000, minTrust: 0 });
+        const lowValue = facts.filter((f) => f.trust_score < 0.2 && f.retrieval_count === 0);
+        const removable = lowValue.filter((f) => !ownershipViolation(f, currentCwd));
+        const protectedCount = lowValue.length - removable.length;
+        if (removable.length === 0) {
+          announce(
+            protectedCount > 0
+              ? `No removable low-value facts (${protectedCount} low-value fact(s) belong to other projects and were kept).`
+              : "No low-value facts (trust < 0.2 and never retrieved).",
+          );
+          break;
+        }
+        const confirmed = await confirm(
+          "Prune low-value memory?",
+          `Delete ${removable.length} fact(s) with trust < 0.2 that were never retrieved?` +
+            (protectedCount > 0 ? ` ${protectedCount} other-project fact(s) will be kept.` : ""),
+        );
+        if (!confirmed) {
+          announce("Cancelled.");
+          break;
+        }
+        let removed = 0;
+        let failed = 0;
+        for (const f of removable) {
+          try {
+            manager.remove(f.fact_id);
+            removed++;
+          } catch {
+            failed++;
+          }
+        }
+        announce(
+          failed > 0
+            ? `Pruned ${removed} low-value fact(s), ${failed} failed.`
+            : `Pruned ${removed} low-value fact(s).`,
+        );
         break;
       }
       case "notes": {

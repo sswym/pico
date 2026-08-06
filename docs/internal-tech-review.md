@@ -113,10 +113,12 @@ flowchart LR
         W2[memory 工具 add/update] --> STORE
         W3[agent_end 自动抽取<br/>8 类模式: 偏好/决策/纠错/失败…] --> STORE
         W4[curated 笔记<br/>MEMORY.md / USER.md] --> DISK[(文件, 字符上限<br/>2200 / 1375)]
+        W5[session_shutdown 主题摘要<br/>onSessionEnd] --> STORE
+        W6[压缩前归档 onPreCompress] --> STORE
     end
     subgraph 读路径
         BAS[before_agent_start] --> PREF[prefetch 预取<br/>命中缓存或同步 search]
-        PREF --> CTX[<memory-context> 回忆块注入]
+        PREF --> CTX[<memory-context> 回忆块注入<br/>秘密净化 + 2400 字符预算]
         TOOL[memory 工具 search/probe/related/reason] --> RET[FactRetriever<br/>FTS5→Jaccard→TF-IDF→信任加权]
     end
     STORE --> RET
@@ -127,9 +129,12 @@ flowchart LR
 - **存储**：`facts`（UNIQUE content、trust_score、scope、correction_of、source）+ `entities`/`fact_entities`（实体链接，支撑 probe/related/reason）+ `facts_fts`（FTS5 触发器同步）+ `tfidf_vector`（JSON 稀疏向量）。
 - **scope 隔离**：`global` 与 `project:<cwd>` 双 scope；所有读路径（search/probe/related/reason/list）统一经 `scopeFilter` 过滤；`contradict` 在整改前**漏加 scope 过滤**（跨项目事实泄漏，§4.4 已修复）。
 - **信任机制**：feedback ±0.05/-0.10 钳制 [0,1]；`correction_of` 惩罚原事实 -0.30 且新事实以 0.70 起步；检索排序乘信任分。
+- **时间衰减**：search 主路径（FTS5 SQL 与 substring fallback）与 FactRetriever 混合检索统一按 `updated_at` 乘半衰期衰减因子，默认 180 天（`settings.json` memory.temporalDecayHalfLifeDays 可覆盖，0 关闭）——旧事实降权但永不过滤；`/memory prune` 提供手动清理（trust<0.2 且从未检索）。
+- **会话生命周期沉淀**：`onSessionEnd` 写一条主题摘要 fact（source=session-summary，纯指令会话跳过）；`onPreCompress` 在上下文压缩丢弃前归档分支消息并返回 contribution 文本进压缩摘要。
 - **纠错检测**：`turn_end` 对用户消息跑 `CORRECTION_PATTERNS`，命中即写入 correction 类事实 + curated 笔记（截断 400 字符）。
-- **秘密扫描**：写前 `scanSecrets`（AWS/GitHub/SSH/Stripe/Google key 等模式），命中即拒绝入库；curated 快照注入时对含秘密条目打 `[BLOCKED]` 占位。
-- **provider 抽象**：`MemoryProvider` 接口 + `ProviderManager` 注册表（`registerMemoryProviderFactory`）；内置 `builtin`（SQLite）与 `holographic`（**demo stub**，JSON 全量读写，related/reason/contradict 空实现）。
+- **秘密扫描**：写前 `scanSecrets`（AWS/GitHub/SSH/Stripe/Google key 等模式），命中即拒绝入库；**读出侧**（recall 块）同样净化——含秘密模式的事实以 `[BLOCKED]` 占位进入 system prompt。
+- **curated 容量熔断**：MEMORY.md/USER.md 连续 3 次容量错误后返回 `done` 终止性错误（防模型循环重试烧上下文，turn_end 重置计数）。
+- **provider 抽象**：`MemoryProvider` 接口 + `ProviderManager` 注册表（`registerMemoryProviderFactory`）；内置 `builtin`（SQLite）与 `holographic`（**demo stub**，JSON 全量读写，prefetch/search 可用，related/reason/contradict 空实现，systemPromptBlock 已标注能力边界）。
 - **路径隔离**：`PICO_MEMORY_DB` 只作用于 SQLite；holographic 使用独立 `PICO_HOLOGRAPHIC_MEMORY_PATH`（整改前两后端共用同一 env，存在互覆写风险，§4.4）。
 
 ### 3.2 子代理编排（subagent）
@@ -481,7 +486,7 @@ flowchart TD
 
 | # | 局限 | 影响 | 状态 |
 |---|---|---|---|
-| L1 | **holographic provider 为 demo stub**：JSON 全量读写、related/reason/contradict 空实现、无并发写保护 | 选它做后端等于降级 | 已知，`/memory status` 已标注 |
+| L1 | **holographic provider 为 demo stub**：JSON 全量读写、related/reason/contradict 空实现、无并发写保护 | 选它做后端等于降级 | 已标注能力边界；prefetch 已接通 substring 检索 |
 | L2 | 记忆检索无真语义：TF-IDF + 固定同义词表，跨语言/深度改写召回有限 | 召回率上限 | 待评估 embedding 方案 |
 | L3 | `acceptance.criteria` 与 `evidence` **按下标隐式配对** | 配置错位时门禁误判 | 待改命名配对 |
 | L4 | pi 无工具注销 API：MCP 工具名进程内不可刷新 | 工具列表无法刷新（已用 holder 修复闭包失效） | 受上游约束 |
@@ -489,18 +494,18 @@ flowchart TD
 | L6 | 子代理 stderr 无界累积；`sessionMessages` 会话内无界增长 | 长会话内存 | 待加截断/上限 |
 | L7 | 私网防护仅 hostname 字符串级，`*.nip.io`/DNS rebinding 可绕过 | SSRF 边界缺口（本地代理影响有限） | 待 DNS 解析复检 |
 | L8 | worktree 合并按任务序串行，冲突仅报错不自动处理 | 冲突时需人工 | 已知 |
-| L12 | 记忆库无归档/衰减策略（facts 无限增长，contradict 仅分析最近 500 条） | 库膨胀 | 待迭代 |
+| L12 | 记忆库无归档/衰减策略（facts 无限增长，contradict 仅分析最近 500 条） | 库膨胀 | 已落地时间衰减（默认 180 天降权）+ `/memory prune` 手动清理；自动合并/遗忘仍待迭代 |
 | L13 | **LSP 写透传空诊断短路的残余**：诊断等待仍为 500ms 内联 + 5s 轮询窗口（非事件驱动），慢服务器偶发取空；2026-08 起超时回退最近缓存，不再误报"无诊断" | 延迟/偶发取空 | 待改 publishDiagnostics 事件驱动 |
 | L14 | ~~子代理超时只杀直接子进程~~（已核实：subagent 自 2.4.1 起即用 `detached` 进程组 + SIGTERM→SIGKILL 击杀；L5 把 worktree git 命令也改为异步进程组） | — | 已修 |
 | L15 | **todo 重复 id 重分配的新 id 映射仅在 details**，模型可见性取决于 provider 序列化 | 重复 id 时 id 不稳定 | 待把映射写入 content |
 | L16 | **plan 同批 ExitPlanMode+write 时序矛盾**：并行工具执行下 tool_call 阻断先于批准生效 | 批准后同批写仍被拒，需重发 | 受上游执行序约束，待同批放行 |
 | L17 | **cache-optimizer 对 responses/codex 未知字段行为**（已改为不注入，记录原始风险） | 严格网关 400 风险已消除 | 已修 |
-| L18 | **agent_end 全量重抽取**可能重复写入 | 记忆重复 | 待增量/去重 |
+| L18 | **agent_end 全量重抽取**可能重复写入 | 记忆重复 | 已缓解：`seenMessageTexts` 指纹去重 + UNIQUE(scope, content) 幂等；`onPreCompress` 复用同一抽取管线 |
 
 ### 5.3 待优化项与迭代规划（建议排序）
 
 1. **事件驱动 LSP 诊断**（L5）——消除固定等待，收益最直接；
-2. **记忆归档与衰减**（L12）——老事实降权/合并，控制库增长；
+2. ~~记忆归档与衰减~~（L12 已落地：时间衰减 + `/memory prune`；自动合并/遗忘仍可迭代）；
 3. **acceptance 命名配对**（L3）——避免隐式下标契约；
 4. **子代理输出上限**（L6）——stderr 截断、sessionMessages 封顶；
 6. 评估 embedding 检索（L2）与 DNS 级 SSRF 防护（L7）为远期项。

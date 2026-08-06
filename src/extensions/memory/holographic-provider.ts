@@ -215,18 +215,20 @@ export class HolographicMemoryProvider implements MemoryProvider {
     if (count === 0) return "";
     return [
       "<memory-overview>",
-      `Backend: holographic | Facts: ${count}`,
+      `Backend: holographic (demo — related/reason/contradict disabled) | Facts: ${count}`,
       "</memory-overview>",
     ].join("\n");
   }
 
-  prefetch(_query: string, _cwd?: string): Fact[] {
-    // HRR-based probe on memory bank bundles; empty stub here.
-    return [];
+  prefetch(query: string, _cwd?: string): Fact[] {
+    if (!query) return [];
+    // Substring search across all scopes — the demo store's search() treats
+    // scope as an exact filter, so passing "project" would hide global facts.
+    return this.search(query, { limit: 5, minTrust: 0.3 });
   }
 
   queuePrefetch(_query: string, _cwd?: string): void {
-    // Encode query → HRR bundle → async probe
+    // Synchronous substring search is cheap; nothing to precompute.
   }
 
   // ---- Persistence -------------------------------------------------------

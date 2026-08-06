@@ -276,6 +276,10 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // --- 4. real-time correction detection + prefetch queue -------------------
   pi.on("turn_end", (event) => {
     try {
+      // New turn — reset the curated-store consolidation retry cap so the
+      // model gets a fresh budget of capacity errors (mirrors hermes #42405).
+      curated.resetConsolidationFailures();
+
       const msg = event.message;
       if (!msg || msg.role !== "user") return;
 

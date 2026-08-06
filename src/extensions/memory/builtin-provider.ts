@@ -9,6 +9,8 @@
 import { MemoryStore, type Fact as StoreFact } from "./store.ts";
 import { type FactRetriever, type ScoredFact as RetrieverScoredFact, type ContradictionResult as RetrieverContradiction } from "./retrieval.ts";
 import type { Scope } from "./schema.ts";
+import { autoExtractFromMessages, extractText, type ExtractableMessage } from "./extract.ts";
+import { SCOPE_GLOBAL, SCOPE_PROJECT } from "./schema.ts";
 import {
   type MemoryProvider,
   type Fact,
@@ -57,9 +59,11 @@ export class BuiltinMemoryProvider implements MemoryProvider {
   private retriever: FactRetriever;
   /** Cached prefetch result, set by queuePrefetch, consumed by prefetch. */
   private cachedPrefetch: { query: string; results: Fact[] } | null = null;
+  /** Project cwd of the current session — project-scopes onSessionEnd/onPreCompress writes. */
+  private sessionCwd: string | undefined;
 
-  constructor(dbPath: string) {
-    this.store = new MemoryStore(dbPath);
+  constructor(dbPath: string, opts: { temporalDecayHalfLifeDays?: number } = {}) {
+    this.store = new MemoryStore(dbPath, { temporalDecayHalfLifeDays: opts.temporalDecayHalfLifeDays });
     this.retriever = this.store.retriever();
   }
 
@@ -67,7 +71,8 @@ export class BuiltinMemoryProvider implements MemoryProvider {
     return true; // builtin is always available
   }
 
-  initialize(_sessionId: string): void {
+  initialize(_sessionId: string, context?: { cwd?: string }): void {
+    this.sessionCwd = context?.cwd;
     // MemoryStore is initialized in the constructor; nothing extra needed.
   }
 
@@ -286,4 +291,55 @@ export class BuiltinMemoryProvider implements MemoryProvider {
       };
     });
   }
+
+  // -- Session lifecycle hooks -------------------------------------------
+
+  /**
+   * Persist a single session-summary fact at session end so the next session
+   * can recall "the previous session was about X". Purely additive: the
+   * per-turn extraction already ran at every agent_end, so this only writes
+   * the topic line (deduped by UNIQUE(scope, content)).
+   */
+  onSessionEnd(messages: unknown[]): void {
+    if (!messages || messages.length === 0) return;
+    const userTexts = messages
+      .filter((m): m is ExtractableMessage => !!m && typeof m === "object" && (m as { role?: unknown }).role === "user")
+      .map((m) => extractText(m.content).trim())
+      .filter((t) => t.length >= 4);
+    if (userTexts.length === 0) return;
+    const topic = userTexts.find((t) => !SESSION_INSTRUCTION_RE.test(t));
+    if (!topic) return; // a session of pure meta-instructions has no durable topic
+    const tail = userTexts.length > 1 ? ` (+${userTexts.length - 1} more)` : "";
+    const summary = `Session: ${topic.slice(0, 120)}${tail}`;
+    try {
+      this.store.add(summary, {
+        category: "insight",
+        scope: this.sessionCwd ? SCOPE_PROJECT : SCOPE_GLOBAL,
+        cwd: this.sessionCwd,
+        source: "session-summary",
+      });
+    } catch {
+      // best-effort — a failed summary must never break session shutdown
+    }
+  }
+
+  /**
+   * Archive messages about to be discarded by context compression. Runs the
+   * same pattern extraction as agent_end (idempotent — already-stored facts
+   * are deduped), and returns a line for the compression summary.
+   */
+  onPreCompress(messages: unknown[]): string {
+    const scan = (messages ?? []) as ExtractableMessage[];
+    try {
+      autoExtractFromMessages(this.store, scan, { cwd: this.sessionCwd });
+    } catch {
+      // best-effort
+    }
+    const userCount = scan.filter((m) => m?.role === "user").length;
+    if (userCount === 0) return "";
+    return `[memory] ${userCount} user message(s) from the compressed range were scanned into long-term memory before discard.`;
+  }
 }
+
+/** Meta-instruction prefixes that must not become a session topic. */
+const SESSION_INSTRUCTION_RE = /用\s*memory\s*工具|调用\s*memory|action\s*=|^\s*请\s*(?:用|调用|执行)/;

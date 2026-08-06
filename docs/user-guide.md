@@ -82,6 +82,7 @@
 /memory notes add user 我偏好中文回答
 /memory notes replace memory "旧项目约定" "新项目约定"
 /memory remove 4
+/memory prune
 /memory clear
 /memory count
 /memory status
@@ -89,11 +90,13 @@
 /memory off
 ```
 
-`/memory status` 显示当前 backend、数据库路径、provider 与可用工具；`/memory setup <provider>` 将选择写入 `~/.pico/agent/settings.json`；`/memory off` 恢复内置 backend。
+`/memory status` 显示当前 backend、数据库路径、provider 与可用工具；`/memory setup <provider>` 将选择写入 `~/.pico/agent/settings.json`；`/memory off` 恢复内置 backend。`/memory prune` 列出并（经确认后）删除"低价值"事实（信任度 < 0.2 且从未被检索过，属于其它项目作用域的事实会被保留），是手动版的记忆清理。
 
-**自动提取**：每轮对话向系统提示词追加记忆头部与 curated notes 快照；`turn_end` 时对用户消息做**实时纠正检测**并立即存储；会话结束时从用户消息中按模式（偏好/决策/纠正/失败/洞察/约定/工具怪癖）自动提取事实并持久化。
+**自动提取**：每轮对话向系统提示词追加记忆头部与 curated notes 快照；`turn_end` 时对用户消息做**实时纠正检测**并立即存储；会话结束时从用户消息中按模式（偏好/决策/纠正/失败/洞察/约定/工具怪癖）自动提取事实并持久化，同时写入一条会话主题摘要（`source=session-summary`，供下个会话回忆"上次会话在做什么"）；上下文压缩丢弃消息前，被压缩范围内的用户消息会先归档进记忆库。
 
-**敏感信息扫描**：存储前自动检测 AWS Access Key、GitHub Token、SSH Private Key、通用 API Key 等模式，匹配则拒绝存储并报错，防止密钥泄露。
+**时间衰减**：检索排序按事实最后更新时间乘以半衰期衰减因子（默认 180 天）——陈旧事实排名下降但不会被隐藏；可在 `~/.pico/agent/settings.json` 的 `memory` 字段配置 `"temporalDecayHalfLifeDays": 0` 关闭（0 = 永不衰减）。每轮注入的回忆块（上限 5 条）还有 2400 字符预算，超出部分截断并标注省略。
+
+**敏感信息扫描**：存储前自动检测 AWS Access Key、GitHub Token、SSH Private Key、通用 API Key 等模式，匹配则拒绝存储并报错，防止密钥泄露；读出侧同样净化——若历史库中存在含密钥模式的事实，注入系统提示词时会被替换为 `[BLOCKED]` 占位，不会把密钥送进上下文。curated notes 在容量连续 3 次写满后会返回终止性错误，提示模型停止重试记忆写入。
 
 **环境变量**：
 

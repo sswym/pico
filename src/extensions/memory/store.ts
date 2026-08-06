@@ -147,14 +147,18 @@ export class MemoryStore {
   readonly dbPath: string;
   readonly db: Database;
   private readonly defaultTrust: number;
+  /** Temporal decay half-life in days applied to search ranking. 0 disables.
+   *  Default 180: stale facts rank lower without ever being hidden. */
+  readonly temporalDecayHalfLifeDays: number;
   /** Set when the DB was corrupt and had to be rebuilt from a backup. */
   recoveryNotice: string | null = null;
   /** Throttle map for retrieval_count bumps: fact_id -> last bump epoch ms. */
   private readonly _lastBump = new Map<number, number>();
 
-  constructor(dbPath: string, opts: { defaultTrust?: number } = {}) {
+  constructor(dbPath: string, opts: { defaultTrust?: number; temporalDecayHalfLifeDays?: number } = {}) {
     this.dbPath = dbPath;
     this.defaultTrust = clampTrust(opts.defaultTrust ?? 0.5);
+    this.temporalDecayHalfLifeDays = opts.temporalDecayHalfLifeDays ?? 180;
     mkdirSync(dirname(dbPath), { recursive: true });
     try {
       this.db = new Database(dbPath);
@@ -563,7 +567,7 @@ export class MemoryStore {
     return ranked;
   }
 
-  private _ftsRows(fts: string, opts: SearchOptions, minTrust: number, limit: number): Array<Fact & { _rank: number }> {
+  private _ftsRows(fts: string, opts: SearchOptions, minTrust: number, limit: number): Array<Fact & { _rank: number; _decay?: number }> {
     const projectKey = opts.scope === SCOPE_PROJECT && opts.cwd ? projectScopeKey(opts.cwd) : null;
     const scopeClause = projectKey ? `(f.scope = ? OR f.scope = ?)` : `f.scope = ?`;
     const scopeParams: string[] = projectKey ? [SCOPE_GLOBAL, projectKey] : [opts.scope ?? SCOPE_GLOBAL];
@@ -571,22 +575,32 @@ export class MemoryStore {
     const boostParams: string[] = projectKey ? [projectKey] : [];
     const catClause = opts.category ? `AND f.category = ?` : "";
     const catParams: string[] = opts.category ? [opts.category] : [];
+    // Temporal decay: computed once in SQL, referenced by alias in ORDER BY
+    // (SQLite allows ORDER BY to reference SELECT aliases), so the decay
+    // parameter binds exactly once.
+    const decaySelect = this.temporalDecayHalfLifeDays > 0
+      ? `, exp(-(julianday('now') - julianday(f.updated_at)) * ?) AS _decay`
+      : "";
+    const decayOrder = this.temporalDecayHalfLifeDays > 0 ? " * _decay" : "";
+    const decayParam = this.temporalDecayHalfLifeDays > 0 ? [Math.LN2 / this.temporalDecayHalfLifeDays] : [];
 
     const rows = this.db
-      .query<Fact & { _rank: number }, Array<string | number>>(
-        `SELECT f.*, (-bm25(facts_fts)) AS _rank FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
+      .query<Fact & { _rank: number; _decay?: number }, Array<string | number>>(
+        `SELECT f.*, (-bm25(facts_fts)) AS _rank${decaySelect} FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
          WHERE facts_fts MATCH ? AND f.trust_score >= ?
          AND ${scopeClause} ${catClause}
-         ORDER BY ${scopeBoost} * (-bm25(facts_fts)) * f.trust_score DESC, f.fact_id DESC
+         ORDER BY ${scopeBoost} * (-bm25(facts_fts)) * f.trust_score${decayOrder} DESC, f.fact_id DESC
          LIMIT ?`,
       )
-      .all(fts, minTrust, ...scopeParams, ...catParams, ...boostParams, limit) as Array<Fact & { _rank: number }>;
+      // Decay's ? binds first — it appears in the SELECT list, before the
+      // MATCH ? in WHERE. Binding order must follow SQL text order.
+      .all(...decayParam, fts, minTrust, ...scopeParams, ...catParams, ...boostParams, limit) as Array<Fact & { _rank: number; _decay?: number }>;
     return rows;
   }
 
   /** Apply the negation penalty to FTS-ranked rows and re-sort. */
   private _applyNegationPenalty(
-    rows: Array<Fact & { _rank: number }>,
+    rows: Array<Fact & { _rank: number; _decay?: number }>,
     terms: string[],
     opts: SearchOptions,
   ): Fact[] {
@@ -605,7 +619,8 @@ export class MemoryStore {
           if (negated) break;
         }
         const boost = projectKey && row.scope === projectKey ? 1.5 : 1.0;
-        const score = row._rank * row.trust_score * boost * (negated ? 0.2 : 1);
+        const decay = row._decay ?? 1;
+        const score = row._rank * row.trust_score * boost * decay * (negated ? 0.2 : 1);
         return { row, score, negated };
       })
       .sort((a, b) => b.score - a.score || b.row.fact_id - a.row.fact_id);
@@ -771,7 +786,22 @@ export class MemoryStore {
 
   /** Create a FactRetriever bound to this store's database. */
   retriever(opts?: { ftsWeight?: number; jaccardWeight?: number; tfidfWeight?: number }): FactRetriever {
-    return new FactRetriever(this.db, opts);
+    // Keep the hybrid retriever on the same temporal-decay schedule as the
+    // FTS5 main path — otherwise related/reason/contradict would resurrect
+    // stale facts the search path ranks down.
+    return new FactRetriever(this.db, {
+      ...opts,
+      temporalDecayHalfLife: this.temporalDecayHalfLifeDays,
+    });
+  }
+
+  /** Decay factor for a fact's updated_at (UTC-normalised), JS mirror of the
+   *  SQL exp() used by _ftsRows. Half-life <= 0 means no decay. */
+  private _decayFactor(timestampStr: string): number {
+    if (this.temporalDecayHalfLifeDays <= 0) return 1;
+    const ms = Date.now() - Date.parse(`${timestampStr.replace(" ", "T")}Z`);
+    if (Number.isNaN(ms) || ms <= 0) return 1;
+    return Math.pow(0.5, ms / (this.temporalDecayHalfLifeDays * 86_400_000));
   }
 
   // ---- entity helpers ----------------------------------------------------
@@ -882,6 +912,7 @@ export class MemoryStore {
         }
         if (score === 0) return null;
         if (negatedHit) score *= 0.2;
+        score *= this._decayFactor(fact.updated_at);
         return { fact, score: score * fact.trust_score };
       })
       .filter((row): row is { fact: Fact; score: number } => row !== null)

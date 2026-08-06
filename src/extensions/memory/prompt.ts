@@ -9,6 +9,7 @@
  */
 import type { Fact } from "./provider.ts";
 import { VALID_CATEGORIES } from "./schema.ts";
+import { scanSecrets } from "./secrets.ts";
 import MEMORY_PROMPT_TEMPLATE from "../../prompts/memory-tool.md" with { type: "text" };
 
 const CATEGORY_LIST = VALID_CATEGORIES.join(" | ");
@@ -72,14 +73,40 @@ function scopeTag(scope: string): string {
   return `[${scope}] `;
 }
 
+/**
+ * Hard budget for the per-turn recall block. Facts past the budget are
+ * dropped with a marker instead of silently truncating a line mid-way —
+ * recall is a hint, never a licence to crowd out the real task context.
+ */
+export const RECALL_BUDGET_CHARS = 2400;
+const RECALL_TRUNCATION_MARKER = "\n...[recall truncated: further memories omitted]...\n";
+
+/** Redact secret-like fact content before it reaches the system prompt. */
+function sanitizeRecallLine(fact: Fact): string {
+  const scan = scanSecrets(fact.content);
+  if (!scan.blocked) return fact.content;
+  return `[BLOCKED: fact #${fact.fact_id} contained a secret-like pattern — redacted from recall]`;
+}
+
 export function formatRecallBlock(facts: Fact[]): string {
   if (facts.length === 0) return "";
-  const lines = facts.map((f) => {
+  const lines: string[] = [];
+  let used = 0;
+  let omitted = 0;
+  for (const f of facts) {
+    const content = sanitizeRecallLine(f);
     const trust = f.trust_score.toFixed(2);
     const cat = f.category !== "general" ? ` (${f.category})` : "";
     const scope = scopeTag(f.scope);
-    return `- [${trust}${cat}] ${scope}${f.content} <memory:${f.fact_id}>`;
-  });
+    const line = `- [${trust}${cat}] ${scope}${content} <memory:${f.fact_id}>`;
+    if (used + line.length + 1 > RECALL_BUDGET_CHARS) {
+      omitted++;
+      continue;
+    }
+    lines.push(line);
+    used += line.length + 1;
+  }
+  if (omitted > 0) lines.push(RECALL_TRUNCATION_MARKER.trim());
   return ["## Recalled memory (consult before answering)", ...lines].join("\n");
 }
 
