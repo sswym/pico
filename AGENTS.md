@@ -35,7 +35,7 @@ PI_PACKAGE_DIR=node_modules/@earendil-works/pi-coding-agent bun run scripts/memo
 
 ## 架构
 
-pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 20 个 ExtensionFactory 插件注入功能。
+pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 19 个 ExtensionFactory 插件注入功能。
 
 ### 入口链
 
@@ -47,9 +47,9 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 
 ### 扩展注册顺序
 
-唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（20 个扩展，含 phase/dependsOn/safety 元数据，注册时校验重复与依赖顺序）。
+唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（19 个扩展，含 phase/dependsOn/safety 元数据，注册时校验重复与依赖顺序）。
 
-`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → doctor → guidance`
+`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → doctor`
 
 ### 核心模式
 
@@ -62,7 +62,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 ### 关键目录
 
 ```
-src/extensions/    — 20 个功能扩展（memory、subagent、lsp、plan、guidance 等）
+src/extensions/    — 19 个功能扩展（memory、subagent、lsp、plan 等）
 src/runtime/       — 启动链：参数构建、嵌入资源解包、setup 命令、扩展注册表
 src/setup/         — `pico setup` 向导
 src/prompts/       — 系统提示词模板（.md）

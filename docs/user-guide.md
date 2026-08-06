@@ -256,11 +256,7 @@ subagent(chain=[
 
 ---
 
-## 9.5 离线帮助（`guidance` 扩展）
-
-- **`/help`**（别名 `/commands`）：离线命令与快捷键速查，无需模型即可查看；全新用户不再因 `/help` 被当消息发送而撞上 API key 报错。
-
-## 9.6 生成阶段反馈（`retro-theme` 扩展）
+## 9.5 生成阶段反馈（`retro-theme` 扩展）
 
 - **生成阶段反馈**：长生成期间工作区显示 `thinking Ns` / `streaming Ns` / `tool <name> Ns` 动态状态，替代无信息的 "Working..."。
 

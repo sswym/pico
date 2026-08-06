@@ -2,7 +2,6 @@ import type { ExtensionFactory, InlineExtension } from "@earendil-works/pi-codin
 import { askExtension } from "../extensions/ask/index.ts";
 import { cacheOptimizerExtension } from "../extensions/cache-optimizer/index.ts";
 import { doctorExtension } from "../extensions/doctor/index.ts";
-import { guidanceExtension } from "../extensions/guidance/index.ts";
 import { hooksExtension } from "../extensions/hooks/index.ts";
 import { initExtension } from "../extensions/init/index.ts";
 import { inputHistoryExtension } from "../extensions/input-history/index.ts";
@@ -139,7 +138,6 @@ export const defaultExtensions = [
     safety: { touchesFilesystem: true, spawnsProcess: true },
   },
   { name: "doctor", factory: doctorExtension, phase: "diagnostics" },
-  { name: "guidance", factory: guidanceExtension, phase: "diagnostics" },
 ] satisfies readonly PicoExtension[];
 
 export function createDefaultExtensionRegistry(): ExtensionRegistry {
