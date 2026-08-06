@@ -240,6 +240,75 @@ export class MemoryStore {
         }
       }
     }
+    this._migrateScopeUnique();
+  }
+
+  /**
+   * Scope-aware uniqueness (2026-08): the original schema declared
+   * `content TEXT NOT NULL UNIQUE` — a global singleton that silently
+   * swallowed the same content written under a different project scope.
+   * Rebuild the facts table once with UNIQUE(scope, content).
+   *
+   * Idempotency: the legacy column constraint shows up as the single-column
+   * autoindex `sqlite_autoindex_facts_1`; the rebuilt table's autoindex has
+   * two columns, so re-opens skip the rebuild.
+   */
+  private _migrateScopeUnique(): void {
+    try {
+      const cols = this.db
+        .query<{ name: string | null }, []>("PRAGMA index_info('sqlite_autoindex_facts_1')")
+        .all();
+      if (cols.length !== 1) return; // already scope-unique (or no autoindex)
+      const fk = this.db.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get();
+      this.db.exec("PRAGMA foreign_keys = OFF");
+      try {
+        this.db.exec("BEGIN");
+        try {
+          this.db.exec(`
+            CREATE TABLE facts_migrated (
+              fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+              content         TEXT NOT NULL,
+              category        TEXT NOT NULL DEFAULT 'general',
+              tags            TEXT NOT NULL DEFAULT '',
+              trust_score     REAL NOT NULL DEFAULT 0.5,
+              retrieval_count INTEGER NOT NULL DEFAULT 0,
+              helpful_count   INTEGER NOT NULL DEFAULT 0,
+              created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              scope           TEXT NOT NULL DEFAULT 'global',
+              correction_of   INTEGER REFERENCES facts_migrated(fact_id),
+              source          TEXT NOT NULL DEFAULT 'auto',
+              tfidf_vector    TEXT NOT NULL DEFAULT '{}',
+              UNIQUE(scope, content)
+            )
+          `);
+          this.db.exec(`
+            INSERT INTO facts_migrated (fact_id, content, category, tags, trust_score,
+              retrieval_count, helpful_count, created_at, updated_at, scope,
+              correction_of, source, tfidf_vector)
+            SELECT fact_id, content, category, tags, trust_score,
+              retrieval_count, helpful_count, created_at, updated_at, scope,
+              correction_of, source, tfidf_vector FROM facts
+          `);
+          this.db.exec("DROP TABLE facts");
+          this.db.exec("ALTER TABLE facts_migrated RENAME TO facts");
+          this.db.exec("COMMIT");
+        } catch (err) {
+          this.db.exec("ROLLBACK");
+          throw err;
+        }
+      } finally {
+        // The old table's triggers/FTS shadow died with it — recreate them
+        // and resync the FTS index from the rebuilt table.
+        this.db.exec(SCHEMA);
+        this.db.exec("INSERT INTO facts_fts(facts_fts) VALUES('rebuild')");
+        this.db.exec(`PRAGMA foreign_keys = ${fk?.foreign_keys ? "ON" : "OFF"}`);
+      }
+    } catch (err) {
+      // A failed rebuild must not brick the store: keep the legacy schema
+      // (add() dedup is still scope-aware) and surface the reason.
+      console.warn(`[pico memory] scope-unique migration failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   close(): void {
@@ -291,13 +360,16 @@ export class MemoryStore {
     const correctionOf = opts.correctionOf ?? null;
     const source = opts.source ?? "auto";
 
-    // Dedup FIRST: re-adding identical content returns the existing fact_id
-    // without side effects. This must happen before any correction penalty —
-    // otherwise a correction whose content already exists would dock the
-    // original fact's trust while inserting nothing new.
+    // Dedup FIRST: re-adding identical content in the SAME scope returns the
+    // existing fact_id without side effects. Scope-aware on purpose — the same
+    // text under a different project scope is a distinct fact (UNIQUE(scope,
+    // content)), otherwise project B's write would be swallowed and invisible
+    // to B's read paths. Runs before any correction penalty — a correction
+    // whose content already exists must not dock the original's trust while
+    // inserting nothing new.
     const existing = this.db
-      .query<{ fact_id: number }, [string]>("SELECT fact_id FROM facts WHERE content = ?")
-      .get(trimmed);
+      .query<{ fact_id: number }, [string, string]>("SELECT fact_id FROM facts WHERE content = ? AND scope = ?")
+      .get(trimmed, scopeKey);
     if (existing) return existing.fact_id;
 
     // Correction penalty + insert + entity/TF-IDF post-processing must be

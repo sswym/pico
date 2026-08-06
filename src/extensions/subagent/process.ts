@@ -34,6 +34,10 @@ export interface RunJsonProcessResult {
 /** 2.6.3: stderr accumulates unboundedly and floods failed-result messages. */
 const STDERR_CAP_BYTES = 256 * 1024;
 const STDERR_OVERFLOW_MARKER = "[stderr truncated — head dropped]\n";
+/** Cap on the partial-line stdout buffer: a runaway child emitting one giant
+ *  unterminated line must not grow `buffer` without bound (complete lines are
+ *  consumed immediately; only the trailing partial accumulates). */
+const STDOUT_PARTIAL_CAP_BYTES = 1024 * 1024;
 
 /**
  * Subagent nesting depth guard (mirrors PICO_HOOK_RECURSION_GUARD): every
@@ -232,6 +236,12 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 		proc.stdout.on("data", (data) => {
 			const text = typeof data === "string" ? data : stdoutDecoder.decode(data as Uint8Array, { stream: true });
 			buffer += text;
+			if (Buffer.byteLength(buffer, "utf8") > STDOUT_PARTIAL_CAP_BYTES) {
+				// One giant unterminated line: its head is already gone, so it
+				// can never parse — drop it entirely instead of buffering it
+				// without bound. Newline-terminated events keep parsing.
+				buffer = "";
+			}
 			// Incremental line splitting: re-splitting the whole buffer on
 			// every chunk is O(n²) once output grows; only scan the appended
 			// text for complete lines and keep the trailing partial in buffer.
@@ -266,6 +276,10 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 			hangTimer = setTimer(() => {
 				if (timeoutHandle) clearTimer(timeoutHandle);
 				if (killTimer) clearTimer(killTimer);
+				// `close` (which detaches the abort listener) may never fire
+				// on this path — detach here or a later abort would kill the
+				// stale (possibly recycled) pid's process group.
+				detachAbort();
 				resolve(code ?? 1);
 			}, 10_000);
 		});
@@ -281,6 +295,7 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 			resolve(1);
 		});
 
+		let detachAbort: () => void = () => {};
 		if (options.signal) {
 			const onAbort = () => killProc("abort");
 			if (options.signal.aborted) onAbort();
@@ -289,9 +304,9 @@ export async function runJsonProcess(options: RunJsonProcessOptions): Promise<Ru
 			// with many subagent runs don't accumulate listeners on the
 			// shared session signal (and don't SIGTERM a dead process on a
 			// later interrupt).
-			const detach = () => options.signal?.removeEventListener("abort", onAbort);
-			proc.on("close", detach);
-			proc.on("error", detach);
+			detachAbort = () => options.signal?.removeEventListener("abort", onAbort);
+			proc.on("close", detachAbort);
+			proc.on("error", detachAbort);
 		}
 
 		if (options.timeoutMs && options.timeoutMs > 0) {

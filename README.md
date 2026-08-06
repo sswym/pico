@@ -41,6 +41,7 @@ bun run bin/pico.ts --help     # 查看所有上游标志
 
 - 项目级 shell hooks（`PICO_ENABLE_PROJECT_HOOKS`）
 - 项目级 MCP 服务器（`PICO_ENABLE_PROJECT_MCP`）
+- 项目级 LSP 配置（`PICO_ENABLE_PROJECT_LSP`）
 - 非交互模式自动批准计划（`PICO_ALLOW_UNATTENDED_PLAN_APPROVAL`）
 - LSP 自动格式化写回（`PICO_ALLOW_LSP_FORMAT_ON_WRITE`）
 - 非交互模式运行项目代理（`PICO_ALLOW_UNATTENDED_PROJECT_AGENTS`）

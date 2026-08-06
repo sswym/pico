@@ -58,7 +58,10 @@ export function prepareEmbeddedRuntime(isBunBinary: boolean): EmbeddedRuntimeDir
       const filePath = resolve(tmpDir, key);
       mkdirSync(dirname(filePath), { recursive: true });
 
-      if (key.startsWith("assets/") && !key.endsWith(".json")) {
+      // build.ts base64-encodes EVERY file under assets/ (regardless of
+      // extension) — decoding only non-.json would write an assets/*.json
+      // as base64 text.
+      if (key.startsWith("assets/")) {
         writeFileSync(filePath, Buffer.from(content, "base64"));
       } else {
         writeFileSync(filePath, content, "utf-8");

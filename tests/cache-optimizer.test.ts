@@ -100,6 +100,31 @@ test("does not lift ambiguous stable candidates", () => {
   expect(result.systemPrompt).toBe(prompt);
 });
 
+test("a short candidate nested inside a stable block does not hollow it out", () => {
+  // The append prompt is a verbatim (>= 64 char) substring of the AGENTS.md
+  // section. Lifting the short candidate first would carve a hole in the
+  // block, breaking its match and dropping the rest of its text; the block
+  // must survive whole with the snippet still inside it.
+  const stable = "Project convention: use Bun APIs, prefer import type over any, keep extension edits narrowly scoped, and never commit generated files.";
+  const nested = "use Bun APIs, prefer import type over any, keep extension edits narrowly scoped";
+  const prompt = [
+    "Dynamic git state.",
+    `## AGENTS.md\n\n${stable}`,
+    "More dynamic context.",
+  ].join("\n\n");
+
+  const result = optimizeSystemPrompt(prompt, makeOpts({
+    contextFiles: [{ path: "AGENTS.md", content: stable }],
+    appendSystemPrompt: nested,
+  }));
+
+  expect(result.changed).toBe(true);
+  // The AGENTS.md block survives whole — no hole where the nested snippet was.
+  expect(result.systemPrompt).toContain(`## AGENTS.md\n\n${stable}`);
+  // The whole block (nested snippet included) is hoisted to the prefix.
+  expect(result.systemPrompt.startsWith(`## AGENTS.md\n\n${stable}`)).toBe(true);
+});
+
 test("injects prompt_cache_key ONLY for official OpenAI endpoints (2.5.5)", () => {
   const payload = { model: "gpt", messages: [], prompt_cache_retention: "long" };
   const model = {

@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { rmSync } from "node:fs";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { buildRuntimeArgs } from "../src/runtime/args.ts";
+import { buildRuntimeArgs, isNonTuiArg } from "../src/runtime/args.ts";
 import { prepareEmbeddedRuntime } from "../src/runtime/embedded-runtime.ts";
 import { ExtensionRegistry } from "../src/runtime/extensions.ts";
 
@@ -62,6 +62,21 @@ test("buildRuntimeArgs does not duplicate existing bundled paths", () => {
     entryMetaUrl,
     isBunBinary: false,
   })).toEqual(["--prompt-template", promptsDir, "--skill", skillsDir]);
+});
+
+test("isNonTuiArg catches separated AND equals-form non-TUI flags", () => {
+  // Separated forms (upstream's canonical spelling).
+  expect(isNonTuiArg("--mode")).toBe(true);
+  expect(isNonTuiArg("--print")).toBe(true);
+  expect(isNonTuiArg("-p")).toBe(true);
+  // Equals forms — a miss here lets console.clear() corrupt RPC/JSON stdout
+  // for consumers running in a TTY.
+  expect(isNonTuiArg("--mode=json")).toBe(true);
+  expect(isNonTuiArg("--mode=rpc")).toBe(true);
+  expect(isNonTuiArg("--print=hello")).toBe(true);
+  // Ordinary flags and values stay clear.
+  expect(isNonTuiArg("--verbose")).toBe(false);
+  expect(isNonTuiArg("json")).toBe(false);
 });
 
 test("ExtensionRegistry returns named hidden inline extensions in order", () => {

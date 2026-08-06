@@ -24,7 +24,7 @@ import "./env-bootstrap.ts";
 
 import { main, VERSION as UPSTREAM_VERSION } from "@earendil-works/pi-coding-agent";
 import picoPkg from "../package.json" with { type: "json" };
-import { buildRuntimeArgs } from "../src/runtime/args.ts";
+import { buildRuntimeArgs, isNonTuiArg } from "../src/runtime/args.ts";
 import { isBunBinaryRuntime, prepareEmbeddedRuntime } from "../src/runtime/embedded-runtime.ts";
 import { createDefaultExtensionRegistry } from "../src/runtime/extensions.ts";
 import { runSetupCommandIfRequested } from "../src/runtime/setup.ts";
@@ -124,7 +124,7 @@ process.title = "pico";
 // printed help above — a stray clear would destroy both.
 const isHelpOrVersion =
   rawArgs.includes("--help") || rawArgs.includes("-h") || rawArgs.includes("--version") || rawArgs.includes("-v");
-const isNonTuiMode = rawArgs.some((arg) => arg === "--print" || arg === "--mode" || arg === "-p");
+const isNonTuiMode = rawArgs.some(isNonTuiArg);
 if (process.stdout.isTTY && !isHelpOrVersion && !isNonTuiMode) {
   console.clear();
 }

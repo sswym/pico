@@ -222,9 +222,15 @@ export function optimizeSystemPrompt(original: string, opts: BuildSystemPromptOp
     occurrenceCount.set(part, count);
   }
 
+  // Extract longer candidates FIRST: a short candidate that is a verbatim
+  // substring of a longer stable block (e.g. a guideline sentence copied
+  // inside an AGENTS.md section) would otherwise be carved out of the
+  // block's middle, breaking the block match and silently dropping the rest
+  // of its text from the prompt.
+  const ordered = [...candidates].sort((a, b) => b.length - a.length);
   const stableParts: string[] = [];
   let rest = original;
-  for (const part of candidates) {
+  for (const part of ordered) {
     if (occurrenceCount.get(part) !== 1) continue;
     const index = rest.indexOf(part);
     if (index < 0) continue;

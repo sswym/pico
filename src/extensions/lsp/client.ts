@@ -353,9 +353,11 @@ export class LspClient {
   }
 
   didSave(uri: string): void {
-    // Invalidate cached diagnostics so waitForDiagnostics observes the
-    // publish triggered by THIS save rather than stale pre-save state.
-    this.diagnostics.delete(uri);
+    // Keep cached diagnostics intact: they are the fallback when a server
+    // does not re-publish after didSave (waitForDiagnostics itself never
+    // reads the cache — only fresh publishes count — so callers deciding
+    // "no diagnostics" from a silent server would otherwise report false
+    // negatives for files that do have errors).
     this.notify("textDocument/didSave", { textDocument: { uri } });
   }
 
@@ -675,14 +677,20 @@ export function pathToUri(filePath: string): string {
   const abs = filePath.startsWith("/") ? filePath : `/${filePath}`;
   // Encode spaces/#/non-ASCII — a raw file:// URL is invalid for strict
   // servers (rust-analyzer/gopls) and round-trips through uriToPath broken.
-  return `file://${encodeURI(abs)}`;
+  // encodeURI leaves `#` and `?` untouched, but both are URI delimiters: a
+  // file named "foo#1.ts" must not arrive as file:///foo (fragment "1.ts").
+  const encoded = encodeURI(abs).replace(/#/g, "%23").replace(/\?/g, "%3F");
+  return `file://${encoded}`;
 }
 
 export function uriToPath(uri: string): string {
   if (uri.startsWith("file://")) {
     const path = uri.slice(7);
     try {
-      return decodeURI(path);
+      // decodeURIComponent (not decodeURI): decodeURI leaves reserved
+      // characters like %23/# and %3F/? encoded, breaking the round-trip
+      // for the very filenames pathToUri now escapes.
+      return decodeURIComponent(path);
     } catch {
       // Malformed percent-encoding — return as-is rather than corrupting it.
       return path;

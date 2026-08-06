@@ -294,6 +294,15 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     planFile = null;
     return {};
   });
+  // `/reload` tears the session down and starts a fresh one WITHOUT firing
+  // the switch/fork events (only session_shutdown → session_start). Module
+  // state survives the factory re-run, so without this reset the new session
+  // would inherit a stale plan toggle and keep blocking writes.
+  pi.on("session_shutdown", () => {
+    if (planActive) publishPlanMode(false);
+    planActive = false;
+    planFile = null;
+  });
 
   // ---- system prompt injection -----------------------------------------
   // Append the plan-mode rules + plan file path to the system prompt while

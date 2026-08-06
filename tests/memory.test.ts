@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "../src/extensions/memory/store.ts";
@@ -47,6 +47,79 @@ test("add returns id and is idempotent on duplicate content", () => {
   const id2 = store.add("I prefer using bun, never node.js", { category: "user_pref" });
   expect(id1).toBe(id2);
   expect(store.count()).toBe(1);
+});
+
+test("same content in different project scopes are distinct facts", () => {
+  const cwdA = "/proj/a";
+  const cwdB = "/proj/b";
+  const idA = store.add("this project uses redux", { category: "project", scope: "project", cwd: cwdA });
+  const idB = store.add("this project uses redux", { category: "project", scope: "project", cwd: cwdB });
+  // Cross-scope duplicate must NOT be swallowed by the content dedup.
+  expect(idA).not.toBe(idB);
+  expect(store.count()).toBe(2);
+  // B's read paths see B's fact only — A's identical fact stays invisible.
+  const hitsB = store.search("redux", { limit: 10, minTrust: 0, scope: "project", cwd: cwdB });
+  expect(hitsB.map((h) => h.fact_id)).toContain(idB);
+  expect(hitsB.map((h) => h.fact_id)).not.toContain(idA);
+  // Same-scope re-add still dedups to the existing id.
+  expect(store.add("this project uses redux", { category: "project", scope: "project", cwd: cwdB })).toBe(idB);
+  // Global vs project with the same text are distinct facts too.
+  const idGlobal = store.add("this project uses redux", { category: "project" });
+  expect(idGlobal).not.toBe(idA);
+  expect(idGlobal).not.toBe(idB);
+});
+
+test("legacy global-unique schema migrates to scope-unique without data loss", () => {
+  const legacyPath = join(tmpdir(), `pico-legacy-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  try {
+    // Recreate the pre-fix schema: content UNIQUE globally, scope added later.
+    const legacy = new Database(legacyPath);
+    legacy.exec(`
+      CREATE TABLE facts (
+        fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        content         TEXT NOT NULL UNIQUE,
+        category        TEXT NOT NULL DEFAULT 'general',
+        tags            TEXT NOT NULL DEFAULT '',
+        trust_score     REAL NOT NULL DEFAULT 0.5,
+        retrieval_count INTEGER NOT NULL DEFAULT 0,
+        helpful_count   INTEGER NOT NULL DEFAULT 0,
+        created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        scope           TEXT NOT NULL DEFAULT 'global',
+        correction_of   INTEGER REFERENCES facts(fact_id),
+        source          TEXT NOT NULL DEFAULT 'auto',
+        tfidf_vector    TEXT NOT NULL DEFAULT '{}'
+      );
+      INSERT INTO facts (content, category, trust_score, scope, source, tfidf_vector)
+        VALUES ('legacy fact about postgres', 'project', 0.7, 'project:/proj/a', 'auto', '{}');
+    `);
+    legacy.close();
+
+    const migrated = new MemoryStore(legacyPath);
+    // Data survived the rebuild.
+    expect(migrated.count()).toBe(1);
+    const fact = migrated.search("postgres", { limit: 5, minTrust: 0, scope: "project", cwd: "/proj/a" });
+    expect(fact.map((f) => f.content)).toContain("legacy fact about postgres");
+    // FTS shadow was rebuilt — the trigger path works.
+    expect(migrated.add("legacy fact about postgres", { category: "project", scope: "project", cwd: "/proj/a" }))
+      .toBe(fact[0]!.fact_id);
+    // The old global UNIQUE is gone: same content, other scope inserts cleanly.
+    const otherScope = migrated.add("legacy fact about postgres", { category: "project", scope: "project", cwd: "/proj/b" });
+    expect(otherScope).not.toBe(fact[0]!.fact_id);
+    // Correction self-FK survived the rebuild.
+    const corrected = migrated.add("legacy fact about postgresql", { category: "project", scope: "project", cwd: "/proj/a", correctionOf: fact[0]!.fact_id });
+    expect(migrated.get(corrected)!.correction_of).toBe(fact[0]!.fact_id);
+    migrated.close();
+
+    // Re-opening skips the rebuild (idempotent).
+    const reopened = new MemoryStore(legacyPath);
+    expect(reopened.count()).toBe(3);
+    reopened.close();
+  } finally {
+    try { rmSync(legacyPath); } catch { }
+    try { rmSync(`${legacyPath}-wal`); } catch { }
+    try { rmSync(`${legacyPath}-shm`); } catch { }
+  }
 });
 
 test("search returns FTS hits weighted by trust score", () => {
@@ -1252,6 +1325,36 @@ test("CuratedMemoryStore rejects add when the file drifted out of round-trip", (
   }
 });
 
+test("CuratedMemoryStore refuses to clobber a file another process changed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pico-curated-race-"));
+  try {
+    const curated = new CuratedMemoryStore({ dir });
+    curated.loadFromDisk();
+    curated.add("memory", "first");
+
+    // Simulate another pico instance landing between our read and our
+    // rename: the guarded write must refuse instead of silently losing the
+    // other writer's entries (last-writer-wins).
+    const anyStore = curated as unknown as {
+      lastSeenMtimes: Map<string, number>;
+      write: (path: string, entries: string[]) => void;
+    };
+    const writePath = join(dir, "MEMORY.md");
+    anyStore.lastSeenMtimes.set(writePath, statSync(writePath).mtimeMs);
+    writeFileSync(writePath, "external\n§\nnote", "utf8");
+    expect(() => anyStore.write(writePath, ["clobber"])).toThrow(/concurrent writer/);
+    // The external write survives untouched.
+    expect(readFileSync(writePath, "utf8")).toContain("external");
+
+    // An unchanged file writes normally.
+    anyStore.lastSeenMtimes.set(writePath, statSync(writePath).mtimeMs);
+    expect(() => anyStore.write(writePath, ["mine"])).not.toThrow();
+    expect(readFileSync(writePath, "utf8")).toBe("mine");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---- category distribution + db path in /memory status (P2) ---------------
 test("MemoryStore.countByCategory groups facts per category", () => {
   const store = new MemoryStore(":memory:");
@@ -1408,17 +1511,15 @@ test("2.3.4: remove/update refuse cross-project facts", async () => {
     const mineId = mkProvider.add("project fact in my proj", { category: "project", scope: "project", cwd: "/my/proj" });
     const deps = { provider: mkProvider, manager: new ProviderManager({ backend: "builtin" }), currentCwd: "/my/proj" };
 
-    const out = await executeMemoryToolAction({ action: "remove", fact_id: otherId }, deps);
-    expect(JSON.parse(out.content[0]!.text).error).toContain("another project");
+    expect(() => executeMemoryToolAction({ action: "remove", fact_id: otherId }, deps)).toThrow("another project");
     expect(mkProvider.get(otherId)).not.toBeNull();
 
-    const out2 = await executeMemoryToolAction({ action: "remove", fact_id: mineId }, deps);
+    const out2 = executeMemoryToolAction({ action: "remove", fact_id: mineId }, deps);
     expect(JSON.parse(out2.content[0]!.text).status).toBe("removed");
 
     // update path is gated the same way
     const id3 = mkProvider.add("third fact", { category: "project", scope: "project", cwd: "/other/proj" });
-    const out3 = await executeMemoryToolAction({ action: "update", fact_id: id3, content: "changed" }, deps);
-    expect(JSON.parse(out3.content[0]!.text).error).toContain("another project");
+    expect(() => executeMemoryToolAction({ action: "update", fact_id: id3, content: "changed" }, deps)).toThrow("another project");
   } finally {
     mkProvider.shutdown();
   }

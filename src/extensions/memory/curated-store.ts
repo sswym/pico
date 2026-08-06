@@ -94,13 +94,21 @@ const BACKUP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface CuratedWriteResult {
   success: boolean;
+  target: CuratedTarget;
   message?: string;
   error?: string;
-  target: CuratedTarget;
   entryCount: number;
   usage: string;
   currentEntries?: string[];
   driftBackup?: string;
+}
+
+/** Thrown by write() when the on-disk file changed since the last read. */
+class ConcurrentWriteError extends Error {
+  constructor() {
+    super("file changed on disk since the last read (concurrent writer)");
+    this.name = "ConcurrentWriteError";
+  }
 }
 
 export class CuratedMemoryStore {
@@ -111,6 +119,9 @@ export class CuratedMemoryStore {
   private memoryEntries: string[] = [];
   private userEntries: string[] = [];
   private snapshot: Record<CuratedTarget, string> = { memory: "", user: "" };
+  /** mtime of each target file at last read — the baseline for write()'s
+   *  concurrent-writer guard. */
+  private lastSeenMtimes = new Map<string, number>();
 
   constructor(opts: { dir?: string; memoryCharLimit?: number; userCharLimit?: number } = {}) {
     this.dir = opts.dir ?? defaultDir();
@@ -183,7 +194,14 @@ export class CuratedMemoryStore {
     if (over) return over;
 
     this.setEntries(target, next);
-    this.write(pathFor(this.dir, target), next);
+    try {
+      this.write(pathFor(this.dir, target), next);
+    } catch (err) {
+      if (err instanceof ConcurrentWriteError) {
+        return this.result(target, false, undefined, "File was modified by another process — retry to merge the latest state.");
+      }
+      throw err;
+    }
     return this.result(target, true, "Entry added.");
   }
 
@@ -212,7 +230,14 @@ export class CuratedMemoryStore {
     if (over) return over;
 
     this.setEntries(target, entries);
-    this.write(pathFor(this.dir, target), entries);
+    try {
+      this.write(pathFor(this.dir, target), entries);
+    } catch (err) {
+      if (err instanceof ConcurrentWriteError) {
+        return this.result(target, false, undefined, "File was modified by another process — retry to merge the latest state.");
+      }
+      throw err;
+    }
     return this.result(target, true, "Entry replaced.");
   }
 
@@ -232,18 +257,26 @@ export class CuratedMemoryStore {
 
     entries.splice(matches[0]!.index, 1);
     this.setEntries(target, entries);
-    this.write(pathFor(this.dir, target), entries);
+    try {
+      this.write(pathFor(this.dir, target), entries);
+    } catch (err) {
+      if (err instanceof ConcurrentWriteError) {
+        return this.result(target, false, undefined, "File was modified by another process — retry to merge the latest state.");
+      }
+      throw err;
+    }
     return this.result(target, true, "Entry removed.");
   }
 
   clear(target?: CuratedTarget): void {
     if (!target || target === "memory") {
       this.memoryEntries = [];
-      this.write(pathFor(this.dir, "memory"), []);
+      // Clear is intentionally destructive — no concurrent-writer guard.
+      this.write(pathFor(this.dir, "memory"), [], { guard: false });
     }
     if (!target || target === "user") {
       this.userEntries = [];
-      this.write(pathFor(this.dir, "user"), []);
+      this.write(pathFor(this.dir, "user"), [], { guard: false });
     }
   }
 
@@ -352,7 +385,16 @@ export class CuratedMemoryStore {
     const path = pathFor(this.dir, target);
     const drift = opts.skipDrift ? null : this.detectDrift(target);
     this.setEntries(target, unique(this.read(path)));
+    this.recordMtime(path);
     return drift;
+  }
+
+  private recordMtime(path: string): void {
+    try {
+      this.lastSeenMtimes.set(path, statSync(path).mtimeMs);
+    } catch {
+      this.lastSeenMtimes.set(path, 0); // absent at last read
+    }
   }
 
   private read(path: string): string[] {
@@ -366,8 +408,23 @@ export class CuratedMemoryStore {
     }
   }
 
-  private write(path: string, entries: string[]): void {
+  private write(path: string, entries: string[], opts: { guard?: boolean } = {}): void {
     mkdirSync(this.dir, { recursive: true });
+    if (opts.guard !== false) {
+      // Two pico instances writing the same MEMORY.md/USER.md: the second
+      // rename would silently clobber the first instance's entries
+      // (last-writer-wins). Refuse when the on-disk state moved on since the
+      // last read — the caller surfaces this as a visible failure with a
+      // retry hint instead of losing data.
+      const seen = this.lastSeenMtimes.get(path) ?? 0;
+      let current = 0;
+      try {
+        current = statSync(path).mtimeMs;
+      } catch {
+        current = 0; // absent
+      }
+      if (current !== seen) throw new ConcurrentWriteError();
+    }
     const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
     writeFileSync(tmp, entries.length === 0 ? "" : entries.join(ENTRY_DELIMITER), "utf-8");
     renameSync(tmp, path);

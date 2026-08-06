@@ -388,3 +388,26 @@ test("/plan off exits plan mode", async () => {
   expect(__getPlanStateForTests().planActive).toBe(false);
   expect(__getPlanStateForTests().planFile).toBeNull();
 });
+
+test("/reload sequence (session_shutdown) resets stale plan mode", async () => {
+  const pi = makeFakePi();
+  planExtension(pi as any);
+  const ctx = makeCtx({ sessionId: "reload-session" });
+  await pi.tools.get("EnterPlanMode")!.execute("c", {}, undefined, undefined, ctx);
+  expect(__getPlanStateForTests().planActive).toBe(true);
+
+  // /reload tears the session down and starts a fresh one WITHOUT the
+  // switch/fork events — only session_shutdown → session_start fires.
+  const shutdown = pi.handlers["session_shutdown"]![0]!;
+  await shutdown({ reason: "reload" }, ctx);
+  expect(__getPlanStateForTests().planActive).toBe(false);
+  expect(__getPlanStateForTests().planFile).toBeNull();
+
+  // The fresh session must not inherit the write block.
+  const block = pi.handlers["tool_call"]![0]!;
+  const result = await block(
+    { type: "tool_call", toolCallId: "t", toolName: "bash", input: { command: "ls" } },
+    ctx,
+  );
+  expect(result).toBeUndefined();
+});

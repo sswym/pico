@@ -44,12 +44,12 @@ function jsonResult(payload: unknown) {
   };
 }
 
-function errorResult(message: string) {
-  const payload = { error: message };
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
-    details: payload,
-  };
+function errorResult(message: string): never {
+  // Throw instead of returning an isError payload: the upstream agent loop
+  // only derives tool failures from thrown exceptions, so a returned error
+  // object would render as a successful call (the model still sees the text
+  // either way).
+  throw new Error(message);
 }
 
 function asCategory(raw: unknown): Category | undefined {

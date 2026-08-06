@@ -195,7 +195,7 @@ flowchart TD
 
 ### 3.7 安全策略（policy）
 
-四个安全开关，统一解析链：**env（1/true/yes/on）→ settings.json `safety` 字段 → 默认拒绝**：
+五个安全开关，统一解析链：**env（1/true/yes/on）→ settings.json `safety` 字段 → 默认拒绝**：
 
 | 开关 | env | 作用点 |
 |---|---|---|
@@ -203,6 +203,7 @@ flowchart TD
 | LSP 写后格式化 | `PICO_ALLOW_LSP_FORMAT_ON_WRITE` | lsp 写透传 |
 | 项目级 hooks | `PICO_ENABLE_PROJECT_HOOKS` | hooks 配置加载 |
 | 项目级 MCP | `PICO_ENABLE_PROJECT_MCP` | mcp 配置加载 |
+| 项目级 LSP | `PICO_ENABLE_PROJECT_LSP` | lsp 配置加载（`.pico/lsp.json`，2026-08 起 opt-in） |
 | 非交互项目代理（env-only） | `PICO_ALLOW_UNATTENDED_PROJECT_AGENTS` | subagent 门禁 |
 
 ### 3.8 构建与发布
@@ -489,8 +490,8 @@ flowchart TD
 | L7 | 私网防护仅 hostname 字符串级，`*.nip.io`/DNS rebinding 可绕过 | SSRF 边界缺口（本地代理影响有限） | 待 DNS 解析复检 |
 | L8 | worktree 合并按任务序串行，冲突仅报错不自动处理 | 冲突时需人工 | 已知 |
 | L12 | 记忆库无归档/衰减策略（facts 无限增长，contradict 仅分析最近 500 条） | 库膨胀 | 待迭代 |
-| L13 | **LSP 写透传空诊断短路的残余**：诊断等待仍为 500ms 内联 + 5s 轮询窗口（非事件驱动），慢服务器偶发取空 | 延迟/偶发取空 | 待改 publishDiagnostics 事件驱动 |
-| L14 | **子代理超时只杀直接子进程**（detached 进程组未用于 subagent 进程；MCP/hooks 已修） | 孙进程孤儿 | 待对齐进程组清理 |
+| L13 | **LSP 写透传空诊断短路的残余**：诊断等待仍为 500ms 内联 + 5s 轮询窗口（非事件驱动），慢服务器偶发取空；2026-08 起超时回退最近缓存，不再误报"无诊断" | 延迟/偶发取空 | 待改 publishDiagnostics 事件驱动 |
+| L14 | ~~子代理超时只杀直接子进程~~（已核实：subagent 自 2.4.1 起即用 `detached` 进程组 + SIGTERM→SIGKILL 击杀；L5 把 worktree git 命令也改为异步进程组） | — | 已修 |
 | L15 | **todo 重复 id 重分配的新 id 映射仅在 details**，模型可见性取决于 provider 序列化 | 重复 id 时 id 不稳定 | 待把映射写入 content |
 | L16 | **plan 同批 ExitPlanMode+write 时序矛盾**：并行工具执行下 tool_call 阻断先于批准生效 | 批准后同批写仍被拒，需重发 | 受上游执行序约束，待同批放行 |
 | L17 | **cache-optimizer 对 responses/codex 未知字段行为**（已改为不注入，记录原始风险） | 严格网关 400 风险已消除 | 已修 |
@@ -544,6 +545,7 @@ bun test tests/<feature>.test.ts  # 单文件测试
 | `PICO_ALLOW_LSP_FORMAT_ON_WRITE` | 允许 LSP 写后格式化二次写文件 | 0 |
 | `PICO_ENABLE_PROJECT_HOOKS` | 启用项目级 hooks.json | 0 |
 | `PICO_ENABLE_PROJECT_MCP` | 启用项目级 mcp-servers.json | 0 |
+| `PICO_ENABLE_PROJECT_LSP` | 启用项目级 lsp.json（`.pico/lsp.json`） | 0 |
 | `PICO_CACHE_OPTIMIZER_DISABLE` 等 | 缓存优化器细分开关 | 开 |
 | `PICO_VISION_PROVIDER` / `PICO_VISION_MODEL` | 辅助视觉模型 | 无 |
 | `PI_CACHE_RETENTION` | 上游缓存保留策略（optimizer 写入 long） | 无 |
@@ -621,3 +623,19 @@ bun test tests/<feature>.test.ts  # 单文件测试
   - memory：`update()` 的实体链接/TF-IDF 重算纳入事务；`correction_of` 目标过所有权门禁；`_temporalDecay` 按 UTC 解析（`CURRENT_TIMESTAMP` 无时区后缀）；疑问句不再自动抽取为偏好/笔记；curated 去重大小写对齐（不再"添加成功但下次加载消失"）；holographic `nextId` 取 max+1。
 - **低**：input-history append 前修复 0644 权限；MCP 配置非字符串 args/env 告警；embedded-runtime 解包 try/catch 降级；`SubmitPlan` 确认对话框截断显示；`/language` 命令 try/catch；AGENTS.md 补齐 `PICO_RTK`/`PICO_VISION_*`/`PICO_CACHE_OPTIMIZER_*`/`PICO_SUBAGENT_DEPTH` 环境变量文档。
 - **未修（客观记录）**：Windows 路径假设（当前发布目标 linux-x64，属未支持平台）；`capSearchOutput`/`isPrivateHost` 的剩余变体依赖下游解析器行为。
+
+### 6.9 第七轮整改（2026-08-06 全项目只读审查，2 高 / 6 中 / 9 低，全部附回归测试）
+
+对应本次只读审查报告，按严重度从高到低全部落地：
+
+- **高**：
+  - 记忆跨项目去重冲突（`memory/store.ts` + `schema.ts`）：`content` 全局 UNIQUE 会让项目 B 添加与项目 A 相同内容时被静默吞掉（B 的读路径永远不可见）。去重查询改 `(content, scope)`；新增 `_migrateScopeUnique` 表重建迁移（检测旧单列 autoindex → `UNIQUE(scope, content)`，保留数据/FTS/自引用 FK，幂等）。回归：跨 scope 同内容各自独立 + 旧库迁移用例。
+  - LSP 写透传假阴性（`lsp/client.ts` + `lsp/index.ts`）：`didSave` 删缓存 + 无回退 → 服务器不随 didSave 重发诊断时误报"无诊断"。`didSave` 不再删缓存，写透传超时回退最近发布（与 `diagnostics` 动作一致）。回归：静默服务器缓存存活用例。
+- **中**：
+  - `PICO_ENABLE_PROJECT_LSP` 文档补齐（README/AGENTS.md/user-guide/internal-tech-review）——该开关 842f9ab 已实现但零文档；user-guide 的 LSP 三层配置段注明项目级现为 opt-in。
+  - LSP 冷启动双 spawn 竞态（`lsp/manager.ts`）：`ensureServer`/`ensureNamedServer` 的探测 await 在 `state.servers.set` 之前，并发调用会各自 spawn（孤儿进程）。改为先占位 set + `initializing` 在途复用。回归：并发 ensureNamedServer 单进程用例。
+  - 交叉编译冒烟测试（`scripts/build.ts`）：非宿主 target 的产物无法在宿主执行，冒烟测试必然失败 → 仅宿主平台执行。
+  - cache-optimizer 稳定段子串重叠（`cache-optimizer/index.ts`）：短候选（append/guideline）是长块（AGENTS.md 段）的子串时被先挖出，长块被掏洞损坏。候选按长度降序提取。回归：嵌套子串块完整用例。
+  - `--mode=json`/`--print=` 等号形式（`bin/pico.ts` + `args.ts`）：`isNonTuiArg` 前缀匹配，防 TTY 下 `console.clear()` 污染 RPC/JSON 输出。
+  - plan `/reload` 状态残留（`plan/index.ts`）：`session_shutdown` 重置 plan 态（reload 只发 shutdown→start，不触发 switch/fork）。
+- **低**：`pathToUri` 转义 `#`/`?`（`uriToPath` 同步改 `decodeURIComponent` 保往返）；`runJsonProcess` hangTimer 路径 detach abort 监听器（防陈旧 pid 进程组击杀）；memory 工具错误改 throw（对齐坑 32，错误不再渲染为成功）；并行子代理抛错时兄弟任务结果保留在错误信息（`describeSiblingResults`）；worktree git 命令全异步化（进程组 + 60s 超时，不再冻结事件循环，L14 随之闭环）；embedded-runtime `assets/*.json` 统一 base64 解码（与 build.ts 生成规则对齐）；`PICO_CACHE_OPTIMIZER_DISABLE` 文档措辞修正；LSP initFailures/probe 缓存与 rtk 探测缓存会话级失效（stopServer 清退避 + rtk 60s TTL）；curated 并发写 mtime 守卫（静默丢失转可见拒绝）；子代理 stdout 部分行缓冲 1MiB 上限。

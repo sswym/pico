@@ -401,11 +401,6 @@ export async function ensureServer(
     }
 
     const resolvedCommand = resolveCommand(serverConfig.command, workspaceRoot) ?? serverConfig.command;
-    const unsupportedReason = await getUnsupportedServerCommandReason(name, resolvedCommand, workspaceRoot);
-    if (unsupportedReason) {
-      recordInitFailure(state, name, unsupportedReason);
-      continue;
-    }
 
     const client = new LspClient(
       { language: name, extensions: serverConfig.fileTypes, command: resolvedCommand, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
@@ -421,10 +416,20 @@ export async function ensureServer(
       lastActivity: Date.now(),
     };
 
+    // Register the placeholder BEFORE the first await: a concurrent caller
+    // must find `initializing` and await the same in-flight init instead of
+    // spawning a duplicate server process (the old order ran the probe first
+    // and orphaned the first spawn).
     state.servers.set(name, managed);
 
     managed.initializing = (async () => {
       try {
+        const unsupportedReason = await getUnsupportedServerCommandReason(name, resolvedCommand, workspaceRoot);
+        if (unsupportedReason) {
+          recordInitFailure(state, name, unsupportedReason);
+          state.servers.delete(name);
+          return;
+        }
         await managed.client.initialize(workspaceRoot);
         managed.lastActivity = Date.now();
         await prewarmProject(managed, workspaceRoot);
@@ -494,11 +499,6 @@ export async function ensureNamedServer(
   // Start this server
   checkInitBackoff(state, name);
   const resolvedCommand = resolveCommand(serverConfig.command, workspaceRoot) ?? serverConfig.command;
-  const unsupportedReason = await getUnsupportedServerCommandReason(name, resolvedCommand, workspaceRoot);
-  if (unsupportedReason) {
-    recordInitFailure(state, name, unsupportedReason);
-    return null;
-  }
 
   const client = new LspClient(
     { language: name, extensions: serverConfig.fileTypes, command: resolvedCommand, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
@@ -514,10 +514,19 @@ export async function ensureNamedServer(
     lastActivity: Date.now(),
   };
 
+  // Register the placeholder BEFORE the first await (mirrors ensureServer):
+  // a concurrent caller must await the same in-flight init instead of
+  // spawning a duplicate process for the same server name.
   state.servers.set(name, newManaged);
 
   newManaged.initializing = (async () => {
     try {
+      const unsupportedReason = await getUnsupportedServerCommandReason(name, resolvedCommand, workspaceRoot);
+      if (unsupportedReason) {
+        recordInitFailure(state, name, unsupportedReason);
+        state.servers.delete(name);
+        return;
+      }
       await newManaged.client.initialize(workspaceRoot);
       newManaged.lastActivity = Date.now();
       await prewarmProject(newManaged, workspaceRoot);
@@ -559,6 +568,12 @@ export async function stopServer(state: LspManagerState): Promise<void> {
   state.servers.clear();
   state.config = null;
   state.configured = false;
+  // A new session must be able to retry servers that failed in the previous
+  // one — the init backoff window is per-session, not per-process. The probe
+  // verdicts are re-computed cheaply; a tool installed between sessions must
+  // not stay blocked by a stale "unsupported" cache entry.
+  state.runtime.initFailures.clear();
+  unsupportedProbeCache.clear();
 }
 
 export function __recordInitFailureForTests(state: LspManagerState, serverName: string, message: string): void {

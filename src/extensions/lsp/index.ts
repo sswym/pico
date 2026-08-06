@@ -510,8 +510,12 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       // A fast publish of [] means the server already answered — waiting
       // another 5s for nothing would stall every clean write ~5.5s.
       const finalDiags = await waitForFreshDiagnostics(client, uri);
-
-      const diagText = formatDiagnosticsForFile(filePath, finalDiags ?? []);
+      // A server that stays silent after didSave must not degrade to a false
+      // "no diagnostics" — fall back to the last published set (pre-save
+      // state, still the best available signal) instead of reporting an
+      // empty result.
+      const diags = finalDiags ?? client.getDiagnostics(uri);
+      const diagText = formatDiagnosticsForFile(filePath, diags);
       const messages = diagText.split("\n").filter(Boolean);
       // Key the ledger by the resolved path: the model may pass the same
       // file as relative or absolute across writes, and a mismatched key

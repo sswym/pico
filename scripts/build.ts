@@ -302,17 +302,27 @@ async function main() {
   console.log(`  Total:   ${formatSize(totalSize)} (single-file binary + package.json)`);
   console.log("");
 
-  // Quick smoke test
-  console.log(`  Verifying binary...`);
-  const verify = Bun.spawnSync([binaryPath, "--help"], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  if (verify.exitCode === 0) {
-    const firstLine = verify.stdout.toString().split("\n")[0] || "";
-    console.log(`  ✓  ${firstLine}`);
+  // Quick smoke test — only when the target can actually run on this host.
+  // A cross-compiled binary (e.g. bun-windows-x64 on Linux) cannot be executed
+  // here; failing the build over that would make --target cross-compiles
+  // unusable.
+  const HOST_OS: Record<string, string> = { linux: "linux", win32: "windows", darwin: "darwin" };
+  const hostTargetPrefix = `bun-${HOST_OS[process.platform] ?? process.platform}-${process.arch}`;
+  const smokeTestable = target.startsWith(hostTargetPrefix);
+  if (!smokeTestable) {
+    console.log(`  Skipping smoke test (target ${target} is not executable on ${process.platform}/${process.arch})`);
   } else {
-    console.error(`  ✗  Binary exited with code ${verify.exitCode}`);
-    process.exit(1);
+    console.log(`  Verifying binary...`);
+    const verify = Bun.spawnSync([binaryPath, "--help"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (verify.exitCode === 0) {
+      const firstLine = verify.stdout.toString().split("\n")[0] || "";
+      console.log(`  ✓  ${firstLine}`);
+    } else {
+      console.error(`  ✗  Binary exited with code ${verify.exitCode}`);
+      process.exit(1);
+    }
   }
 
   console.log(`\n  Done. Run with:\n`);

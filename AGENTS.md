@@ -135,21 +135,23 @@ function makeFakePi() {
 | `PICO_ALLOW_LSP_FORMAT_ON_WRITE` | 允许 LSP `formatOnWrite` 在 edit/write 后自动二次写文件 |
 | `PICO_ENABLE_PROJECT_HOOKS` | 启用 `<repo>/.pico/hooks.json` 项目级 shell hooks |
 | `PICO_ENABLE_PROJECT_MCP` | 启用 `<repo>/.pico/mcp-servers.json` 项目级 MCP 服务器 |
+| `PICO_ENABLE_PROJECT_LSP` | 启用 `<repo>/.pico/lsp.json` 项目级 LSP 配置 |
 | `PICO_ALLOW_UNATTENDED_PROJECT_AGENTS` | 非交互模式下允许运行项目级子代理（**仅 env，无 settings 对应项**，见 `policy.ts`） |
 | `PICO_HOOK_RECURSION_GUARD` | 内部防递归标记：hooks 调起的 `pico` 子进程会带此变量，命中时直接拒绝启动。不要手动设置 |
 | `PICO_SUBAGENT_DEPTH` | 内部子代理嵌套深度标记（`subagent/process.ts` 为每个子进程 +1），深度 ≥3 拒绝启动。不要手动设置 |
 | `PICO_RTK` | 设为 `0` 关闭 RTK 集成 |
 | `PICO_VISION_PROVIDER` / `PICO_VISION_MODEL` | 覆盖辅助视觉模型的 provider/model（无 settings 对应项时也可用） |
-| `PICO_CACHE_OPTIMIZER_DISABLE` | 关闭 cache-optimizer（设为任意非空值） |
+| `PICO_CACHE_OPTIMIZER_DISABLE` | 关闭 cache-optimizer（设为 `1`/`true`/`yes`/`on`；`0`/`false` 视为未禁用） |
 | `PICO_CACHE_OPTIMIZER_NO_PROMPT_REWRITE` / `PICO_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION` / `PICO_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY` / `PICO_CACHE_OPTIMIZER_ALLOW_PROXY_LONG_RETENTION` | cache-optimizer 分项开关 |
 
-前四个安全开关也可长期写入 `~/.pico/agent/settings.json` 的 `safety` 字段；环境变量优先于 settings。**值必须是布尔**——字符串会被当作禁用并打印告警：
+前五个安全开关也可长期写入 `~/.pico/agent/settings.json` 的 `safety` 字段；环境变量优先于 settings。**值必须是布尔**——字符串会被当作禁用并打印告警：
 
 ```json
 {
   "safety": {
     "enableProjectHooks": false,
     "enableProjectMcp": false,
+    "enableProjectLsp": false,
     "allowUnattendedPlanApproval": false,
     "allowLspFormatOnWrite": false
   }

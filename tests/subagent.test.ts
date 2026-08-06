@@ -9,7 +9,7 @@ import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runSubagentRequest } from "../src/extensions/subagent/orchestrator.ts";
+import { describeSiblingResults, runSubagentRequest } from "../src/extensions/subagent/orchestrator.ts";
 import { discoverAgents } from "../src/extensions/subagent/agents.ts";
 import { buildChainTask } from "../src/extensions/subagent/chain.ts";
 import { mapWithConcurrencyLimit } from "../src/extensions/subagent/concurrency.ts";
@@ -605,6 +605,103 @@ test("runJsonProcess maps signal-death (close with null code) to a non-zero exit
   expect(await run).toEqual({ exitCode: 1, wasAborted: false, timedOut: false });
 });
 
+test("runJsonProcess caps the partial-line stdout buffer without dropping later events", async () => {
+  const agent = {
+    name: "worker",
+    description: "",
+    source: "user" as const,
+    filePath: "worker.md",
+    systemPrompt: "",
+  };
+  const result = createInitialResult(agent, "worker", "run", undefined);
+  let updates = 0;
+  const proc = new FakeProcess();
+  const run = runJsonProcess({
+    command: "pico",
+    args: ["--mode", "json"],
+    cwd: "/repo",
+    result,
+    spawn: () => proc,
+    onMessage: () => {
+      updates++;
+    },
+  });
+
+  // A giant unterminated line (over the 1 MiB cap) must not wedge parsing —
+  // it is dropped, and a subsequent well-formed event still arrives.
+  proc.stdoutData(`${"x".repeat(2 * 1024 * 1024)}`);
+  proc.stdoutData('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"after"}],"usage":{"input":1,"output":2}}}\n');
+  proc.close(0);
+
+  expect(await run).toEqual({ exitCode: 0, wasAborted: false, timedOut: false });
+  expect(updates).toBe(1);
+  expect(getFinalOutput(result.messages)).toBe("after");
+});
+
+test("runJsonProcess detaches the abort listener when the hang path resolves", async () => {
+  // Escaped-grandchild scenario: `exit` fires but `close` never does, so the
+  // 10s hang timer resolves the run. The abort listener must be detached on
+  // that path too — otherwise a later abort would kill the stale (possibly
+  // recycled) pid's process group.
+  const agent = {
+    name: "worker",
+    description: "",
+    source: "user" as const,
+    filePath: "worker.md",
+    systemPrompt: "",
+  };
+  const listeners = new Set<() => void>();
+  const signal = {
+    aborted: false,
+    addEventListener: (_ev: string, fn: () => void) => { listeners.add(fn); },
+    removeEventListener: (_ev: string, fn: () => void) => { listeners.delete(fn); },
+  };
+  let hangHandler: (() => void) | undefined;
+  const proc = new FakeProcess();
+  const run = runJsonProcess({
+    command: "pico",
+    args: [],
+    cwd: "/repo",
+    result: createInitialResult(agent, "worker", "run", undefined),
+    signal: signal as any,
+    spawn: () => proc,
+    setTimeoutFn: ((handler: () => void) => {
+      hangHandler = handler;
+      return 1 as any;
+    }) as any,
+    clearTimeoutFn: (() => {}) as any,
+  });
+
+  expect(listeners.size).toBe(1);
+  proc.exit(0); // child gone; close never arrives
+  hangHandler!(); // 10s grace elapses — the hang path resolves
+  expect(await run).toEqual({ exitCode: 0, wasAborted: false, timedOut: false });
+  expect(listeners.size).toBe(0);
+});
+
+test("parallel failure surfaces preserved sibling results in the error", () => {
+  const agent = {
+    name: "worker",
+    description: "",
+    source: "user" as const,
+    filePath: "worker.md",
+    systemPrompt: "",
+  };
+  const finished: SingleResult[] = [
+    { ...createInitialResult(agent, "worker", "task-a", 1), exitCode: 0, messages: [] },
+    { ...createInitialResult(agent, "reviewer", "task-b", 2), exitCode: 1, stopReason: "aborted", errorMessage: "Subagent aborted (user interrupt)" },
+  ];
+  const err = describeSiblingResults(finished, new Error("boom"));
+  expect(err.message).toContain("boom");
+  expect(err.message).toContain("Sibling results from before the abort (2)");
+  expect(err.message).toContain("[worker]");
+  expect(err.message).toContain("[reviewer]");
+
+  // No finished siblings: the original error propagates untouched.
+  const bare = describeSiblingResults([], new Error("only-failure"));
+  expect(bare.message).toBe("only-failure");
+});
+
 test("buildChainTask substitutes previous and named outputs", () => {
   const task = buildChainTask(
     { task: "Use {previous}, {outputs.plan}, and {outputs.missing}." },
@@ -964,18 +1061,20 @@ test("sanitizeAgentNameForWorktree strips shell metacharacters", () => {
   expect(sanitizeAgentNameForWorktree("foo\"bar")).toBe("foo_bar");
 });
 
-test("prepareParallelWorktrees cleans up created handles when later setup fails", () => {
+test("prepareParallelWorktrees cleans up created handles when later setup fails", async () => {
   const cleaned: string[] = [];
   const create = (_cwd: string, agentName: string, index: number): WorktreeHandle => {
     if (index === 1) throw new Error("cannot create");
     return {
       worktreeDir: `/tmp/${agentName}`,
       branchName: `branch-${index}`,
-      cleanup: () => cleaned.push(agentName),
+      cleanup: () => {
+        cleaned.push(agentName);
+      },
     };
   };
 
-  const prepared = prepareParallelWorktrees("/repo", [
+  const prepared = await prepareParallelWorktrees("/repo", [
     { agent: "worker" },
     { agent: "reviewer" },
   ], create);
@@ -984,7 +1083,7 @@ test("prepareParallelWorktrees cleans up created handles when later setup fails"
   expect(cleaned).toEqual(["worker"]);
 });
 
-test("mergeParallelWorktrees reports skipped, empty, merged, and conflicted worktrees", () => {
+test("mergeParallelWorktrees reports skipped, empty, merged, and conflicted worktrees", async () => {
   const makeResult = (agent: string, exitCode: number): SingleResult => ({
     agent,
     agentSource: "user",
@@ -1001,15 +1100,15 @@ test("mergeParallelWorktrees reports skipped, empty, merged, and conflicted work
     { worktreeDir: "/tmp/d", branchName: "d", cleanup: () => {} },
   ];
 
-  const notes = mergeParallelWorktrees(
+  const notes = await mergeParallelWorktrees(
     "/repo",
     [makeResult("failed", 1), makeResult("empty", 0), makeResult("merged", 0), makeResult("conflict", 0)],
     handles,
-    (_cwd, branch) => branch === "b" ? "" : `diff for ${branch}\n`,
-    (_cwd, branch) => branch === "d"
+    async (_cwd, branch) => branch === "b" ? "" : `diff for ${branch}\n`,
+    async (_cwd, branch) => branch === "d"
       ? { success: false, conflict: "Merge conflict on branch d. Resolve manually." }
       : { success: true },
-    () => true,
+    async () => true,
   );
 
   expect(notes).toEqual([
@@ -1024,7 +1123,7 @@ test("mergeParallelWorktrees reports skipped, empty, merged, and conflicted work
   expect(handles[2]!.keepBranch).toBeUndefined();
 });
 
-test("mergeParallelWorktrees warns when worktree changes cannot be committed", () => {
+test("mergeParallelWorktrees warns when worktree changes cannot be committed", async () => {
   const makeResult = (agent: string): SingleResult => ({
     agent,
     agentSource: "user",
@@ -1035,13 +1134,13 @@ test("mergeParallelWorktrees warns when worktree changes cannot be committed", (
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
   });
 
-  const notes = mergeParallelWorktrees(
+  const notes = await mergeParallelWorktrees(
     "/repo",
     [makeResult("no-commit")],
     [{ worktreeDir: "/tmp/x", branchName: "x", cleanup: () => {} }],
-    () => "diff for x\n",
-    () => ({ success: true }),
-    () => false,
+    async () => "diff for x\n",
+    async () => ({ success: true }),
+    async () => false,
   );
 
   expect(notes[0]).toContain("could not commit worktree changes");
@@ -1056,7 +1155,7 @@ function runGit(cwd: string, args: string[]): string {
   });
 }
 
-test("mergeWorktree detects conflicts from stdout and aborts the merge (real git)", () => {
+test("mergeWorktree detects conflicts from stdout and aborts the merge (real git)", async () => {
   const repo = mkdtempSync(join(tmpdir(), "pico-wt-conflict-"));
   try {
     runGit(repo, ["init", "-q", "-b", "main"]);
@@ -1076,7 +1175,7 @@ test("mergeWorktree detects conflicts from stdout and aborts the merge (real git
     // git prints "CONFLICT (content): ..." on stdout — a stderr-only probe
     // never fires, leaving the merge half-applied. The abort must run and
     // the working tree must be clean afterwards.
-    const result = mergeWorktree(repo, "feature");
+    const result = await mergeWorktree(repo, "feature");
     expect(result.success).toBe(false);
     expect(result.conflict).toContain("Resolve manually");
     expect(() => runGit(repo, ["rev-parse", "--verify", "MERGE_HEAD"])).toThrow();
@@ -1085,7 +1184,7 @@ test("mergeWorktree detects conflicts from stdout and aborts the merge (real git
   }
 });
 
-test("cleanupWorktrees keeps branches marked for manual resolution (real git)", () => {
+test("cleanupWorktrees keeps branches marked for manual resolution (real git)", async () => {
   const repo = mkdtempSync(join(tmpdir(), "pico-wt-keep-"));
   try {
     runGit(repo, ["init", "-q", "-b", "main"]);
@@ -1095,10 +1194,10 @@ test("cleanupWorktrees keeps branches marked for manual resolution (real git)", 
     runGit(repo, ["add", "f.txt"]);
     runGit(repo, ["commit", "-qm", "base"]);
 
-    const kept = createWorktree(repo, "reviewer", 0);
+    const kept = await createWorktree(repo, "reviewer", 0);
     kept.keepBranch = true;
-    const merged = createWorktree(repo, "worker", 1);
-    cleanupWorktrees([kept, merged]);
+    const merged = await createWorktree(repo, "worker", 1);
+    await cleanupWorktrees([kept, merged]);
 
     // The merged branch is gone; the kept one survives for manual resolution.
     expect(() => runGit(repo, ["rev-parse", "--verify", merged.branchName])).toThrow();

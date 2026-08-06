@@ -88,6 +88,20 @@ export interface SubagentRunContext {
 	sessionManager?: unknown;
 }
 
+/**
+ * Wrap a parallel-run failure with the sibling results that finished before
+ * the abort — one task failing must not make already-completed work vanish.
+ * With no finished siblings the original error is returned untouched.
+ */
+export function describeSiblingResults(finished: SingleResult[], error: unknown): Error {
+	const msg = error instanceof Error ? error.message : String(error);
+	if (finished.length === 0) return error instanceof Error ? error : new Error(msg);
+	const siblingSummary = finished
+		.map((r) => `- [${r.agent}] ${truncateOutput(getResultOutput(r), 400)}`)
+		.join("\n");
+	return new Error(`${msg}\n\nSibling results from before the abort (${finished.length}):\n${siblingSummary}`);
+}
+
 interface AgentRunRequest {
 	agentName: string;
 	task: string;
@@ -456,7 +470,7 @@ export async function runSubagentRequest(
 		const worktreeHandles: Array<WorktreeHandle | null> = new Array(params.tasks.length).fill(null);
 
 		if (useWorktree) {
-			const prepared = prepareParallelWorktrees(ctx.cwd, params.tasks);
+			const prepared = await prepareParallelWorktrees(ctx.cwd, params.tasks);
 			worktreeHandles.splice(0, worktreeHandles.length, ...prepared.handles);
 			if (prepared.errorText) {
 				throw new Error(prepared.errorText);
@@ -489,45 +503,54 @@ export async function runSubagentRequest(
 		const parallelSignal = signal ? AbortSignal.any([signal, parallelAbort.signal]) : parallelAbort.signal;
 
 		try {
-			const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
-				const handle = worktreeHandles[index];
-				const taskCwd = handle ? handle.worktreeDir : t.cwd;
+			let results: SingleResult[];
+			try {
+				results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
+					const handle = worktreeHandles[index];
+					const taskCwd = handle ? handle.worktreeDir : t.cwd;
 
-				let forkPath: string | undefined;
-				let forkFallbackNote: string | undefined;
-				if (t.context === "fork") {
-					forkPath = tryForkSession(ctx.sessionManager);
-					if (!forkPath) forkFallbackNote = "context=fork requested but session forking unavailable; using fresh context";
-				}
+					let forkPath: string | undefined;
+					let forkFallbackNote: string | undefined;
+					if (t.context === "fork") {
+						forkPath = tryForkSession(ctx.sessionManager);
+						if (!forkPath) forkFallbackNote = "context=fork requested but session forking unavailable; using fresh context";
+					}
 
-				const result = await runWithFallback(
-					{ agentName: t.agent, task: t.task, cwd: taskCwd },
-					{
-						defaultCwd: ctx.cwd,
-						agents,
-						signal: parallelSignal,
-						onUpdate: (partial) => {
-						if (partial.details?.results[0]) {
-							allResults[index] = partial.details.results[0];
-							emitParallelUpdate();
-						}
+					const result = await runWithFallback(
+						{ agentName: t.agent, task: t.task, cwd: taskCwd },
+						{
+							defaultCwd: ctx.cwd,
+							agents,
+							signal: parallelSignal,
+							onUpdate: (partial) => {
+							if (partial.details?.results[0]) {
+								allResults[index] = partial.details.results[0];
+								emitParallelUpdate();
+							}
+							},
+							makeDetails: makeDetails("parallel"),
+							forkSessionPath: forkPath,
 						},
-						makeDetails: makeDetails("parallel"),
-						forkSessionPath: forkPath,
-					},
-				);
-				if (forkFallbackNote) result.contextFallback = forkFallbackNote;
-				allResults[index] = result;
-				emitParallelUpdate();
-				return result;
-			}, () => {
-				parallelAbort.abort();
-			});
+					);
+					if (forkFallbackNote) result.contextFallback = forkFallbackNote;
+					allResults[index] = result;
+					emitParallelUpdate();
+					return result;
+				}, () => {
+					parallelAbort.abort();
+				});
+			} catch (err) {
+				// One task failing (e.g. a prompt-temp write) aborts its
+				// siblings, but their already-finished work must not vanish
+				// with the exception — surface it next to the error so the
+				// caller can still act on completed results.
+				throw describeSiblingResults(allResults.filter((r) => r && r.exitCode !== -1), err);
+			}
 
 			// 2.4.5: on interrupt, running tasks come back as aborted results
 			// (runSingleAgent no longer throws); never-launched tasks keep
 			// their placeholder status — report them, don't drop the lot.
-			const mergeNotes = useWorktree ? mergeParallelWorktrees(ctx.cwd, results, worktreeHandles) : [];
+			const mergeNotes = useWorktree ? await mergeParallelWorktrees(ctx.cwd, results, worktreeHandles) : [];
 
 			for (let i = 0; i < results.length; i++) {
 				const t = params.tasks[i];
@@ -553,7 +576,7 @@ export async function runSubagentRequest(
 			};
 		} finally {
 			if (useWorktree) {
-				cleanupWorktrees(worktreeHandles);
+				await cleanupWorktrees(worktreeHandles);
 			}
 		}
 	}

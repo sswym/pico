@@ -147,12 +147,14 @@ function isLongRunningCommand(command: string): boolean {
 }
 
 /**
- * Whether the configured rtk binary is actually reachable, probed once per
- * command name and cached. Enabling the integration in settings while rtk is
+ * Whether the configured rtk binary is actually reachable, probed per command
+ * name and cached briefly. Enabling the integration in settings while rtk is
  * not installed would otherwise turn every supported bash command into an
- * `rtk: command not found` hard failure with no hint.
+ * `rtk: command not found` hard failure with no hint. The TTL keeps a
+ * freshly-installed rtk from staying "unavailable" for the whole session.
  */
-const rtkAvailabilityCache = new Map<string, boolean>();
+const RTK_PROBE_TTL_MS = 60_000;
+const rtkAvailabilityCache = new Map<string, { available: boolean; at: number }>();
 
 export function __resetRtkAvailabilityForTests(): void {
   rtkAvailabilityCache.clear();
@@ -160,7 +162,7 @@ export function __resetRtkAvailabilityForTests(): void {
 
 export function isRtkAvailable(command: string): boolean {
   const cached = rtkAvailabilityCache.get(command);
-  if (cached !== undefined) return cached;
+  if (cached && Date.now() - cached.at < RTK_PROBE_TTL_MS) return cached.available;
   const safeCommand = command.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   let available = false;
   try {
@@ -171,7 +173,7 @@ export function isRtkAvailable(command: string): boolean {
   } catch {
     available = false;
   }
-  rtkAvailabilityCache.set(command, available);
+  rtkAvailabilityCache.set(command, { available, at: Date.now() });
   return available;
 }
 

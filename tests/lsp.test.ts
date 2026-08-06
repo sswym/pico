@@ -8,7 +8,7 @@
  * or extension event wiring (requires running language servers).
  */
 import { afterEach, beforeEach, expect, test, describe } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { applyTextEditsToString } from "../src/extensions/lsp/edits.ts";
@@ -697,6 +697,68 @@ describe("LSP writethrough diagnostics freshness", () => {
     }
   });
 
+  test("didSave keeps cached diagnostics for silent-server fallback", async () => {
+    // This server publishes once per didOpen and ignores didSave entirely —
+    // the write-through's fallback path must still see the cached set
+    // instead of reporting a false "no diagnostics".
+    const publishOnOpen = `
+      let buf = Buffer.alloc(0);
+      function send(msg) {
+        const body = Buffer.from(JSON.stringify(msg));
+        process.stdout.write(Buffer.concat([Buffer.from("Content-Length: " + body.length + "\\r\\n\\r\\n"), body]));
+      }
+      function onMessage(msg) {
+        if (msg.method === "initialize") {
+          send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: {}, serverInfo: { name: "publish-on-open", version: "1.0.0" } } });
+        } else if (msg.method === "textDocument/didOpen") {
+          const uri = msg.params.textDocument.uri;
+          setTimeout(() => {
+            send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri, diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, severity: 1, message: "open-error" }] } });
+          }, 30);
+        } else if (msg.method === "shutdown") {
+          send({ jsonrpc: "2.0", id: msg.id, result: null });
+        } else if (msg.method === "exit") {
+          process.exit(0);
+        }
+      }
+      process.stdin.on("data", (chunk) => { buf = Buffer.concat([buf, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]); pump(); });
+      function pump() {
+        while (true) {
+          const headEnd = buf.indexOf("\\r\\n\\r\\n");
+          if (headEnd === -1) break;
+          const head = buf.slice(0, headEnd).toString("utf8");
+          const m = /Content-Length: (\\d+)/.exec(head);
+          if (!m) { buf = buf.slice(headEnd + 4); continue; }
+          const len = Number(m[1]);
+          if (buf.length < headEnd + 4 + len) break;
+          const body = JSON.parse(buf.slice(headEnd + 4, headEnd + 4 + len).toString("utf8"));
+          buf = buf.slice(headEnd + 4 + len);
+          onMessage(body);
+        }
+      }
+    `;
+    const client = new LspClient(
+      { command: process.execPath, args: ["-e", publishOnOpen], fileTypes: [".ts"] } as any,
+      "publish-on-open",
+    );
+    await client.initialize(process.cwd());
+    const uri = client.ensureOpen("/repo/a.ts", "const x = 1;\n", "typescript");
+    try {
+      // The didOpen publish lands in the cache.
+      await client.waitForDiagnostics(uri, 5_000);
+      expect(client.getDiagnostics(uri)).toHaveLength(1);
+
+      // didSave with a silent server: no fresh publish, but the cached set
+      // must survive for the write-through fallback.
+      client.didSave(uri);
+      const fresh = await client.waitForDiagnostics(uri, 1_000);
+      expect(fresh).toBeNull();
+      expect(client.getDiagnostics(uri)).toHaveLength(1);
+    } finally {
+      await client.shutdown();
+    }
+  });
+
   test("tool_result handler never mutates the event in place and skips failed writes", async () => {
     const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
     const fakePi: any = {
@@ -753,6 +815,73 @@ describe("LSP writethrough diagnostics freshness", () => {
     expect(result).toBeNull();
     expect(state.servers.has("fake-crash")).toBe(false);
   });
+
+  test("concurrent ensureNamedServer calls share one in-flight initialization", async () => {
+    const spawnLog = join(tmpdir(), `pico-lsp-spawn-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+    const slowServer = `
+      const fs = require("node:fs");
+      fs.appendFileSync(process.env.PICO_TEST_SPAWN_LOG, "spawned\\n");
+      let buf = Buffer.alloc(0);
+      function send(msg) {
+        const body = Buffer.from(JSON.stringify(msg));
+        process.stdout.write(Buffer.concat([Buffer.from("Content-Length: " + body.length + "\\r\\n\\r\\n"), body]));
+      }
+      function onMessage(msg) {
+        if (msg.method === "initialize") {
+          send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: {}, serverInfo: { name: "slow-lsp", version: "1.0.0" } } });
+        } else if (msg.method === "shutdown") {
+          send({ jsonrpc: "2.0", id: msg.id, result: null });
+        } else if (msg.method === "exit") {
+          process.exit(0);
+        }
+      }
+      process.stdin.on("data", (chunk) => { buf = Buffer.concat([buf, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]); pump(); });
+      function pump() {
+        while (true) {
+          const headEnd = buf.indexOf("\\r\\n\\r\\n");
+          if (headEnd === -1) break;
+          const head = buf.slice(0, headEnd).toString("utf8");
+          const m = /Content-Length: (\\d+)/.exec(head);
+          if (!m) { buf = buf.slice(headEnd + 4); continue; }
+          const len = Number(m[1]);
+          if (buf.length < headEnd + 4 + len) break;
+          const body = JSON.parse(buf.slice(headEnd + 4, headEnd + 4 + len).toString("utf8"));
+          buf = buf.slice(headEnd + 4 + len);
+          onMessage(body);
+        }
+      }
+    `;
+    const state = createLspManager();
+    state.config = {
+      servers: {
+        "fake-slow": {
+          command: process.execPath,
+          args: ["-e", slowServer],
+          fileTypes: [".ts"],
+          rootMarkers: [],
+        },
+      },
+      formatOnWrite: false,
+    } as any;
+    process.env.PICO_TEST_SPAWN_LOG = spawnLog;
+    try {
+      const [a, b] = await Promise.all([
+        ensureNamedServer(state, "fake-slow", process.cwd()),
+        ensureNamedServer(state, "fake-slow", process.cwd()),
+      ]);
+      // Both callers resolved to the SAME client — the second caller awaited
+      // the first's in-flight init instead of spawning a duplicate process.
+      expect(a).not.toBeNull();
+      expect(a).toBe(b);
+      expect(state.servers.size).toBe(1);
+      const spawns = readFileSync(spawnLog, "utf8").trim().split("\n").filter(Boolean);
+      expect(spawns).toHaveLength(1);
+    } finally {
+      delete process.env.PICO_TEST_SPAWN_LOG;
+      await stopServer(state);
+      try { rmSync(spawnLog); } catch { }
+    }
+  });
 });
 
 // ---- missing-server hints (P1) -------------------------------------------
@@ -786,6 +915,15 @@ test("pathToUri/uriToPath round-trip spaces and non-ASCII paths", () => {
   expect(uriToPath("file:///repo/a%20b.ts")).toBe("/repo/a b.ts");
   // Malformed encodings are returned as-is, not corrupted.
   expect(uriToPath("file:///repo/%zz.ts")).toBe("/repo/%zz.ts");
+});
+
+test("pathToUri escapes # and ? which encodeURI leaves as URI delimiters", () => {
+  const { pathToUri, uriToPath } = require("../src/extensions/lsp/client.ts") as typeof import("../src/extensions/lsp/client.ts");
+  // A filename containing `#` must not arrive as a fragment.
+  const uri = pathToUri("/repo/foo#1.ts");
+  expect(uri).toBe("file:///repo/foo%231.ts");
+  expect(uriToPath(uri)).toBe("/repo/foo#1.ts");
+  expect(uriToPath("file:///repo/a?b.ts")).toBe("/repo/a?b.ts");
 });
 
 test("workspace/applyEdit server requests are answered with applied:false", () => {

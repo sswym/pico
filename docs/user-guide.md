@@ -231,6 +231,7 @@ subagent(chain=[
 |---|---|---|
 | 项目级 hooks | `PICO_ENABLE_PROJECT_HOOKS` | 关 |
 | 项目级 MCP | `PICO_ENABLE_PROJECT_MCP` | 关 |
+| 项目级 LSP | `PICO_ENABLE_PROJECT_LSP` | 关 |
 | 非交互计划自动批准 | `PICO_ALLOW_UNATTENDED_PLAN_APPROVAL` | 关 |
 | LSP 写后格式化 | `PICO_ALLOW_LSP_FORMAT_ON_WRITE` | 关 |
 | 非交互项目代理 | `PICO_ALLOW_UNATTENDED_PROJECT_AGENTS` | 关（仅 env，无 settings 项） |
@@ -356,7 +357,7 @@ lsp(action="symbols", file="src/index.ts")
 
 **45+ 语言支持**：TypeScript、JavaScript、Python、Rust、Go、Java、Kotlin、Scala、Haskell、OCaml、Elixir、Ruby、PHP、C#、Lua、Nix、Zig、Bash、YAML、TOML、SQL、Terraform、Docker、Prisma、GraphQL、Swift、Dart、CSS、HTML、JSON、Vue、Svelte、Astro、Tailwind、Deno、Biome、ESLint 等。
 
-**配置系统**：三层合并——内置 defaults.json → `~/.pico/lsp.json`（用户级）→ `.pico/lsp.json`（项目级）。支持 `fileTypes`、`rootMarkers`、`initOptions`、`settings` 配置。本地二进制解析优先检查 `node_modules/.bin/`、`.venv/bin/`、`vendor/bundle/bin/`。
+**配置系统**：三层合并——内置 defaults.json → `~/.pico/lsp.json`（用户级）→ `.pico/lsp.json`（项目级）。支持 `fileTypes`、`rootMarkers`、`initOptions`、`settings` 配置。本地二进制解析优先检查 `node_modules/.bin/`、`.venv/bin/`、`vendor/bundle/bin/`。**项目级 `.pico/lsp.json` 是安全开关默认关闭的能力**：仓库内的配置（可含任意服务器 command）需设置 `safety.enableProjectLsp=true` 或 `PICO_ENABLE_PROJECT_LSP=1` 才会加载，与项目级 hooks/MCP 一致；被禁用时 session 启动会提示。
 
 **Write/Edit 联动**：编辑代码文件后，LSP 自动同步文件内容、通知服务器重新分析、收集诊断信息并追加到工具结果（500ms 内联等待 + 最长 5s 后台等待）。`.editorconfig` 解析支持自动格式化；自动格式化会二次写文件，因此即使 `formatOnWrite=true`，仍需设置 `safety.allowLspFormatOnWrite=true` 或 `PICO_ALLOW_LSP_FORMAT_ON_WRITE=1` 才会写回。
 

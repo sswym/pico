@@ -61,6 +61,22 @@ export function buildRuntimeArgs(options: RuntimeArgOptions): string[] {
   });
 }
 
+/**
+ * True when the arg selects a programmatic (non-TUI) output mode. Matches
+ * both the separated (`--mode json`, `--print <msg>`) and the equals
+ * (`--mode=json`, `--print=<msg>`) forms — a missed equals form lets
+ * console.clear() corrupt stdout for RPC/JSON consumers in a TTY.
+ */
+export function isNonTuiArg(arg: string): boolean {
+  return (
+    arg === "--mode" ||
+    arg.startsWith("--mode=") ||
+    arg === "--print" ||
+    arg.startsWith("--print=") ||
+    arg === "-p"
+  );
+}
+
 function isPackageManagementCommand(rawArgs: string[]): boolean {
   return rawArgs.length > 0 && PACKAGE_COMMANDS.has(rawArgs[0]!);
 }
