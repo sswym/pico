@@ -262,6 +262,8 @@ export interface ServerCapabilities {
   codeActionProvider?: boolean | { codeActionKinds?: string[] };
   renameProvider?: boolean;
   documentFormattingProvider?: boolean;
+  /** Pull-based diagnostics (LSP 3.17 `textDocument/diagnostic`). */
+  diagnosticProvider?: unknown;
   [key: string]: unknown;
 }
 
@@ -286,4 +288,7 @@ export interface ServerConfig {
   command: string;
   args?: string[];
   initializationOptions?: unknown;
+  /** Runtime settings served back to the server via
+   *  workspace/didChangeConfiguration and workspace/configuration. */
+  settings?: unknown;
 }

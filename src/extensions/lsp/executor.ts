@@ -52,7 +52,6 @@ const LSP_READONLY_ACTIONS = new Set<Action>([
 const LSP_WRITE_OR_HIGH_RISK_ACTIONS = new Set<Action>([
 	"rename",
 	"rename_file",
-	"reload",
 	"request",
 ]);
 

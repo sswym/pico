@@ -84,6 +84,7 @@ const LspParams = Type.Object({
   apply: Type.Optional(Type.Boolean({ description: "For code_actions: apply the matched action." })),
   payload: Type.Optional(Type.Any({ description: "For request: raw JSON params to send." })),
   occurrence: Type.Optional(Type.Integer({ description: "When symbol appears multiple times on the line, pick the Nth (1-based)." })),
+  timeout: Type.Optional(Type.Integer({ description: "Request timeout in seconds (1-300, default 30). Slow cold-start requests may need a larger value." })),
 });
 
 // ── Extension factory ─────────────────────────────────────────────────────
@@ -250,6 +251,10 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           return executeStatusAction(state, ctx.cwd);
         }
 
+        const timeoutMs = params.timeout !== undefined
+          ? Math.min(Math.max(params.timeout, 1), 300) * 1000
+          : undefined;
+
         let projectClient: Awaited<ReturnType<typeof ensureServerWithInstall>> | null = null;
         const getProjectClient = async () => {
           if (!projectClient) {
@@ -267,6 +272,22 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           return executeCapabilitiesAction(client);
         }
 
+        if (action === "reload") {
+          const client = await getProjectClient();
+          if (!client) return fail("No language server available for this project.");
+          const oldName = client.serverName;
+          // Restart the server(s) for this project: config/settings changes
+          // take effect on the next initialize. Does not touch the filesystem.
+          await stopServer(state);
+          const restarted = await ensureServerWithInstall(ctx.cwd, ctx);
+          if (!restarted) return fail("Reload failed: could not restart a language server for this project.");
+          ctx.ui.setStatus("lsp", `LSP: ${restarted.serverName} ${restarted.displayVersion}`.trim());
+          return ok(
+            `Reloaded ${oldName} → ${restarted.serverName} ${restarted.displayVersion}`.trim(),
+            { serverName: restarted.serverName, action: "reload", success: true },
+          );
+        }
+
         // ── File-level actions ──────────────────────────────────────────
         if (action === "diagnostics") {
           if (!params.file || params.file === "*") {
@@ -278,14 +299,28 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           if (!doc) return fail(`Cannot open file: ${params.file}`);
           ctx.ui.setStatus("lsp", `LSP: ${doc.serverName}`.trim());
           try {
-            // 2.5.11: a fixed 500ms sleep returned stale/empty diagnostics on
-            // slow servers — wait for the server's own publish instead
-            // (inline window, then a bounded deferred catch-up).
-            const fresh = await waitForFreshDiagnostics(doc.client, doc.uri, 500, 5_000);
-            // An unchanged (already-synced) file makes the server never
-            // re-publish, so both windows time out — fall back to the cached
-            // diagnostics instead of reporting a false "no diagnostics".
-            const diags = fresh ?? doc.client.getDiagnostics(doc.uri);
+            // Pull-model servers (LSP 3.17, diagnosticProvider) answer a
+            // snapshot request; push-model servers publish after didSave.
+            // Prefer the pull when advertised, fall back to the push wait.
+            let diags: Diagnostic[] | null = null;
+            if (doc.client.supportsDocumentDiagnostics) {
+              try {
+                diags = await doc.client.requestDiagnostic(doc.uri, signal);
+              } catch {
+                // -32601 / timeout: server doesn't actually support pulls —
+                // fall through to the push-based wait.
+              }
+            }
+            if (diags === null) {
+              // 2.5.11: a fixed 500ms sleep returned stale/empty diagnostics on
+              // slow servers — wait for the server's own publish instead
+              // (inline window, then a bounded deferred catch-up).
+              const fresh = await waitForFreshDiagnostics(doc.client, doc.uri, 500, 5_000);
+              // An unchanged (already-synced) file makes the server never
+              // re-publish, so both windows time out — fall back to the cached
+              // diagnostics instead of reporting a false "no diagnostics".
+              diags = fresh ?? doc.client.getDiagnostics(doc.uri);
+            }
             return ok(formatDiagnosticsForFile(params.file, diags));
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -301,7 +336,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             const tryWorkspaceSymbol = async (): Promise<WorkspaceSymbol[] | null> => {
               for (let attempt = 0; attempt < 2; attempt++) {
                 try {
-                  return await client.workspaceSymbol(params.query!, signal);
+                  return await client.workspaceSymbol(params.query!, signal, timeoutMs);
                 } catch (err) {
                   const msg = err instanceof Error ? err.message : String(err);
                   if (msg.includes("No Project") && attempt === 0) {
@@ -326,7 +361,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           if (!doc) return fail(`Cannot open file: ${params.file}`);
           ctx.ui.setStatus("lsp", `LSP: ${doc.serverName}`.trim());
           try {
-            const result = await doc.client.textDocumentDocumentSymbol(doc.uri, signal);
+            const result = await doc.client.textDocumentDocumentSymbol(doc.uri, signal, timeoutMs);
             return formatDocumentSymbolsResult(params.file, result);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -363,30 +398,30 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         try {
           switch (action) {
             case "hover": {
-              const hover = await doc.client.textDocumentHover(doc.uri, pos, signal);
+              const hover = await doc.client.textDocumentHover(doc.uri, pos, signal, timeoutMs);
               return ok(formatHoverResult(hover));
             }
             case "definition": {
-              const result = await doc.client.textDocumentDefinition(doc.uri, pos, signal);
+              const result = await doc.client.textDocumentDefinition(doc.uri, pos, signal, timeoutMs);
               return ok(formatLocations(normalizeLocations(result), "definitions"));
             }
             case "type_definition": {
-              const result = await doc.client.textDocumentTypeDefinition(doc.uri, pos, signal);
+              const result = await doc.client.textDocumentTypeDefinition(doc.uri, pos, signal, timeoutMs);
               return ok(formatLocations(normalizeLocations(result), "type definitions"));
             }
             case "implementation": {
-              const result = await doc.client.textDocumentImplementation(doc.uri, pos, signal);
+              const result = await doc.client.textDocumentImplementation(doc.uri, pos, signal, timeoutMs);
               return ok(formatLocations(normalizeLocations(result), "implementations"));
             }
             case "references": {
-              const result = await doc.client.textDocumentReferences(doc.uri, pos, signal);
+              const result = await doc.client.textDocumentReferences(doc.uri, pos, signal, timeoutMs);
               return ok(formatLocations(result, "references"));
             }
             case "code_actions": {
               const diags = doc.client.getDiagnostics(doc.uri);
               const lineDiags = diags.filter((d) => d.range.start.line === pos.line);
               const context = { diagnostics: lineDiags, only: params.query ? [params.query] : undefined };
-              const actions = await doc.client.textDocumentCodeAction(doc.uri, { start: pos, end: pos }, context, signal);
+              const actions = await doc.client.textDocumentCodeAction(doc.uri, { start: pos, end: pos }, context, signal, timeoutMs);
               if (!actions || actions.length === 0) return ok("No code actions available at this position.");
               const lines: string[] = [];
               for (let i = 0; i < actions.length; i++) {
@@ -504,6 +539,9 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       }
 
       client.didSave(uri);
+      // Files changed on disk by write/edit: notify servers that cache
+      // filesystem state (tsconfig/Cargo.toml watchers) so they re-index.
+      client.didChangeWatchedFiles(uri, 2);
 
       // Deferred diagnostics: a short inline window, then a bounded catch-up
       // window ONLY when the inline window elapsed without a publish (null).

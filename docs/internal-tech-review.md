@@ -192,11 +192,13 @@ flowchart TD
 
 ### 3.6 LSP 代码智能（lsp）
 
-- 统一 `lsp` 工具 + `action` 路由：hover/definition/references/diagnostics/symbols/code_actions/capabilities/status 只读；rename/rename_file/reload/request 及 code_actions apply=true 由 `isLspWriteOrHighRiskInput` **双层阻断**（execute 入口 + tool_call hook）。
+- 统一 `lsp` 工具 + `action` 路由：hover/definition/references/diagnostics/symbols/code_actions/capabilities/status 只读；rename/rename_file/request 及 code_actions apply=true 由 `isLspWriteOrHighRiskInput` **双层阻断**（execute 入口 + tool_call hook）；`reload`（重启服务器、不写文件）2026-08 起放行。
 - 懒启动 + session_start 预热；`ensureServer` 有 initializing 在途复用（整改后，消除并发双 spawn 孤儿进程）；初始化失败统一 `client.shutdown()` 回收进程（整改后）。
-- 写透传：edit/write 后 `didSave` → 500ms 内联 + 5s 上限的诊断等待（整改前 25.5s 阻塞 turn，§4.5），经 `DiagnosticsLedger` 去重后追加进 tool_result（identity 保留行号，整改后）。
+- 写透传：edit/write 后 `didSave` + `didChangeWatchedFiles` → 500ms 内联 + 5s 上限的诊断等待（整改前 25.5s 阻塞 turn，§4.5），经 `DiagnosticsLedger` 去重后追加进 tool_result（identity 保留行号，整改后）。
+- 诊断管线（2026-08 第六轮）：`publishDiagnostics` 推送缓存 + 版本追踪（`waitForDiagnostics` 只认 ≥ 同步版本的 publish，丢弃 didSave 后到达的旧版本竞态）；服务器声明 `diagnosticProvider`（静态能力或 `client/registerCapability` 动态注册）时优先 `textDocument/diagnostic` 拉取快照，失败回退推送等待。
+- 服务器请求应答（2026-08 第六轮）：`workspace/configuration` 从 `ServerConfig.settings` 按 section 服务 + 初始化后 `workspace/didChangeConfiguration` 推送（此前 settings 解析后从未送达，属死配置）；`client/registerCapability`/`unregisterCapability` 动态追踪；`workspace/applyEdit` 仍应答 `{applied:false}` 拒绝应用。
 - `formatOnWrite` 受 `PICO_ALLOW_LSP_FORMAT_ON_WRITE` 双重管控（policy + 执行点）。
-- 已知残留：诊断等待仍为轮询窗口而非事件驱动；prewarm 已改用 `guessLanguageId` 规范映射（整改后）。
+- 已知残留：慢服务器多文件并发诊断仍无合并聚合（单文件窗口 + 缓存回退）；prewarm 已改用 `guessLanguageId` 规范映射（整改后）。
 
 ### 3.7 安全策略（policy）
 
@@ -490,12 +492,12 @@ flowchart TD
 | L2 | 记忆检索无真语义：TF-IDF + 固定同义词表，跨语言/深度改写召回有限 | 召回率上限 | 待评估 embedding 方案 |
 | L3 | `acceptance.criteria` 与 `evidence` **按下标隐式配对** | 配置错位时门禁误判 | 待改命名配对 |
 | L4 | pi 无工具注销 API：MCP 工具名进程内不可刷新 | 工具列表无法刷新（已用 holder 修复闭包失效） | 受上游约束 |
-| L5 | LSP 诊断等待为轮询窗口（500ms/5s），非事件驱动 | 延迟/偶发取空 | 待改 publishDiagnostics 事件驱动 |
+| L5 | ~~LSP 诊断等待为轮询窗口（500ms/5s），非事件驱动~~（已改：2026-08 第六轮起事件驱动 + 版本追踪 + 拉取式诊断，见 §3.6） | — | 已修 |
 | L6 | 子代理 stderr 无界累积；`sessionMessages` 会话内无界增长 | 长会话内存 | 待加截断/上限 |
 | L7 | 私网防护仅 hostname 字符串级，`*.nip.io`/DNS rebinding 可绕过 | SSRF 边界缺口（本地代理影响有限） | 待 DNS 解析复检 |
 | L8 | worktree 合并按任务序串行，冲突仅报错不自动处理 | 冲突时需人工 | 已知 |
 | L12 | 记忆库无归档/衰减策略（facts 无限增长，contradict 仅分析最近 500 条） | 库膨胀 | 已落地时间衰减（默认 180 天降权）+ `/memory prune` 手动清理；自动合并/遗忘仍待迭代 |
-| L13 | **LSP 写透传空诊断短路的残余**：诊断等待仍为 500ms 内联 + 5s 轮询窗口（非事件驱动），慢服务器偶发取空；2026-08 起超时回退最近缓存，不再误报"无诊断" | 延迟/偶发取空 | 待改 publishDiagnostics 事件驱动 |
+| L13 | ~~LSP 写透传空诊断短路的残余~~（已改：诊断等待事件驱动 + 超时回退最近缓存 + didSave 后旧版本 publish 丢弃；慢服务器不再误报"无诊断"，见 §3.6） | — | 已修 |
 | L14 | ~~子代理超时只杀直接子进程~~（已核实：subagent 自 2.4.1 起即用 `detached` 进程组 + SIGTERM→SIGKILL 击杀；L5 把 worktree git 命令也改为异步进程组） | — | 已修 |
 | L15 | **todo 重复 id 重分配的新 id 映射仅在 details**，模型可见性取决于 provider 序列化 | 重复 id 时 id 不稳定 | 待把映射写入 content |
 | L16 | **plan 同批 ExitPlanMode+write 时序矛盾**：并行工具执行下 tool_call 阻断先于批准生效 | 批准后同批写仍被拒，需重发 | 受上游执行序约束，待同批放行 |
@@ -504,7 +506,7 @@ flowchart TD
 
 ### 5.3 待优化项与迭代规划（建议排序）
 
-1. **事件驱动 LSP 诊断**（L5）——消除固定等待，收益最直接；
+1. ~~事件驱动 LSP 诊断~~（L5/L13 已修：第六轮实现版本追踪 + 拉取式诊断 + 事件驱动等待）；慢服务器多文件并发诊断合并仍待迭代；
 2. ~~记忆归档与衰减~~（L12 已落地：时间衰减 + `/memory prune`；自动合并/遗忘仍可迭代）；
 3. **acceptance 命名配对**（L3）——避免隐式下标契约；
 4. **子代理输出上限**（L6）——stderr 截断、sessionMessages 封顶；
@@ -644,3 +646,22 @@ bun test tests/<feature>.test.ts  # 单文件测试
   - `--mode=json`/`--print=` 等号形式（`bin/pico.ts` + `args.ts`）：`isNonTuiArg` 前缀匹配，防 TTY 下 `console.clear()` 污染 RPC/JSON 输出。
   - plan `/reload` 状态残留（`plan/index.ts`）：`session_shutdown` 重置 plan 态（reload 只发 shutdown→start，不触发 switch/fork）。
 - **低**：`pathToUri` 转义 `#`/`?`（`uriToPath` 同步改 `decodeURIComponent` 保往返）；`runJsonProcess` hangTimer 路径 detach abort 监听器（防陈旧 pid 进程组击杀）；memory 工具错误改 throw（对齐坑 32，错误不再渲染为成功）；并行子代理抛错时兄弟任务结果保留在错误信息（`describeSiblingResults`）；worktree git 命令全异步化（进程组 + 60s 超时，不再冻结事件循环，L14 随之闭环）；embedded-runtime `assets/*.json` 统一 base64 解码（与 build.ts 生成规则对齐）；`PICO_CACHE_OPTIMIZER_DISABLE` 文档措辞修正；LSP initFailures/probe 缓存与 rtk 探测缓存会话级失效（stopServer 清退避 + rtk 60s TTL）；curated 并发写 mtime 守卫（静默丢失转可见拒绝）；子代理 stdout 部分行缓冲 1MiB 上限。
+
+### 6.10 第八轮整改（2026-08-06 LSP 专项对比审查：与 oh-my-pi LSP 集成逐维度对比后的修复，2 高 / 5 中 / 2 低，全部附回归测试）
+
+对应 LSP 对比分析报告（pico vs oh-my-pi）中 pico 侧可落地缺陷，按严重度从高到低全部落地：
+
+- **高**：
+  - 诊断版本追踪（`lsp/client.ts`）：`waitForDiagnostics` 此前只比对 uri 不比对版本——didSave 后到达的旧版本 publish 会被当作"新鲜"结果（竞态假阴性/假阳性）。客户端按 uri 记录已同步的最高版本（didOpen/didChange 更新），等待时只接受 `version >= 期望版本` 的 publish；服务器不发 version 字段时回退原行为。回归：旧版本 publish 先行 + 新版本后到的竞态用例。
+  - settings 死配置打通（`lsp/client.ts` + `lsp/types.ts` + `lsp/manager.ts`）：`ServerConfig.settings` 此前解析后从未送达服务器（`workspace/configuration` 应答缺失 + 无 `didChangeConfiguration` 推送，依赖配置拉取的服务器收到 `-32601` 降级）。初始化后推送 `workspace/didChangeConfiguration`；`handleRequest` 按 section 从 settings 服务 `workspace/configuration`。回归：配置应答按 section 取值用例 + 记录型服务器断言收到 didChangeConfiguration 及 settings 载荷。
+- **中**：
+  - 拉取式诊断（`lsp/client.ts` + `lsp/index.ts`）：服务器声明 `diagnosticProvider`（静态能力或 `client/registerCapability` 动态注册，后者新增追踪）时，`diagnostics` 动作优先 `textDocument/diagnostic` 快照拉取，失败（-32601/超时）回退推送等待。回归：拉取解包 + 静态/动态能力判定用例。
+  - `$/cancelRequest`（`lsp/client.ts`）：请求中止/超时取消时通知服务器停止计算（此前仅本地 reject，服务器继续空耗 CPU）。回归：慢服务器 abort 后断言收到 cancel 消息。
+  - `workspace/didChangeWatchedFiles`（`lsp/client.ts` + `lsp/index.ts`）：写透传 didSave 后广播文件变更（changeType=2），依赖文件系统事件缓存的服务器（tsconfig/Cargo.toml watcher）不再滞后。回归：记录型服务器断言收到通知。
+  - notify 队列 drain 超时（`lsp/client.ts`）：僵死服务器永不 drain 时通知队列此前永久挂起；现 10s 后丢帧继续（保守策略，不杀进程）。无独立回归（依赖真实背压，代码路径简单）。
+  - `reload` 动作放行（`lsp/executor.ts` + `lsp/index.ts`）：从写/高风险集合移出（不写文件、仅重启服务器进程），实现 stopServer→重新 ensureServer 执行路径；`rename`/`rename_file`/`request`/`code_actions apply=true` 维持阻断。回归：reload 不再被拦截的分类用例。
+  - `lsp` 工具 `timeout` 参数（`lsp/index.ts` + `lsp/client.ts`）：1–300 秒可配请求预算（默认 30s），12 个请求方法透传 timeoutMs；冷启动/大索引请求可放宽。回归：200ms 短预算快速超时用例 + schema 属性断言。
+- **低**：
+  - `$PID` 替换（`lsp/client.ts`）：server args 中 `$PID` 替换为客户端进程 pid（omnisharp 类服务器），抽 `resolveServerArgs` 纯函数。回归：token 替换用例。
+  - `guessLanguageId` 扩充（`lsp/manager.ts`）：补 mts/cts/mtsx/ctsx/pyi/kts/zsh/jsonc/htm/gql/md/mdx 等语言 ID 映射。回归：mts→typescript、astro、jsonc→json 文档同步断言。
+- **未修（客观记录）**：跨进程服务器共享（子代理并发各自 spawn 语言服务器，内存线性增长【推测场景】——需 mux 架构，超出本次范围）；URI 等价归一（Linux 主场景收益低）；workspace 级非 LSP 诊断回退（`tsc --noEmit`/`cargo check` 子进程，属新功能非缺陷）。

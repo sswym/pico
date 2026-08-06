@@ -403,7 +403,7 @@ export async function ensureServer(
     const resolvedCommand = resolveCommand(serverConfig.command, workspaceRoot) ?? serverConfig.command;
 
     const client = new LspClient(
-      { language: name, extensions: serverConfig.fileTypes, command: resolvedCommand, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
+      { language: name, extensions: serverConfig.fileTypes, command: resolvedCommand, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions, settings: serverConfig.settings },
       name,
     );
 
@@ -501,7 +501,7 @@ export async function ensureNamedServer(
   const resolvedCommand = resolveCommand(serverConfig.command, workspaceRoot) ?? serverConfig.command;
 
   const client = new LspClient(
-    { language: name, extensions: serverConfig.fileTypes, command: resolvedCommand, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions },
+    { language: name, extensions: serverConfig.fileTypes, command: resolvedCommand, args: serverConfig.args, initializationOptions: serverConfig.initializationOptions, settings: serverConfig.settings },
     name,
   );
 
@@ -699,14 +699,16 @@ function guessLanguageId(filePath: string): string {
   const ext = extname(filePath).replace(".", "").toLowerCase();
   const map: Record<string, string> = {
     ts: "typescript", tsx: "typescriptreact", js: "javascript", jsx: "javascriptreact",
-    mjs: "javascript", cjs: "javascript", py: "python", rs: "rust", go: "go",
-    java: "java", kt: "kotlin", scala: "scala", hs: "haskell", ml: "ocaml",
-    ex: "elixir", exs: "elixir", rb: "ruby", php: "php", cs: "csharp",
-    lua: "lua", nix: "nix", zig: "zig", sh: "shellscript", bash: "shellscript",
-    yaml: "yaml", yml: "yaml", json: "json", toml: "toml", sql: "sql",
-    swift: "swift", dart: "dart", c: "c", cpp: "cpp", h: "c", hpp: "cpp",
-    vue: "vue", svelte: "svelte", css: "css", scss: "scss", html: "html",
-    graphql: "graphql", prisma: "prisma", tf: "terraform",
+    mjs: "javascript", cjs: "javascript", mts: "typescript", cts: "typescript",
+    mtsx: "typescriptreact", ctsx: "typescriptreact", py: "python", pyi: "python",
+    rs: "rust", go: "go", java: "java", kt: "kotlin", kts: "kotlin", scala: "scala",
+    hs: "haskell", ml: "ocaml", ex: "elixir", exs: "elixir", rb: "ruby", php: "php",
+    cs: "csharp", lua: "lua", nix: "nix", zig: "zig", sh: "shellscript",
+    bash: "shellscript", zsh: "shellscript", yaml: "yaml", yml: "yaml", json: "json",
+    jsonc: "json", toml: "toml", sql: "sql", swift: "swift", dart: "dart", c: "c",
+    cpp: "cpp", h: "c", hpp: "cpp", vue: "vue", svelte: "svelte", astro: "astro",
+    css: "css", scss: "scss", html: "html", htm: "html", graphql: "graphql",
+    gql: "graphql", prisma: "prisma", tf: "terraform", md: "markdown", mdx: "mdx",
   };
   return map[ext] ?? ext;
 }

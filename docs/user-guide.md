@@ -208,7 +208,7 @@ subagent(chain=[
 
 基础工具审批、项目可信任状态与交互权限由上游 `@earendil-works/pi-coding-agent` 负责。pico 额外做了明确阻断与默认关闭：
 
-- `lsp` 中的写入或高风险 action（`rename`、`rename_file`、`code_actions apply=true`、`reload`、`request`）在 `tool_call` 阶段被阻断；只读 action（hover、definition、references、diagnostics、symbols、capabilities、status，以及未设置 `apply=true` 的 code_actions）可用。
+- `lsp` 中的写入或高风险 action（`rename`、`rename_file`、`code_actions apply=true`、`request`）在 `tool_call` 阶段被阻断；只读 action（hover、definition、references、diagnostics、symbols、capabilities、status，以及未设置 `apply=true` 的 code_actions）与 `reload`（重启语言服务器，不写文件）可用。
 - 项目级 shell hooks、项目级 MCP 服务器、非交互计划自动批准、LSP 自动格式化写回、非交互项目代理：**默认全部关闭**，需显式开启。
 
 `/doctor` 可查看当前 cwd、settings 路径、能力边界、安全开关状态与来源。长期配置写入 `~/.pico/agent/settings.json` 的 `safety` 字段；临时覆盖使用环境变量，**环境变量优先于 settings**：
@@ -343,8 +343,10 @@ subagent(chain=[
 | `rename_file` | 文件重命名并应用引用更新 | — | **阻断** |
 | `capabilities` | 显示语言服务器能力 | — | 只读 |
 | `status` | 显示服务器状态 | — | 只读 |
-| `reload` | 重启语言服务器 | — | **阻断** |
+| `reload` | 重启语言服务器（配置/设置变更后生效） | — | 可用（不写文件） |
 | `request` | 原始 LSP 请求（逃生舱） | — | **阻断** |
+
+**可选参数**：`timeout`（1–300 秒，默认 30）——冷启动或大项目索引期间可放宽单次请求预算，例如 `lsp(action="hover", file="src/index.ts", line=10, character=5, timeout=60)`。
 
 **示例**：
 
@@ -426,7 +428,7 @@ bun test tests/<feature>.test.ts
 - `/vibe` 斜杠命令，用于即时切换系统提示词块。
 - 子代理：可选共享单个 SQLite WAL 与主会话，使子进程的 `memory(add)` 立即可见。
 - 成本追踪器（v0.2 跳过——pi 已显示上下文百分比）。
-- LSP 增强：事件驱动诊断（替代固定等待窗口）、references 重试机制、诊断版本跟踪、多服务器并发诊断合并；独立的 LSP 写权限层级（放开受信任项目的 `apply=true`/`rename`，与系统提示词一致）。
+- LSP 增强：诊断版本跟踪（2026-08 已实现）、拉取式诊断（`textDocument/diagnostic`，2026-08 已实现）、多服务器并发诊断合并；独立的 LSP 写权限层级（放开受信任项目的 `apply=true`/`rename`，与系统提示词一致）。
 - 记忆归档与衰减策略（控制 facts 库膨胀）。
 - 子代理输出上限（stderr 截断、会话消息封顶）。
 - 上下文缓存命中率展示（需上游 ContextUsage 提供缓存数据）。

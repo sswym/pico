@@ -142,10 +142,15 @@ describe("LSP action risk classification", () => {
   });
 
   test("write and high-risk actions are not readonly", () => {
-    for (const action of ["rename", "rename_file", "reload", "request"]) {
+    for (const action of ["rename", "rename_file", "request"]) {
       expect(isLspReadonlyToolCall({ action })).toBe(false);
       expect(isLspWriteOrHighRiskToolCall({ action })).toBe(true);
     }
+  });
+
+  test("reload is no longer blocked: it restarts servers but never touches the filesystem", () => {
+    expect(isLspReadonlyToolCall({ action: "reload" })).toBe(false);
+    expect(isLspWriteOrHighRiskToolCall({ action: "reload" })).toBe(false);
   });
 
   test("tool_call hook blocks write and high-risk actions on the lsp tool", async () => {
@@ -953,4 +958,358 @@ test("workspace/applyEdit server requests are answered with applied:false", () =
 
   anyClient.handleRequest({ id: 9, method: "bogus/method" });
   expect(writes.join("")).toContain("Method not found");
+});
+
+// ---- Fifth-round regressions: version tracking / config pull / cancel ----
+
+import { resolveServerArgs } from "../src/extensions/lsp/client.ts";
+
+test("resolveServerArgs substitutes $PID tokens", () => {
+  expect(resolveServerArgs(["-lsp", "$PID"], 1234)).toEqual(["-lsp", "1234"]);
+  expect(resolveServerArgs(["-lsp", "--port=$PID", "$PID"], 42)).toEqual(["-lsp", "--port=42", "42"]);
+  expect(resolveServerArgs(["a", "b"], 5)).toEqual(["a", "b"]);
+});
+
+test("workspace/configuration server requests are answered from configured settings", () => {
+  const { LspClient } = require("../src/extensions/lsp/client.ts") as typeof import("../src/extensions/lsp/client.ts");
+  const client = new LspClient({
+    command: "unused",
+    args: [],
+    fileTypes: [".ts"],
+    settings: { python: { analysis: { typeCheckingMode: "basic" } } },
+  } as never, "cfg-test");
+  const writes: string[] = [];
+  const anyClient = client as unknown as {
+    process: { stdin: { write: (s: string) => number } } | null;
+    handleRequest: (req: { id: unknown; method: string; params?: unknown }) => void;
+  };
+  anyClient.process = {
+    stdin: {
+      write: (s: string) => {
+        writes.push(s);
+        return s.length;
+      },
+    },
+  };
+
+  anyClient.handleRequest({
+    id: 7,
+    method: "workspace/configuration",
+    params: { items: [{ section: "python" }, { section: "missing" }] },
+  });
+  const sent = writes.join("");
+  expect(sent).toContain('"result":[{"analysis":{"typeCheckingMode":"basic"}},null]');
+  expect(sent).toContain("null");
+});
+
+test("dynamic capability registration drives supportsDocumentDiagnostics", () => {
+  const { LspClient } = require("../src/extensions/lsp/client.ts") as typeof import("../src/extensions/lsp/client.ts");
+  const client = new LspClient({ command: "unused", args: [], fileTypes: [".ts"] } as never, "dyn-test");
+  const anyClient = client as unknown as {
+    process: { stdin: { write: (s: string) => number } } | null;
+    handleRequest: (req: { id: unknown; method: string; params?: unknown }) => void;
+  };
+  anyClient.process = {
+    stdin: {
+      write: (s: string) => s.length,
+    },
+  };
+
+  // No static diagnosticProvider, no dynamic registration → not supported.
+  expect(client.supportsDocumentDiagnostics).toBe(false);
+
+  anyClient.handleRequest({
+    id: 1,
+    method: "client/registerCapability",
+    params: { registrations: [{ method: "textDocument/diagnostic" }] },
+  });
+  expect(client.supportsDocumentDiagnostics).toBe(true);
+
+  anyClient.handleRequest({
+    id: 2,
+    method: "client/unregisterCapability",
+    params: { unregistrations: [{ method: "textDocument/diagnostic" }] },
+  });
+  expect(client.supportsDocumentDiagnostics).toBe(false);
+});
+
+test("requestDiagnostic unwraps pull-model results and static diagnosticProvider enables it", async () => {
+  const pullServer = `
+    let buf = Buffer.alloc(0);
+    function send(msg) {
+      const body = Buffer.from(JSON.stringify(msg));
+      process.stdout.write(Buffer.concat([Buffer.from("Content-Length: " + body.length + "\\r\\n\\r\\n"), body]));
+    }
+    function onMessage(msg) {
+      if (msg.method === "initialize") {
+        send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: { diagnosticProvider: true }, serverInfo: { name: "pull-lsp", version: "1.0.0" } } });
+      } else if (msg.method === "textDocument/diagnostic") {
+        send({ jsonrpc: "2.0", id: msg.id, result: { items: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, severity: 1, message: "pulled-error" }] } });
+      } else if (msg.method === "shutdown") {
+        send({ jsonrpc: "2.0", id: msg.id, result: null });
+      } else if (msg.method === "exit") {
+        process.exit(0);
+      }
+    }
+    process.stdin.on("data", (chunk) => { buf = Buffer.concat([buf, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]); pump(); });
+    function pump() {
+      while (true) {
+        const headEnd = buf.indexOf("\\r\\n\\r\\n");
+        if (headEnd === -1) break;
+        const head = buf.slice(0, headEnd).toString("utf8");
+        const m = /Content-Length: (\\d+)/.exec(head);
+        if (!m) { buf = buf.slice(headEnd + 4); continue; }
+        const len = Number(m[1]);
+        if (buf.length < headEnd + 4 + len) break;
+        const body = JSON.parse(buf.slice(headEnd + 4, headEnd + 4 + len).toString("utf8"));
+        buf = buf.slice(headEnd + 4 + len);
+        onMessage(body);
+      }
+    }
+  `;
+  const client = new LspClient(
+    { command: process.execPath, args: ["-e", pullServer], fileTypes: [".ts"] } as any,
+    "pull-lsp",
+  );
+  await client.initialize(process.cwd());
+  try {
+    expect(client.supportsDocumentDiagnostics).toBe(true);
+    const diags = await client.requestDiagnostic("file:///repo/a.ts");
+    expect(diags).toHaveLength(1);
+    expect(diags![0]!.message).toBe("pulled-error");
+  } finally {
+    await client.shutdown();
+  }
+});
+
+test("waitForDiagnostics drops stale publishes with an older version", async () => {
+  const versionedServer = `
+    let buf = Buffer.alloc(0);
+    let saveUri = "";
+    let savedVersion = 0;
+    function send(msg) {
+      const body = Buffer.from(JSON.stringify(msg));
+      process.stdout.write(Buffer.concat([Buffer.from("Content-Length: " + body.length + "\\r\\n\\r\\n"), body]));
+    }
+    function onMessage(msg) {
+      if (msg.method === "initialize") {
+        send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: {}, serverInfo: { name: "versioned-lsp", version: "1.0.0" } } });
+      } else if (msg.method === "textDocument/didChange") {
+        savedVersion = msg.params.textDocument.version;
+      } else if (msg.method === "textDocument/didSave") {
+        saveUri = msg.params.textDocument.uri;
+        // A stale publish for the PREVIOUS version lands first, then the
+        // fresh one for the current version — the client must skip the stale.
+        setTimeout(() => {
+          send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: saveUri, version: savedVersion - 1, diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, severity: 1, message: "stale-error" }] } });
+        }, 20);
+        setTimeout(() => {
+          send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: saveUri, version: savedVersion, diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, severity: 1, message: "fresh-error" }] } });
+        }, 60);
+      } else if (msg.method === "shutdown") {
+        send({ jsonrpc: "2.0", id: msg.id, result: null });
+      } else if (msg.method === "exit") {
+        process.exit(0);
+      }
+    }
+    process.stdin.on("data", (chunk) => { buf = Buffer.concat([buf, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]); pump(); });
+    function pump() {
+      while (true) {
+        const headEnd = buf.indexOf("\\r\\n\\r\\n");
+        if (headEnd === -1) break;
+        const head = buf.slice(0, headEnd).toString("utf8");
+        const m = /Content-Length: (\\d+)/.exec(head);
+        if (!m) { buf = buf.slice(headEnd + 4); continue; }
+        const len = Number(m[1]);
+        if (buf.length < headEnd + 4 + len) break;
+        const body = JSON.parse(buf.slice(headEnd + 4, headEnd + 4 + len).toString("utf8"));
+        buf = buf.slice(headEnd + 4 + len);
+        onMessage(body);
+      }
+    }
+  `;
+  const client = new LspClient(
+    { command: process.execPath, args: ["-e", versionedServer], fileTypes: [".ts"] } as any,
+    "versioned-lsp",
+  );
+  await client.initialize(process.cwd());
+  const uri = client.ensureOpen("/repo/a.ts", "const x = 1;\n", "typescript");
+  try {
+    client.didChange(uri, 2, "const x = 2;\n");
+    client.didSave(uri);
+    const diags = await client.waitForDiagnostics(uri, 3_000);
+    expect(diags).not.toBeNull();
+    const messages = diags!.map((d) => d.message);
+    expect(messages).toContain("fresh-error");
+    expect(messages).not.toContain("stale-error");
+  } finally {
+    await client.shutdown();
+  }
+});
+
+test("abort sends $/cancelRequest and a short request timeout rejects", async () => {
+  const logFile = join(tmpdir(), `pico-lsp-cancel-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+  const slowServer = `
+    const fs = require("node:fs");
+    let buf = Buffer.alloc(0);
+    function send(msg) {
+      const body = Buffer.from(JSON.stringify(msg));
+      process.stdout.write(Buffer.concat([Buffer.from("Content-Length: " + body.length + "\\r\\n\\r\\n"), body]));
+    }
+    function onMessage(msg) {
+      if (msg.method === "initialize") {
+        send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: { hoverProvider: true }, serverInfo: { name: "slow-lsp", version: "1.0.0" } } });
+      } else if (msg.method === "textDocument/hover") {
+        setTimeout(() => send({ jsonrpc: "2.0", id: msg.id, result: null }), 1500);
+      } else if (msg.method === "shutdown") {
+        send({ jsonrpc: "2.0", id: msg.id, result: null });
+      } else if (msg.method === "exit") {
+        process.exit(0);
+      } else {
+        fs.appendFileSync(process.env.PICO_TEST_LOG, msg.method + "\\n");
+      }
+    }
+    process.stdin.on("data", (chunk) => { buf = Buffer.concat([buf, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]); pump(); });
+    function pump() {
+      while (true) {
+        const headEnd = buf.indexOf("\\r\\n\\r\\n");
+        if (headEnd === -1) break;
+        const head = buf.slice(0, headEnd).toString("utf8");
+        const m = /Content-Length: (\\d+)/.exec(head);
+        if (!m) { buf = buf.slice(headEnd + 4); continue; }
+        const len = Number(m[1]);
+        if (buf.length < headEnd + 4 + len) break;
+        const body = JSON.parse(buf.slice(headEnd + 4, headEnd + 4 + len).toString("utf8"));
+        buf = buf.slice(headEnd + 4 + len);
+        onMessage(body);
+      }
+    }
+  `;
+  const client = new LspClient(
+    { command: process.execPath, args: ["-e", slowServer], fileTypes: [".ts"] } as any,
+    "slow-lsp",
+  );
+  process.env.PICO_TEST_LOG = logFile;
+  await client.initialize(process.cwd());
+  const uri = "file:///repo/a.ts";
+  try {
+    // Per-request timeout: 200ms budget rejects fast instead of waiting 30s.
+    const t0 = Date.now();
+    await expect(client.textDocumentHover(uri, { line: 0, character: 0 }, undefined, 200)).rejects.toThrow(/timed out/);
+    expect(Date.now() - t0).toBeLessThan(1_500);
+
+    // Abort path: the server must be told via $/cancelRequest.
+    const ctrl = new AbortController();
+    const pending = client.textDocumentHover(uri, { line: 0, character: 0 }, ctrl.signal);
+    setTimeout(() => ctrl.abort(), 100);
+    await expect(pending).rejects.toThrow(/aborted/);
+    await new Promise((r) => setTimeout(r, 200));
+    const log = readFileSync(logFile, "utf8");
+    expect(log).toContain("$/cancelRequest");
+  } finally {
+    delete process.env.PICO_TEST_LOG;
+    await client.shutdown();
+    try { rmSync(logFile); } catch { }
+  }
+});
+
+test("didChangeWatchedFiles notifies the server of on-disk changes", async () => {
+  const logFile = join(tmpdir(), `pico-lsp-watch-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+  const recordingServer = `
+    const fs = require("node:fs");
+    let buf = Buffer.alloc(0);
+    function send(msg) {
+      const body = Buffer.from(JSON.stringify(msg));
+      process.stdout.write(Buffer.concat([Buffer.from("Content-Length: " + body.length + "\\r\\n\\r\\n"), body]));
+    }
+    function onMessage(msg) {
+      fs.appendFileSync(process.env.PICO_TEST_LOG, JSON.stringify(msg) + "\\n");
+      if (msg.method === "initialize") {
+        send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: {}, serverInfo: { name: "record-lsp", version: "1.0.0" } } });
+      } else if (msg.method === "shutdown") {
+        send({ jsonrpc: "2.0", id: msg.id, result: null });
+      } else if (msg.method === "exit") {
+        process.exit(0);
+      }
+    }
+    process.stdin.on("data", (chunk) => { buf = Buffer.concat([buf, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]); pump(); });
+    function pump() {
+      while (true) {
+        const headEnd = buf.indexOf("\\r\\n\\r\\n");
+        if (headEnd === -1) break;
+        const head = buf.slice(0, headEnd).toString("utf8");
+        const m = /Content-Length: (\\d+)/.exec(head);
+        if (!m) { buf = buf.slice(headEnd + 4); continue; }
+        const len = Number(m[1]);
+        if (buf.length < headEnd + 4 + len) break;
+        const body = JSON.parse(buf.slice(headEnd + 4, headEnd + 4 + len).toString("utf8"));
+        buf = buf.slice(headEnd + 4 + len);
+        onMessage(body);
+      }
+    }
+  `;
+  const client = new LspClient(
+    { command: process.execPath, args: ["-e", recordingServer], fileTypes: [".ts"], settings: { ts: { enabled: true } } } as any,
+    "record-lsp",
+  );
+  process.env.PICO_TEST_LOG = logFile;
+  await client.initialize(process.cwd());
+  try {
+    client.didChangeWatchedFiles("file:///repo/a.ts", 2);
+    await new Promise((r) => setTimeout(r, 200));
+    const log = readFileSync(logFile, "utf8");
+    expect(log).toContain("workspace/didChangeWatchedFiles");
+    expect(log).toContain('"type":2');
+    // The configured settings ride along in didChangeConfiguration.
+    expect(log).toContain("workspace/didChangeConfiguration");
+    expect(log).toContain('"settings":{"ts":{"enabled":true}}');
+  } finally {
+    delete process.env.PICO_TEST_LOG;
+    await client.shutdown();
+    try { rmSync(logFile); } catch { }
+  }
+});
+
+test("guessLanguageId covers mts/cts/astro/jsonc via document sync", () => {
+  const sessionDir = mkdtempSync(join(tmpdir(), "pico-lsp-langid-"));
+  writeFileSync(join(sessionDir, "a.mts"), "export const x = 1;\n", "utf8");
+  writeFileSync(join(sessionDir, "b.astro"), "---\n---\n", "utf8");
+  writeFileSync(join(sessionDir, "c.jsonc"), "{ // comment\n}\n", "utf8");
+
+  const opened: string[] = [];
+  const state = createLspManager();
+  state.servers.set("tsserver", {
+    config: { fileTypes: [".mts", ".astro", ".jsonc"], isLinter: false },
+    client: {
+      ready: true,
+      ensureOpen: (_path: string, _text: string, languageId: string) => {
+        opened.push(languageId);
+        return "file:///x";
+      },
+    },
+    openDocuments: new Map(),
+    lastActivity: Date.now(),
+  } as any);
+
+  try {
+    syncDocument(state, sessionDir, "a.mts");
+    syncDocument(state, sessionDir, "b.astro");
+    syncDocument(state, sessionDir, "c.jsonc");
+    expect(opened).toEqual(["typescript", "astro", "json"]);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test("registered lsp tool schema exposes a timeout parameter", () => {
+  let registered: any = null;
+  const fakePi: any = {
+    on: () => {},
+    registerTool: (tool: any) => {
+      registered = tool;
+    },
+  };
+  lspExtension(fakePi);
+  expect(registered.parameters.properties.timeout).toBeDefined();
+  expect(registered.parameters.properties.timeout.description).toMatch(/seconds/);
 });
