@@ -11,17 +11,26 @@
  *    that points into node_modules.
  * 3. Provider-error guidance: when a turn fails with the known
  *    "reasoning_content must be passed back" 400 (deepseek-style reasoning
- *    contracts over OpenAI-compatible proxies), append a friendly
- *    explanation plus the exact fix steps. The raw upstream error stays in
- *    the transcript; this adds the "what do I do now" part.
+ *    contracts over OpenAI-compatible proxies), show a friendly explanation
+ *    plus the exact fix steps. The raw upstream error stays in the
+ *    transcript; this adds the "what do I do now" part.
  * 4. Crash-recovery marker: a marker file tracks the active session; a
  *    clean quit removes it, so a leftover marker on the next startup means
  *    the previous session ended abnormally (SIGKILL/crash) — suggest
  *    `pico -c` to resume.
+ *
+ * Guidance is rendered through appendEntry() + registerEntryRenderer(), a
+ * display-only channel that never enters the LLM context. (sendMessage()
+ * would push the text into agent.state.messages, where convertToLlm() turns
+ * it into a user message — the model then treats the hint as a task and
+ * starts "fixing" things on its own.)
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { Box, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionFactory, Theme } from "@earendil-works/pi-coding-agent";
 import { picoHome, picoModelsPath, picoSettingsPath } from "../paths.ts";
 
 export const HELP_COMMAND_LIST = [
@@ -92,6 +101,27 @@ export function buildCrashResumeHint(previous: { sessionId?: string; cwd?: strin
     lines.push(`  上次工作目录：${previous.cwd}`);
   }
   return lines.join("\n");
+}
+
+/**
+ * Renders a `pico.guidance` entry in the TUI transcript, using the same box
+ * style as custom messages. Returns undefined for empty/non-string data.
+ */
+export function renderGuidanceEntry(
+  entry: { customType: string; data?: unknown },
+  _options: { expanded: boolean },
+  theme: Theme,
+): Component | undefined {
+  if (typeof entry.data !== "string" || entry.data.length === 0) return undefined;
+  const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+  box.addChild(new Text(theme.fg("customMessageLabel", `\x1b[1m[${entry.customType}]\x1b[22m`), 0, 0));
+  box.addChild(new Spacer(1));
+  box.addChild(
+    new Markdown(entry.data, 0, 0, getMarkdownTheme(), {
+      color: (text) => theme.fg("customMessageText", text),
+    }),
+  );
+  return box;
 }
 
 function markerPath(): string {
@@ -177,6 +207,8 @@ export const guidanceExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   let reasoningHintShown = false;
   let crashHintShown = false;
 
+  pi.registerEntryRenderer("pico.guidance", renderGuidanceEntry);
+
   // ---- /help -----------------------------------------------------------
   pi.registerCommand("help", {
     description: "Show offline command and keybinding help",
@@ -207,22 +239,14 @@ export const guidanceExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
     if (previous && isStaleMarker(previous) && !crashHintShown && ctx.hasUI) {
       crashHintShown = true;
-      pi.sendMessage({
-        customType: "pico.guidance",
-        content: buildCrashResumeHint(previous),
-        display: true,
-      });
+      pi.appendEntry("pico.guidance", buildCrashResumeHint(previous));
     }
 
     writeMarker({ sessionId, cwd: ctx.cwd, timestamp: Date.now() });
 
     if (!ctx.model && !noModelHintShown && ctx.hasUI) {
       noModelHintShown = true;
-      pi.sendMessage({
-        customType: "pico.guidance",
-        content: buildNoModelGuidance(),
-        display: true,
-      });
+      pi.appendEntry("pico.guidance", buildNoModelGuidance());
     }
   });
 
@@ -241,11 +265,7 @@ export const guidanceExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     const found = messages.some((message) => isReasoningContractError(extractMessageText(message)));
     if (!found) return;
     reasoningHintShown = true;
-    pi.sendMessage({
-      customType: "pico.guidance",
-      content: buildReasoningErrorGuidance(),
-      display: true,
-    });
+    pi.appendEntry("pico.guidance", buildReasoningErrorGuidance());
   });
 };
 
