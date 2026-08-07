@@ -26,26 +26,38 @@ interface FakePi {
   tools: Map<string, any>;
   commands: Map<string, any>;
   handlers: Record<string, Array<(event: any, ctx: any) => any>>;
+  flags: Map<string, { type?: "boolean" | "string"; default?: boolean | string; value?: boolean | string }>;
 }
 
 function makeFakePi(): FakePi & {
   on: (...a: any[]) => void;
   registerTool: (t: any) => void;
   registerCommand: (n: string, opts: any) => void;
+  registerFlag: (n: string, opts: any) => void;
+  getFlag: (n: string) => boolean | string | undefined;
+  setFlagValue: (n: string, v: boolean | string) => void;
   sendMessage: (...a: any[]) => void;
 } {
   const tools = new Map<string, any>();
   const commands = new Map<string, any>();
   const handlers: Record<string, Array<(event: any, ctx: any) => any>> = {};
+  const flags = new Map<string, { type?: "boolean" | "string"; default?: boolean | string; value?: boolean | string }>();
   return {
     tools,
     commands,
     handlers,
+    flags,
     on: (event: string, handler: (e: any, c: any) => any) => {
       (handlers[event] ??= []).push(handler);
     },
     registerTool: (t: any) => tools.set(t.name, t),
     registerCommand: (n: string, opts: any) => commands.set(n, opts),
+    registerFlag: (n: string, opts: any) => flags.set(n, opts),
+    getFlag: (n: string) => flags.get(n)?.value ?? flags.get(n)?.default,
+    setFlagValue: (n: string, v: boolean | string) => {
+      const flag = flags.get(n);
+      if (flag) flag.value = v;
+    },
     sendMessage: () => {},
   };
 }
@@ -410,4 +422,41 @@ test("/reload sequence (session_shutdown) resets stale plan mode", async () => {
     ctx,
   );
   expect(result).toBeUndefined();
+});
+
+test("registerFlag exposes --plan as a boolean flag", () => {
+  const pi = makeFakePi();
+  planExtension(pi as any);
+  const flag = pi.flags.get("plan");
+  expect(flag).toBeDefined();
+  expect(flag!.type).toBe("boolean");
+  expect(flag!.default).toBe(false);
+});
+
+test("--plan flag activates plan mode at session start", async () => {
+  const pi = makeFakePi();
+  planExtension(pi as any);
+  const sessionStart = pi.handlers["session_start"]![0]!;
+  const ctx = makeCtx({ sessionId: "flag-session" });
+
+  // Flag off: session start must not activate plan mode.
+  await sessionStart({}, ctx);
+  expect(__getPlanStateForTests().planActive).toBe(false);
+
+  // --plan passed: session start enters plan mode and seeds the plan file.
+  pi.setFlagValue("plan", true);
+  await sessionStart({}, ctx);
+  expect(__getPlanStateForTests().planActive).toBe(true);
+  expect(__getPlanStateForTests().planFile).toBe(join(tmpRoot, "plans", "flag-session.md"));
+  const content = await Bun.file(join(tmpRoot, "plans", "flag-session.md")).text();
+  expect(content).toContain("# Plan");
+
+  // And the write block is live for the flagged session.
+  const toolCall = pi.handlers["tool_call"]![0]!;
+  const result = await toolCall(
+    { type: "tool_call", toolCallId: "t", toolName: "bash", input: { command: "ls" } },
+    ctx,
+  );
+  expect(result.block).toBe(true);
+  expect(result.reason).toMatch(/plan mode/i);
 });

@@ -92,12 +92,39 @@ async function readPlanFile(path: string): Promise<string> {
   }
 }
 
+async function activatePlanMode(ctx: ExtensionContext): Promise<string> {
+  const path = resolvePlanFile(ctx);
+  // Create the plan file BEFORE activating: if the write fails (read-only
+  // plans dir, disk full), plan mode must not stay locked with no way to
+  // submit a plan.
+  await ensurePlanFile(path);
+  planActive = true;
+  planFile = path;
+  publishPlanMode(true);
+  return path;
+}
+
 const EmptyParams = Type.Object({});
 const SubmitPlanParams = Type.Object({
   content: Type.String({ description: "Complete plan text to save for user approval." }),
 });
 
 export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
+  // ---- --plan CLI flag ---------------------------------------------------
+  // `pico --plan` enters plan mode at session start (mirrors /plan). Upstream
+  // accepts flags registered by extensions, so this makes the documented
+  // `--plan` work instead of "Unknown option".
+  pi.registerFlag("plan", {
+    description: "Start in plan mode: read-only research; the plan must be approved before writes resume",
+    type: "boolean",
+    default: false,
+  });
+
+  pi.on("session_start", async (_event, ctx) => {
+    if (pi.getFlag("plan") !== true || planActive) return;
+    await activatePlanMode(ctx);
+  });
+
   // ---- EnterPlanMode ----------------------------------------------------
   pi.registerTool(
     defineTool({
@@ -115,20 +142,13 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         return renderToolResultText(result, options, theme, context);
       },
       async execute(_id, _params, _signal, _onUpdate, ctx) {
-        const path = resolvePlanFile(ctx);
-        // Create the plan file BEFORE activating: if the write fails (read-only
-        // plans dir, disk full), plan mode must not stay locked with no way to
-        // submit a plan.
-        await ensurePlanFile(path);
-        planActive = true;
-        planFile = path;
-        publishPlanMode(true);
+        const path = await activatePlanMode(ctx);
         const text =
-          `Plan mode enabled. Plan file: ${planFile}\n` +
+          `Plan mode enabled. Plan file: ${path}\n` +
           `Use read/grep/find/ls only. Call SubmitPlan with the complete plan, then call ExitPlanMode.`;
         return {
           content: [{ type: "text" as const, text }],
-          details: { planActive: true, planFile },
+          details: { planActive: true, planFile: path },
         };
       },
     }),
@@ -269,13 +289,9 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         } catch {}
         return;
       }
-      const path = resolvePlanFile(ctx);
-      await ensurePlanFile(path);
-      planActive = true;
-      planFile = path;
-      publishPlanMode(true);
+      const path = await activatePlanMode(ctx);
       try {
-        ctx.ui.notify(`Plan mode enabled. Plan file: ${planFile}`, "info");
+        ctx.ui.notify(`Plan mode enabled. Plan file: ${path}`, "info");
       } catch {}
     },
   });
