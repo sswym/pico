@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { ActivityTracker, type ActivityPhase } from "../src/extensions/retro-theme/activity.ts";
+import { ActivityTracker, formatDuration, type ActivityPhase } from "../src/extensions/retro-theme/activity.ts";
 
 const trackers: ActivityTracker[] = [];
 
@@ -87,4 +87,33 @@ test("attach pushes the current status and idle restores the default message", (
   tracker.finish();
   // idle clears with an undefined message
   expect(messages.at(-1)).toBeUndefined();
+});
+
+test("formatDuration renders compound units like 1s / 1m1s / 1h1m1s", () => {
+  expect(formatDuration(0)).toBe("0s");
+  expect(formatDuration(1)).toBe("1s");
+  expect(formatDuration(59)).toBe("59s");
+  expect(formatDuration(60)).toBe("1m");
+  expect(formatDuration(61)).toBe("1m1s");
+  expect(formatDuration(112)).toBe("1m52s");
+  expect(formatDuration(3599)).toBe("59m59s");
+  expect(formatDuration(3600)).toBe("1h");
+  expect(formatDuration(3660)).toBe("1h1m");
+  expect(formatDuration(3661)).toBe("1h1m1s");
+  expect(formatDuration(3605)).toBe("1h5s");
+  expect(formatDuration(7325)).toBe("2h2m5s");
+});
+
+test("formatStatus uses compound durations for each phase", () => {
+  let t = 100_000;
+  const tracker = makeTracker(() => t);
+  tracker.attach(() => {});
+
+  tracker.beginTool("subagent");
+  t += 112_000;
+  expect(tracker.formatStatus()).toBe("tool subagent 1m52s");
+
+  tracker.beginThinking();
+  t += 3_661_000;
+  expect(tracker.formatStatus()).toBe("thinking 1h1m1s");
 });

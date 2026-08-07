@@ -18,6 +18,20 @@ const TICK_MS = 1000;
 /** Tool names longer than this are truncated in the working row (2.1.7). */
 const TOOL_NAME_MAX = 24;
 
+/** 112 → "1m52s", 3661 → "1h1m1s"; whole units omit the zero tail. */
+export function formatDuration(elapsedSeconds: number): string {
+  const seconds = Math.max(0, Math.round(elapsedSeconds));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hours > 0) {
+    if (minutes > 0) return secs > 0 ? `${hours}h${minutes}m${secs}s` : `${hours}h${minutes}m`;
+    return secs > 0 ? `${hours}h${secs}s` : `${hours}h`;
+  }
+  if (minutes > 0) return secs > 0 ? `${minutes}m${secs}s` : `${minutes}m`;
+  return `${secs}s`;
+}
+
 export class ActivityTracker {
   private phase: ActivityPhase = "idle";
   private startedAt = 0;
@@ -69,16 +83,16 @@ export class ActivityTracker {
     const elapsed = Math.max(0, Math.round((this.now() - this.startedAt) / 1000));
     switch (this.phase) {
       case "thinking":
-        return `thinking ${elapsed}s`;
+        return `thinking ${formatDuration(elapsed)}`;
       case "streaming":
-        return `streaming ${elapsed}s`;
+        return `streaming ${formatDuration(elapsed)}`;
       case "tool": {
         // 2.1.7: `typescript-language-server` etc. used to overflow the row
         // and wrap — clip the name to a fixed width.
         const name = this.toolName.length > TOOL_NAME_MAX
           ? `${this.toolName.slice(0, TOOL_NAME_MAX - 1)}…`
           : this.toolName;
-        return `tool ${name} ${elapsed}s`;
+        return `tool ${name} ${formatDuration(elapsed)}`;
       }
       case "idle":
         return undefined;
