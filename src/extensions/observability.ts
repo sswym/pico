@@ -41,6 +41,25 @@ export interface PicoLogEvent {
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const MAX_KEPT_LINES = 1000;
 
+/**
+ * 非交互（-p / CI / --mode json|rpc）模式下把工具调用进度写到 stderr：
+ * stdout 被重定向/管道消费，TUI 不存在，用户只能看到完成时一次性输出的
+ * 最终答案——工具序列与耗时对卡死/慢任务零可见性。TTY 模式由 TUI 接管，
+ * 不输出。只写元数据（工具名/耗时/错误标记），不写工具参数与输出。
+ */
+function maybeEmitProgress(line: string): void {
+  if (process.stdout.isTTY) return;
+  // Subagent children run non-interactively and their stderr is captured into
+  // the subagent result — streaming progress there only adds noise to
+  // failed-result messages.
+  if (process.env.PICO_SUBAGENT_DEPTH) return;
+  try {
+    process.stderr.write(`${line}\n`);
+  } catch {
+    // 进度输出失败（stderr 被关闭等）绝不影响主流程。
+  }
+}
+
 // 可变上限：__setObservabilityLimitsForTests 可临时调小以验证截断逻辑，
 // __resetObservabilityForTests 恢复默认值。
 let maxLogBytes = MAX_LOG_BYTES;
@@ -225,6 +244,7 @@ export const observabilityExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     toolStartTimes.set(event.toolCallId, Date.now());
     // payload 只放工具名——绝不放 input 参数/文件内容。
     logEvent("tool_call", { tool: event.toolName });
+    maybeEmitProgress(`[pico] tool: ${event.toolName}`);
   });
 
   pi.on("tool_result", (event: ToolResultEvent) => {
@@ -235,6 +255,8 @@ export const observabilityExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     // 只记错误布尔标记，绝不记录输出内容（ToolResultEvent.isError 即错误标记）。
     if (event.isError) payload.error = true;
     logEvent("tool_result", payload, { durationMs });
+    const elapsed = durationMs !== undefined ? ` (${durationMs}ms)` : "";
+    maybeEmitProgress(`[pico] tool done: ${event.toolName}${elapsed}${event.isError ? " — error" : ""}`);
   });
 
   pi.on("before_provider_request", (_event, ctx: ExtensionContext) => {

@@ -51,11 +51,16 @@ function makeFakeCtx(overrides: Record<string, unknown> = {}): Record<string, un
 
 let homeDir: string;
 let oldPicoHome: string | undefined;
+/** The test runner's stdout is a pipe (not a TTY) — without this the
+ *  progress-to-stderr guard would fire on every tool_call in the generic
+ *  event tests, polluting the run output. Progress tests override it. */
+const SAVED_SUBAGENT_DEPTH = process.env.PICO_SUBAGENT_DEPTH;
 
 beforeEach(() => {
   oldPicoHome = process.env.PICO_HOME;
   homeDir = mkdtempSync(join(tmpdir(), "pico-obs-"));
   process.env.PICO_HOME = homeDir;
+  process.env.PICO_SUBAGENT_DEPTH = "1";
   __resetObservabilityForTests();
   __resetExtensionEventsForTests();
 });
@@ -63,6 +68,8 @@ beforeEach(() => {
 afterEach(() => {
   if (oldPicoHome === undefined) delete process.env.PICO_HOME;
   else process.env.PICO_HOME = oldPicoHome;
+  if (SAVED_SUBAGENT_DEPTH === undefined) delete process.env.PICO_SUBAGENT_DEPTH;
+  else process.env.PICO_SUBAGENT_DEPTH = SAVED_SUBAGENT_DEPTH;
   __resetObservabilityForTests();
   __resetExtensionEventsForTests();
   rmSync(homeDir, { recursive: true, force: true });
@@ -284,4 +291,80 @@ test("logEvent without an active session omits sessionId/turnId", () => {
   expect(events[0]?.sessionId).toBeUndefined();
   expect(events[0]?.turnId).toBeUndefined();
   expect(events[0]?.payload).toEqual({ tool: "bash" });
+});
+
+test("non-TTY mode emits tool progress to stderr", async () => {
+  const { handlers, api } = makeFakeApi();
+  observabilityExtension(api);
+  const writes: string[] = [];
+  const origWrite = process.stderr.write.bind(process.stderr);
+  const origIsTTY = process.stdout.isTTY;
+  const origDepth = process.env.PICO_SUBAGENT_DEPTH;
+  (process.stderr as unknown as { write: (s: string) => boolean }).write = (chunk: string) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  try {
+    delete process.env.PICO_SUBAGENT_DEPTH;
+    Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
+    handlers.tool_call!({ toolCallId: "t1", toolName: "bash", input: { command: "ls" } }, makeFakeCtx());
+    handlers.tool_result!({ toolCallId: "t1", toolName: "bash", isError: false }, makeFakeCtx());
+    const all = writes.join("");
+    expect(all).toContain("[pico] tool: bash");
+    expect(all).toContain("[pico] tool done: bash");
+    // error flag is surfaced for failed tools
+    handlers.tool_result!({ toolCallId: "t2", toolName: "edit", isError: true }, makeFakeCtx());
+    expect(writes.join("")).toContain("[pico] tool done: edit — error");
+  } finally {
+    if (origDepth === undefined) delete process.env.PICO_SUBAGENT_DEPTH;
+    else process.env.PICO_SUBAGENT_DEPTH = origDepth;
+    Object.defineProperty(process.stdout, "isTTY", { value: origIsTTY, configurable: true });
+    (process.stderr as unknown as { write: (s: string) => boolean }).write = origWrite;
+  }
+});
+
+test("TTY mode suppresses stderr progress", async () => {
+  const { handlers, api } = makeFakeApi();
+  observabilityExtension(api);
+  const writes: string[] = [];
+  const origWrite = process.stderr.write.bind(process.stderr);
+  const origIsTTY = process.stdout.isTTY;
+  (process.stderr as unknown as { write: (s: string) => boolean }).write = (chunk: string) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  try {
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+    handlers.tool_call!({ toolCallId: "t1", toolName: "bash", input: { command: "ls" } }, makeFakeCtx());
+    handlers.tool_result!({ toolCallId: "t1", toolName: "bash", isError: false }, makeFakeCtx());
+    expect(writes).toHaveLength(0);
+  } finally {
+    Object.defineProperty(process.stdout, "isTTY", { value: origIsTTY, configurable: true });
+    (process.stderr as unknown as { write: (s: string) => boolean }).write = origWrite;
+  }
+});
+
+test("subagent children suppress stderr progress", async () => {
+  const { handlers, api } = makeFakeApi();
+  observabilityExtension(api);
+  const writes: string[] = [];
+  const origWrite = process.stderr.write.bind(process.stderr);
+  const origIsTTY = process.stdout.isTTY;
+  const origDepth = process.env.PICO_SUBAGENT_DEPTH;
+  (process.stderr as unknown as { write: (s: string) => boolean }).write = (chunk: string) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  try {
+    Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
+    process.env.PICO_SUBAGENT_DEPTH = "1";
+    handlers.tool_call!({ toolCallId: "t1", toolName: "bash", input: { command: "ls" } }, makeFakeCtx());
+    handlers.tool_result!({ toolCallId: "t1", toolName: "bash", isError: false }, makeFakeCtx());
+    expect(writes).toHaveLength(0);
+  } finally {
+    if (origDepth === undefined) delete process.env.PICO_SUBAGENT_DEPTH;
+    else process.env.PICO_SUBAGENT_DEPTH = origDepth;
+    Object.defineProperty(process.stdout, "isTTY", { value: origIsTTY, configurable: true });
+    (process.stderr as unknown as { write: (s: string) => boolean }).write = origWrite;
+  }
 });
