@@ -1583,6 +1583,30 @@ test("2.6.3: classifyMessage keeps durable statements but rejects directives/que
   expect(isDurableCandidate("I prefer bun over npm")).toBe(true);
 });
 
+test("2.6.3: directive mixed with a remember-tail is still a task, not a fact", () => {
+  const directive = "在 src 目录下运行 bun test 看看有多少测试通过；另外记住一点：我们团队决定以后提交前必须跑 bun run verify";
+  expect(isDurableCandidate(directive)).toBe(false);
+  expect(classifyMessage(directive)).toBeUndefined();
+
+  const before = store.count();
+  autoExtractFromMessages(store, [{ role: "user", content: directive }]);
+  expect(store.count()).toBe(before);
+});
+
+test("2.6.3: onSessionEnd does not summarize sessions whose only message is a directive", () => {
+  const provider = new BuiltinMemoryProvider(":memory:");
+  try {
+    provider.initialize("s1");
+    provider.onSessionEnd(
+      userMessages("在 src 目录下运行 bun test 看看有多少测试通过；另外记住一点：我们团队决定以后提交前必须跑 bun run verify"),
+    );
+    const raw = provider.getRawStore() as MemoryStore;
+    expect(raw.list({ minTrust: 0, limit: 10 }).filter((f) => f.source === "session-summary")).toHaveLength(0);
+  } finally {
+    provider.shutdown();
+  }
+});
+
 test("2.3.6: terse preference like '别用 npm' is now extractable", () => {
   const before = store.count();
   const n = autoExtractFromMessages(store, [
