@@ -37,13 +37,14 @@ import {
   __recordInitFailureForTests,
   createLspManager,
   ensureNamedServer,
+  ensureServer,
   loadConfig,
   setIdleTimeout,
   syncDocument,
   syncDocumentForFile,
   stopServer,
 } from "../src/extensions/lsp/manager.ts";
-import { LspClient } from "../src/extensions/lsp/client.ts";
+import { LspClient, LspError, COMMAND_NOT_FOUND } from "../src/extensions/lsp/client.ts";
 import type { TextEdit } from "../src/extensions/lsp/types.ts";
 
 describe("applyTextEditsToString", () => {
@@ -1375,4 +1376,91 @@ test("registered lsp tool schema exposes a timeout parameter", () => {
   lspExtension(fakePi);
   expect(registered.parameters.properties.timeout).toBeDefined();
   expect(registered.parameters.properties.timeout.description).toMatch(/seconds/);
+});
+
+// ---- server fallback on command-not-found (P1) ----------------------------
+
+/** Minimal working LSP server: answers initialize/shutdown/exit. */
+const MINI_LSP_SERVER = `
+  function send(msg) {
+    const body = Buffer.from(JSON.stringify(msg));
+    process.stdout.write(Buffer.concat([Buffer.from("Content-Length: " + body.length + "\\r\\n\\r\\n"), body]));
+  }
+  let buf = Buffer.alloc(0);
+  process.stdin.on("data", (chunk) => { buf = Buffer.concat([buf, chunk]); pump(); });
+  function pump() {
+    while (true) {
+      const headEnd = buf.indexOf("\\r\\n\\r\\n");
+      if (headEnd === -1) return;
+      const head = buf.slice(0, headEnd).toString("utf8");
+      const m = /Content-Length: (\\d+)/.exec(head);
+      if (!m) { buf = buf.slice(headEnd + 4); continue; }
+      const len = Number(m[1]);
+      if (buf.length < headEnd + 4 + len) return;
+      const msg = JSON.parse(buf.slice(headEnd + 4, headEnd + 4 + len).toString("utf8"));
+      buf = buf.slice(headEnd + 4 + len);
+      if (msg.method === "initialize") {
+        send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: {}, serverInfo: { name: "mini-lsp", version: "1.0.0" } } });
+      } else if (msg.method === "shutdown") {
+        send({ jsonrpc: "2.0", id: msg.id, result: null });
+      } else if (msg.method === "exit") {
+        process.exit(0);
+      }
+    }
+  }
+`;
+
+test("ensureServer falls through to the next candidate when a binary is missing", async () => {
+  const state = createLspManager();
+  state.config = {
+    servers: {
+      "missing-cmd": {
+        command: "pico-no-such-lsp-binary-xyz",
+        args: [],
+        fileTypes: [".ts"],
+        rootMarkers: [],
+      },
+      "fake-ok": {
+        command: process.execPath,
+        args: ["-e", MINI_LSP_SERVER],
+        fileTypes: [".ts"],
+        rootMarkers: [],
+      },
+    },
+    formatOnWrite: false,
+  } as any;
+
+  try {
+    const client = await ensureServer(state, process.cwd());
+    // The missing binary must not abort the search — the installed candidate
+    // serves the file instead.
+    expect(client).not.toBeNull();
+    expect(client!.serverName).toBe("fake-ok");
+    expect(state.servers.has("missing-cmd")).toBe(false);
+    expect(state.servers.has("fake-ok")).toBe(true);
+  } finally {
+    await stopServer(state);
+  }
+});
+
+test("ensureServer surfaces command-not-found when every candidate is missing", async () => {
+  const state = createLspManager();
+  state.config = {
+    servers: {
+      "missing-a": { command: "pico-no-such-a", args: [], fileTypes: [".ts"], rootMarkers: [] },
+      "missing-b": { command: "pico-no-such-b", args: [], fileTypes: [".ts"], rootMarkers: [] },
+    },
+    formatOnWrite: false,
+  } as any;
+
+  let error: unknown;
+  try {
+    await ensureServer(state, process.cwd());
+  } catch (err) {
+    error = err;
+  }
+  // When NOTHING can start, the caller still needs the install offer — the
+  // first missing command is rethrown (matches the old behavior).
+  expect(error).toBeInstanceOf(LspError);
+  expect((error as LspError).errorCode).toBe(COMMAND_NOT_FOUND);
 });

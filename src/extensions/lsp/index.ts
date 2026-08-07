@@ -8,7 +8,7 @@
  * Lazy server startup on first call. Graceful degradation when no server available.
  */
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
   defineTool,
@@ -100,11 +100,34 @@ const warnedMissingCommands = new Set<string>();
  *  LSP calls must explain WHY nothing starts, instead of a bare
  *  "No language server available" (2.5.11). */
 const declinedMissingCommands = new Set<string>();
+/** Commands observed missing on PATH this process — feeds the root-cause
+ *  detail appended to "Cannot open file" errors. */
+const missingCommands = new Set<string>();
 
 function shouldWarnAboutMissingCommand(command: string): boolean {
   if (warnedMissingCommands.has(command)) return false;
   warnedMissingCommands.add(command);
   return true;
+}
+
+/** Root-cause detail for syncDocument failures: which server(s) failed and
+ *  why, so the model stops guessing and can pick a fallback (read/grep/tsc). */
+function describeServerStartFailures(state: LspManagerState, filePath: string): string {
+  const parts: string[] = [];
+  if (missingCommands.size > 0) {
+    parts.push(`command(s) not found on PATH: ${[...missingCommands].sort().join(", ")}`);
+  }
+  for (const [name, failure] of state.runtime.initFailures) {
+    parts.push(`${name}: ${failure.message}`);
+  }
+  if (parts.length === 0) {
+    const ext = extname(filePath);
+    return (
+      ` — no language server started for "${ext || filePath}": no configured server matched this project's ` +
+      "root markers (package.json/tsconfig.json etc.). Create the marker file and retry, or verify with read/grep/tsc directly."
+    );
+  }
+  return ` — no language server started: ${parts.join("; ")}`;
 }
 
 /**
@@ -153,6 +176,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       const fullCmd = err.message.match(/"(.+?)"/)?.[1];
       const cmd = fullCmd ? basename(fullCmd) : null;
       const warnKey = cmd ?? fullCmd ?? "unknown";
+      missingCommands.add(warnKey);
       if (declinedMissingCommands.has(warnKey)) {
         // The user already refused the install — re-explain instead of
         // nagging again (2.5.11): a bare "no server available" reads as a
@@ -172,6 +196,20 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         return null;
       }
       if (opts?.quietMissingCommand) return null;
+      if (!ctx.hasUI) {
+        // Non-interactive runs cannot answer the install dialog — explain
+        // once on stderr instead of silently degrading every lsp call to a
+        // reasonless "Cannot open file" (observed as a multi-minute agent
+        // death spiral in -p mode).
+        const hintText = hint ? `Install with: ${hint.command}. ` : "";
+        try {
+          process.stderr.write(
+            `[pico] LSP server "${warnKey}" not found on PATH. ${hintText}LSP actions will fail until it is installed.\n`,
+          );
+        } catch {}
+        declinedMissingCommands.add(warnKey);
+        return null;
+      }
       const doInstall = await ctx.ui.confirm(
         `Install LSP server "${cmd}"?`,
         `Command "${cmd}" not found. Install with:\n  ${hint.command}\n\nProceed?`,
@@ -298,7 +336,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             return executeWorkspaceDiagnosticsAction(state);
           }
           const doc = await syncDocumentWithInstall(ctx.cwd, params.file, ctx);
-          if (!doc) return fail(`Cannot open file: ${params.file}`);
+          if (!doc) return fail(`Cannot open file: ${params.file}${describeServerStartFailures(state, params.file)}`);
           ctx.ui.setStatus("lsp", `LSP: ${doc.serverName}`.trim());
           try {
             // Pull-model servers (LSP 3.17, diagnosticProvider) answer a
@@ -360,7 +398,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           }
           if (!params.file) return fail("Provide a file path for document symbols, or a query for workspace search.");
           const doc = await syncDocumentWithInstall(ctx.cwd, params.file, ctx);
-          if (!doc) return fail(`Cannot open file: ${params.file}`);
+          if (!doc) return fail(`Cannot open file: ${params.file}${describeServerStartFailures(state, params.file)}`);
           ctx.ui.setStatus("lsp", `LSP: ${doc.serverName}`.trim());
           try {
             const result = await doc.client.textDocumentDocumentSymbol(doc.uri, signal, timeoutMs);
@@ -393,7 +431,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         if (character === undefined) return fail(`${action} requires 'character' parameter (or 'symbol' for auto-resolve).`);
 
         const doc = await syncDocumentWithInstall(ctx.cwd, params.file, ctx);
-        if (!doc) return fail(`Cannot open file: ${params.file}`);
+        if (!doc) return fail(`Cannot open file: ${params.file}${describeServerStartFailures(state, params.file)}`);
         ctx.ui.setStatus("lsp", `LSP: ${doc.serverName}`.trim());
         const pos = positionToLsp(params.line, character);
 

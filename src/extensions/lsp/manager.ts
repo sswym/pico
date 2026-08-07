@@ -388,7 +388,12 @@ export async function ensureServer(
     }
   }
 
-  // No server ready — start the first matching one (filtered by rootMarkers)
+  // No server ready — start the first matching one (filtered by rootMarkers).
+  // A candidate whose binary is missing (command-not-found) must NOT abort the
+  // search: a later candidate (e.g. typescript-language-server) may be installed
+  // and able to serve the file. Remember the first missing command so callers
+  // can still offer to install it when nothing at all starts.
+  let firstCommandNotFound: LspError | null = null;
   const matching = detectServers(state.config, workspaceRoot);
   for (const [name, serverConfig] of matching) {
     if (serverConfig.isLinter) continue;
@@ -455,12 +460,21 @@ export async function ensureServer(
     try {
       await managed.initializing;
     } catch (err) {
-      // Re-throw command-not-found for the caller to handle.
-      if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) throw err;
+      // A missing binary must not end the search — keep the FIRST
+      // command-not-found as the install-able culprit, then try the next
+      // candidate server (e.g. typescript-native(tsc) missing while
+      // typescript-language-server is installed).
+      if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) {
+        if (firstCommandNotFound === null) firstCommandNotFound = err;
+        continue;
+      }
     }
     if (managed.client.ready) return managed.client;
   }
 
+  // Every candidate failed and at least one was a missing command — surface
+  // the first one so the caller can offer to install it.
+  if (firstCommandNotFound !== null) throw firstCommandNotFound;
   return null;
 }
 
