@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, s
 import { join } from "node:path";
 import { picoHome } from "../paths.ts";
 import { scanSecrets } from "./secrets.ts";
-import { extractText, type ExtractableMessage } from "./extract.ts";
+import { extractText, isDurableCandidate, type ExtractableMessage } from "./extract.ts";
 
 export type CuratedTarget = "memory" | "user";
 
@@ -45,15 +45,6 @@ const MEMORY_PATTERNS = [
   /(?:规范|标准|风格|约定|规矩)\s*(?:是|为|要求)/,
   /(?:坑|怪癖|限制|注意点|陷阱)\s*[:：]/,
 ];
-
-const INSTRUCTION_PATTERNS = [
-  /用\s*memory\s*工具/,
-  /请调用|调用\s*memory|action\s*=/,
-  /^\s*请\s*(?:用|调用|执行)/,
-];
-
-/** Question marks (? or ？) — questions are never durable statements. */
-const QUESTION_RE = /[?？]/;
 
 function defaultDir(): string {
   return join(picoHome(), "memories");
@@ -296,10 +287,9 @@ export class CuratedMemoryStore {
       if (msg.role !== "user") continue;
       const text = extractText(msg.content).trim();
       if (text.length < 10) continue;
-      if (INSTRUCTION_PATTERNS.some((p) => p.test(text))) continue;
-      // Questions ("Do I prefer X?") are not durable statements — do not
-      // freeze them into MEMORY.md/USER.md entries.
-      if (QUESTION_RE.test(text)) continue;
+      // Shared pre-filter with the SQLite path: instructions, help requests,
+      // denials and questions are never durable statements.
+      if (!isDurableCandidate(text)) continue;
 
       const target = USER_PATTERNS.some((p) => p.test(text))
         ? "user"

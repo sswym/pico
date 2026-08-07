@@ -15,7 +15,7 @@ import { MemoryStore } from "../src/extensions/memory/store.ts";
 import { BuiltinMemoryProvider } from "../src/extensions/memory/builtin-provider.ts";
 import { HolographicMemoryProvider } from "../src/extensions/memory/holographic-provider.ts";
 import { CuratedMemoryStore, resetCuratedMemoryDir } from "../src/extensions/memory/curated-store.ts";
-import { autoExtractFromMessages } from "../src/extensions/memory/extract.ts";
+import { autoExtractFromMessages, classifyMessage, isDurableCandidate } from "../src/extensions/memory/extract.ts";
 import { scanSecrets } from "../src/extensions/memory/secrets.ts";
 import { executeMemoryToolAction } from "../src/extensions/memory/tool.ts";
 import {
@@ -1557,6 +1557,32 @@ test("2.3.6: help requests and denials are not extracted as durable facts", () =
   expect(store.count()).toBe(before);
 });
 
+test("2.6.3: one-time task directives are not extracted as durable facts", () => {
+  const before = store.count();
+  autoExtractFromMessages(store, [
+    { role: "user", content: "在 wt 目录下运行 bun run no-such-script-xyz，然后把输出告诉我" },
+    { role: "user", content: "解释 src/extensions/todo 扩展如何工作：注册了哪些工具和命令" },
+    { role: "user", content: "数一下这个仓库的 src 目录下有多少个 .ts 文件" },
+    { role: "user", content: "把 /tmp/x/y.ts 的内容改成 export const x = 1" },
+    { role: "user", content: "优化一下这个项目的性能" },
+    { role: "user", content: "请使用 subagent 工具的 worker 子代理分析 tests 目录" },
+  ]);
+  expect(store.count()).toBe(before);
+});
+
+test("2.6.3: classifyMessage keeps durable statements but rejects directives/questions", () => {
+  expect(classifyMessage("I prefer using bun for all scripts.")).toBe("user_pref");
+  expect(classifyMessage("我们决定用 bun 作为包管理器")).toBe("project");
+  expect(classifyMessage("记住：要在 README 末尾加 changelog 章节")).toBe("insight");
+  expect(classifyMessage("在 wt 目录下运行 bun test")).toBeUndefined();
+  expect(classifyMessage("解释 X 如何工作")).toBeUndefined();
+  expect(classifyMessage("数一下 src 有多少文件")).toBeUndefined();
+  expect(classifyMessage("为什么思考深度只到 high?")).toBeUndefined();
+  expect(isDurableCandidate("use memory tool action=add to store this")).toBe(false);
+  expect(isDurableCandidate("把 foo.ts 改成 1")).toBe(false);
+  expect(isDurableCandidate("I prefer bun over npm")).toBe(true);
+});
+
 test("2.3.6: terse preference like '别用 npm' is now extractable", () => {
   const before = store.count();
   const n = autoExtractFromMessages(store, [
@@ -1683,6 +1709,36 @@ test("onSessionEnd skips instruction-like topics and empty sessions", () => {
     provider.onSessionEnd(userMessages("use memory tool action=add to store this"));
     const raw = provider.getRawStore() as MemoryStore;
     expect(raw.count()).toBe(0);
+  } finally {
+    provider.shutdown();
+  }
+});
+
+test("onSessionEnd skips sessions whose only messages are one-time directives or questions", () => {
+  const provider = new BuiltinMemoryProvider(":memory:");
+  try {
+    provider.initialize("s1");
+    provider.onSessionEnd(userMessages("在 wt 目录下运行 bun run no-such-script-xyz，然后把输出告诉我"));
+    provider.onSessionEnd(userMessages("数一下 src 目录下有多少个 .ts 文件"));
+    provider.onSessionEnd(userMessages("为什么思考深度只到 high?"));
+    provider.onSessionEnd(userMessages("解释 src/extensions/todo 扩展如何工作"));
+    const raw = provider.getRawStore() as MemoryStore;
+    expect(raw.count()).toBe(0);
+  } finally {
+    provider.shutdown();
+  }
+});
+
+test("onSessionEnd falls back to a later durable statement when the first message is a directive", () => {
+  const provider = new BuiltinMemoryProvider(":memory:");
+  try {
+    provider.initialize("s1");
+    provider.onSessionEnd(userMessages("运行 bun test", "我们决定用 bun 作为包管理器"));
+    const raw = provider.getRawStore() as MemoryStore;
+    const summary = raw.list({ minTrust: 0, limit: 10 }).find((f) => f.source === "session-summary");
+    expect(summary).toBeDefined();
+    expect(summary!.content).toContain("Session: 我们决定用 bun 作为包管理器");
+    expect(summary!.content).toContain("(+1 more)");
   } finally {
     provider.shutdown();
   }

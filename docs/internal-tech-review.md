@@ -475,6 +475,22 @@ flowchart TD
 **坑 62：其余低危（低）**
 - 子代理 frontmatter 逐文件 try/catch（坏 YAML 不再拖垮整个工具）；subagent.json overrides 复用 >0 数值校验；file-only 大输出 tmp 目录返回清理函数（orchestrator finally 调用）；cache-optimizer DISABLE 补 PI_ 别名、prompt_cache_key 仅注入 openai-completions；todo schema 长度约束；/language 校验（64 字符、禁换行）；ask 重复 question 拒绝；LSP 负值 line/character 校验、execute signal 透传、applyEdit 应答 `{applied:false}`、file:// URI 编解码、idle 回收等待在途关闭、formatOnWrite mtime 新鲜度校验、installServer 异步化（进程组超时）、typescript-native 探针按 (command,cwd) 缓存。
 
+### 4.8 第五轮整改（2026-08-07，全项目启动 + 12 组真实需求端到端测试）
+
+依据本日端到端测试报告（真实 API 驱动，12 组需求 + TUI 交互），修复 2 高 / 4 中，全部附回归测试：
+
+**高：记忆库被一次性指令污染（P-1/P-7）**
+- 实测：每条普通指令消息（"运行 X"、"解释 Y"、"数一下 Z"）都会在会话结束时被 `onSessionEnd` 拼成 `Session: <原文>` insight 事实入库；用户真实提问同样中招；子代理 task 消息以 `Task:`/`Session: Task:` 双前缀重复入库，跨前缀无法去重。
+- 修复：
+  - `extract.ts` 新增导出 `isDurableCandidate()`（指令/求助/否认/问题前置过滤）与 `classifyMessage()`（完整可持久性门控），`autoExtractFromMessages` 与 `curated-store.autoExtract`、`builtin-provider.onSessionEnd` 三方共用同一门控，杜绝路径漂移；
+  - `INSTRUCTION_PATTERNS` 扩展覆盖中文一次性任务祈使句（"在…运行/执行"、"把…改成/删掉"、"解释…如何工作"、"数一下/列出/查一下"、"优化/重构 X"、"请使用/让/派"）；
+  - `onSessionEnd` 的 session topic 只选 `classifyMessage` 判定为持久陈述的消息——普通指令/问题不再产生 session-summary 事实；
+  - 回归测试 4 条（135 pass），端到端验证：指令会话后记忆库 0 新增。
+
+**中：提示词层行为约束（P-2/P-4/P-5/P-6/P-9）**
+- 实测：模糊需求 25 轮探索零交付；"新增小节"变成覆盖删除原内容；`--foo` 只加检测函数未接入逻辑；删除类任务不跑验证闭环；子代理报告被主回复逐字复述。
+- 修复（`src/prompts/vibe-system.md`）：「新增 X」= 插入不替换；破坏性操作必须有验证闭环并报告破坏面；交付前自查接入链（新符号无调用方 = 未交付）；探索要有界（-p 模式探索不收敛 = 零交付）；子代理结果引用不复述。
+
 ## 5. 当前版本现状与已知局限
 
 ### 5.1 现状
@@ -483,6 +499,7 @@ flowchart TD
 - 第三轮 UX 整改（2026-08-05，依据 `docs/ux-walkthrough-review.md`）：离线 `/help` 与无模型/推理 400/崩溃恢复引导（guidance 扩展）、config.yml 双轨冲突检测、`<inline:N>` 启动噪音消除（InlineExtension hidden）、LSP 缺失命令警告去重与可执行建议、生成阶段动态反馈、计划模式挂起 todo 面板、CLI 品牌统一、MCP 状态可读化、logo 首启文案与真实会话、`/memory status` 类别分布、rtk 启用提示；全部附回归测试；
 - 安全默认值：项目 hooks/MCP 默认关、非交互项目代理默认拒、LSP 写动作默认阻断、计划自动批准默认关；
 - 工具错误语义对齐上游：失败一律 throw（agent loop 仅以异常判定 isError）；第四轮整改（2026-08-05，依据深度技术分析报告）修复 4 高 / 29 中 / 37 低，覆盖 LSP 写透传短路、worktree 冲突与分支保留、子代理退出码、vision SSRF、MCP 并行连接与进程组、事件订阅生命周期、异步化 gate、ANSI 终端注入等；
+- 第五轮整改（2026-08-07，依据端到端测试报告）：记忆提取三方统一门控（`isDurableCandidate`/`classifyMessage`）、`INSTRUCTION_PATTERNS` 扩展覆盖一次性任务祈使句、session topic 只取持久陈述；提示词补充"新增=插入""破坏性操作验证闭环""接入链自查""探索有界""子代理结果引用不复述"；635 用例全绿；
 
 ### 5.2 已知局限（客观记录）
 
@@ -503,6 +520,7 @@ flowchart TD
 | L16 | **plan 同批 ExitPlanMode+write 时序矛盾**：并行工具执行下 tool_call 阻断先于批准生效 | 批准后同批写仍被拒，需重发 | 受上游执行序约束，待同批放行 |
 | L17 | **cache-optimizer 对 responses/codex 未知字段行为**（已改为不注入，记录原始风险） | 严格网关 400 风险已消除 | 已修 |
 | L18 | **agent_end 全量重抽取**可能重复写入 | 记忆重复 | 已缓解：`seenMessageTexts` 指纹去重 + UNIQUE(scope, content) 幂等；`onPreCompress` 复用同一抽取管线 |
+| L19 | **模型调用错误（如 403/模型不在白名单）以原始文本上屏**：上游 print-mode.js 直接 `console.error(errorMessage)` 后 exit 1，pico 扩展面（事件订阅）在其后触发、`main()` 不抛异常 | 错误信息无引导（用户看不到"模型不在白名单/认证失败"类提示） | 受上游约束；已在错误模型配置场景实测确认，pico 层无法拦截，建议仅作文档记录 |
 
 ### 5.3 待优化项与迭代规划（建议排序）
 

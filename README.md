@@ -63,7 +63,7 @@ bun run bin/pico.ts --help     # 查看所有上游标志
 ## 测试与开发
 
 ```bash
-bun run verify              # tsc --noEmit + 全量测试（610 用例 / 30 文件，完全离线）
+bun run verify              # tsc --noEmit + 全量测试（635 用例 / 31 文件，完全离线）
 bun test tests/<feature>.test.ts
 bun run build               # 三阶段构建，产出独立二进制（~102MB）
 bun run start               # 源码模式启动（开发用）

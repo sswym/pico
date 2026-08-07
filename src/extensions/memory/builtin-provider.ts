@@ -9,7 +9,7 @@
 import { MemoryStore, type Fact as StoreFact } from "./store.ts";
 import { type FactRetriever, type ScoredFact as RetrieverScoredFact, type ContradictionResult as RetrieverContradiction } from "./retrieval.ts";
 import type { Scope } from "./schema.ts";
-import { autoExtractFromMessages, extractText, type ExtractableMessage } from "./extract.ts";
+import { autoExtractFromMessages, classifyMessage, extractText, type ExtractableMessage } from "./extract.ts";
 import { SCOPE_GLOBAL, SCOPE_PROJECT } from "./schema.ts";
 import {
   type MemoryProvider,
@@ -307,8 +307,10 @@ export class BuiltinMemoryProvider implements MemoryProvider {
       .map((m) => extractText(m.content).trim())
       .filter((t) => t.length >= 4);
     if (userTexts.length === 0) return;
-    const topic = userTexts.find((t) => !SESSION_INSTRUCTION_RE.test(t));
-    if (!topic) return; // a session of pure meta-instructions has no durable topic
+    // A topic must be a durable statement — one-time directives and questions
+    // are not facts and must not become session-summary entries.
+    const topic = userTexts.find((t) => classifyMessage(t) !== undefined);
+    if (!topic) return;
     const tail = userTexts.length > 1 ? ` (+${userTexts.length - 1} more)` : "";
     const summary = `Session: ${topic.slice(0, 120)}${tail}`;
     try {
@@ -340,6 +342,3 @@ export class BuiltinMemoryProvider implements MemoryProvider {
     return `[memory] ${userCount} user message(s) from the compressed range were scanned into long-term memory before discard.`;
   }
 }
-
-/** Meta-instruction prefixes that must not become a session topic. */
-const SESSION_INSTRUCTION_RE = /用\s*memory\s*工具|调用\s*memory|action\s*=|^\s*请\s*(?:用|调用|执行)/;
