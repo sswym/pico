@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildDoctorReport, doctorExtension } from "../src/extensions/doctor/index.ts";
+import { detectMissingDefaultModel } from "../src/extensions/doctor/config-scan.ts";
 import {
   allowProjectHooks,
   allowProjectMcp,
@@ -379,6 +380,58 @@ test("session_start notifies once on model config conflicts", async () => {
     expect(notifications[0]!.message).toContain("defaultProvider");
     // With a compat-flagged default model, no second advisory fires.
     expect(notifications[0]!.message).not.toContain("requiresReasoningContentOnAssistantMessages");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("detectMissingDefaultModel flags a model absent from models.json and the store", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-doctor-missing-model-"));
+  process.env.PICO_HOME = home;
+  try {
+    const agentDir = join(home, "agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ defaultProvider: "zen-openai", defaultModel: "no-such-model-xyz" }),
+    );
+    writeFileSync(
+      join(agentDir, "models.json"),
+      JSON.stringify({ providers: { "zen-openai": { models: [{ id: "deepseek-v4-flash-free" }] } } }),
+    );
+    expect(detectMissingDefaultModel()).toEqual({ provider: "zen-openai", model: "no-such-model-xyz" });
+    // The doctor report carries the advisory line.
+    expect(buildDoctorReport("/repo")).toContain("Default model zen-openai/no-such-model-xyz not found");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("detectMissingDefaultModel accepts models declared in models-store.json", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-doctor-store-model-"));
+  process.env.PICO_HOME = home;
+  try {
+    const agentDir = join(home, "agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ defaultProvider: "opencode-go", defaultModel: "kimi-k2.6" }),
+    );
+    writeFileSync(join(agentDir, "models-store.json"), JSON.stringify({ "opencode-go": { models: [{ id: "kimi-k2.6" }] } }));
+    expect(detectMissingDefaultModel()).toBeNull();
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("detectMissingDefaultModel returns null when provider/model is unset", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-doctor-no-model-"));
+  process.env.PICO_HOME = home;
+  try {
+    const agentDir = join(home, "agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({}));
+    expect(detectMissingDefaultModel()).toBeNull();
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

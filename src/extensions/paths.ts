@@ -46,6 +46,10 @@ export function picoModelsPath(): string {
   return join(picoAgentHome(), "models.json");
 }
 
+export function picoModelsStorePath(): string {
+  return join(picoAgentHome(), "models-store.json");
+}
+
 export function picoInputHistoryPath(): string {
   return join(picoAgentHome(), "input-history.jsonl");
 }

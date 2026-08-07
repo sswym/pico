@@ -15,7 +15,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { picoAgentHome, picoModelsPath } from "../paths.ts";
+import { picoAgentHome, picoModelsPath, picoModelsStorePath } from "../paths.ts";
 import { readSettings, readSettingsObject } from "../settings.ts";
 
 export const SAFETY_KEYS = [
@@ -301,4 +301,73 @@ export function formatReasoningCompatLines(): string[] {
     ),
   ];
   return lines;
+}
+
+// ── Missing default model ─────────────────────────────────────────────────
+
+/**
+ * Collect provider → model-id sets from models.json and the upstream
+ * models-store.json catalog. Either file can declare a provider; the union
+ * is what the model runtime can resolve from settings.
+ */
+function collectProviderModelIds(): Map<string, Set<string>> {
+  const map = new Map<string, Set<string>>();
+  const add = (provider: string, ids: Iterable<unknown>): void => {
+    if (!provider) return;
+    let set = map.get(provider);
+    if (!set) {
+      set = new Set<string>();
+      map.set(provider, set);
+    }
+    for (const id of ids) {
+      if (typeof id === "string" && id.length > 0) set.add(id);
+    }
+  };
+  const scan = (path: string): void => {
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+      for (const [name, p] of Object.entries(parsed)) {
+        const provider = name === "providers" ? p : undefined;
+        const entries = provider && typeof provider === "object"
+          ? Object.entries(provider as Record<string, unknown>)
+          : [[name, p]] as Array<[string, unknown]>;
+        for (const [providerName, cfg] of entries) {
+          if (cfg && typeof cfg === "object" && Array.isArray((cfg as { models?: unknown[] }).models)) {
+            add(providerName, (cfg as { models: Array<{ id?: unknown }> }).models.map((m) => m.id));
+          }
+        }
+      }
+    } catch {
+      // missing/unreadable file — nothing to collect
+    }
+  };
+  scan(picoModelsPath());
+  scan(picoModelsStorePath());
+  return map;
+}
+
+/**
+ * Non-null when settings' defaultProvider/defaultModel combo resolves in
+ * neither models.json nor models-store.json — the upstream model runtime
+ * silently falls back to the first available model in that case (observed:
+ * an unknown model id switched the session to an unrelated provider with
+ * zero warnings).
+ */
+export function detectMissingDefaultModel(): { provider: string; model: string } | null {
+  const settings = readSettings();
+  const provider = typeof settings.defaultProvider === "string" ? settings.defaultProvider : "";
+  const model = typeof settings.defaultModel === "string" ? settings.defaultModel : "";
+  if (!provider || !model) return null;
+  const ids = collectProviderModelIds().get(provider);
+  if (!ids || !ids.has(model)) return { provider, model };
+  return null;
+}
+
+export function formatMissingDefaultModelLines(): string[] {
+  const missing = detectMissingDefaultModel();
+  if (!missing) return [];
+  return [
+    `Default model ${missing.provider}/${missing.model} not found in ${picoModelsPath()} or models-store.json —`,
+    "the session silently falls back to the first available model (unexpected provider/costs). Fix settings.defaultModel or add the model to the provider config.",
+  ];
 }

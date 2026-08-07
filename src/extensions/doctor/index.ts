@@ -14,8 +14,10 @@ import {
   formatConfigYmlConflictLines,
   formatConfigYmlModelConflictLines,
   formatReasoningCompatLines,
+  formatMissingDefaultModelLines,
   detectConfigYmlModelConflicts,
   detectReasoningCompatIssues,
+  detectMissingDefaultModel,
 } from "./config-scan.ts";
 
 function enabled(value: boolean): string {
@@ -58,6 +60,7 @@ export function buildDoctorReport(cwd: string): string {
     ...formatConfigYmlConflictLines(),
     ...formatConfigYmlModelConflictLines(),
     ...formatReasoningCompatLines(),
+    ...formatMissingDefaultModelLines(),
   ].join("\n");
 }
 
@@ -88,7 +91,24 @@ function startupConfigAdvisories(ctx: ExtensionContext): void {
       issue.provider === settings.defaultProvider &&
       issue.model === settings.defaultModel,
   );
-  if (!missing) return;
+  if (!missing) {
+    const missingDefault = detectMissingDefaultModel();
+    if (missingDefault) {
+      const message =
+        `默认模型 ${missingDefault.provider}/${missingDefault.model} 未在 models.json / models-store.json 中找到，` +
+        "会话将静默回退到第一个可用模型（可能使用意外 provider 并产生费用）。修正 settings.json 的 defaultModel，运行 /doctor 查看详情。";
+      try {
+        if (ctx.hasUI) {
+          ctx.ui.notify(message, "warning");
+        } else {
+          // Non-interactive runs have no notification channel — the batch/CI
+          // scenario is exactly where a silent model fallback is dangerous.
+          process.stderr.write(`[pico] ${message}\n`);
+        }
+      } catch {}
+    }
+    return;
+  }
   try {
     ctx.ui.notify(
       `当前默认模型 ${missing.provider}/${missing.model} 缺少 requiresReasoningContentOnAssistantMessages 兼容配置，` +
