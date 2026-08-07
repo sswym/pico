@@ -166,4 +166,3 @@ function makeFakePi() {
 - 修改扩展时检查对应的 `tests/<feature>.test.ts`，可能需要同步更新 `__reset*ForTests()` 钩子
 - LSP 扩展最复杂（只读 action + 被阻断的写入/高风险 action、workspace edit 引擎、diagnostics ledger），改动前先读 `src/extensions/lsp/` 全部文件
 - `cache-optimizer` 有已记录缺陷（见先前审查 `(memory:#37)`）：`optimizeSystemPrompt` 会拆散 AGENTS.md/CLAUDE.md 的 `<project_instructions>` 包装、按候选顺序重排 system prompt 稳定段。它直接改每个请求的 prompt/token 成本，改动前先做边界审计（空输入/超长/中文/特殊字符）
-- 已知文档死链：README 与 `docs/user-guide.md` 引用 `docs/pico-intro.md`，实档为 `docs/srcode-intro.md` — 顺手修 README 时一并更正
