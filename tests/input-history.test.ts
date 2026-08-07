@@ -170,6 +170,37 @@ test("PersistentHistoryEditor wraps long input instead of truncating it", () => 
   }
 });
 
+test("PersistentHistoryEditor keeps the bottom border full-width while slash autocomplete is open", () => {
+  const editor = new PersistentHistoryEditor(makeFakeTui(), stubTheme, stubKeybindings);
+  editor.setText("/");
+  // Simulate the open slash-command menu: super.render() appends its items
+  // BELOW the bottom border, so the border is no longer the last line.
+  (editor as any).autocompleteState = "regular";
+  (editor as any).autocompleteList = {
+    render: () => [
+      "→ settings           Open settings menu",
+      "  model              <provider/model> — Select model",
+      "  (1/42)",
+    ],
+  };
+
+  const lines = editor.render(100);
+
+  // Top border, prompt line, then the full-width bottom border.
+  expect(lines).toHaveLength(6);
+  expect(lines[0]?.startsWith("─")).toBe(true);
+  expect(lines[1]?.startsWith("❯ /")).toBe(true);
+  const bottomBorder = lines[2] ?? "";
+  expect(bottomBorder.startsWith("─")).toBe(true);
+  expect(visibleWidth(bottomBorder)).toBe(100);
+  // Autocomplete items keep the prompt's continuation indent, including the
+  // last one — it must not be mistaken for the bottom border.
+  for (const item of lines.slice(3)) {
+    expect(item.startsWith("  ")).toBe(true);
+    expect(visibleWidth(item)).toBe(100);
+  }
+});
+
 test("inputHistoryExtension installs a persistent editor factory on session start", () => {
   let handler: any;
   let factory: any;

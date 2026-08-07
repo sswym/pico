@@ -22,6 +22,18 @@ function padToWidth(line: string, width: number): string {
   return `${line}${" ".repeat(Math.max(0, width - visibleWidth(line)))}`;
 }
 
+/**
+ * True when the line is one of the editor's horizontal rules: either a plain
+ * run of ─ or the "─── ↑/↓ N more ──" scroll indicator. Used to locate the
+ * bottom border in super.render()'s output — when the slash-command
+ * autocomplete is open its items are appended BELOW the bottom border, so the
+ * bottom border is the last rule-shaped line, not necessarily the last line.
+ */
+function isRuleLine(line: string): boolean {
+  const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
+  return /^─+$/.test(plain) || /^─── [↑↓] \d+ more ─*$/.test(plain);
+}
+
 export function normalizeHistoryText(text: string): string {
   return text.trim();
 }
@@ -194,14 +206,24 @@ export class PersistentHistoryEditor extends CustomEditor {
     const prefixWidth = visibleWidth(prompt) + 1;
     const lines = super.render(Math.max(1, width - prefixWidth));
     if (lines.length < 2) return lines;
+    // The bottom border is the LAST rule line: super.render() appends the
+    // autocomplete items below the bottom border, so when the slash-command
+    // menu is open the border is not the last line of its output.
+    let bottomIndex = lines.length - 1;
+    for (let i = lines.length - 1; i > 0; i -= 1) {
+      if (isRuleLine(lines[i] ?? "")) {
+        bottomIndex = i;
+        break;
+      }
+    }
     const continuation = " ".repeat(prefixWidth);
     const decorated = lines.map((line, index) => {
-      if (index === 0 || index === lines.length - 1) return padToWidth(line, width);
+      if (index === 0 || index === bottomIndex) return padToWidth(line, width);
       return padToWidth(`${index === 1 ? `${prompt} ` : continuation}${line}`, width);
     });
 
     if (this.getText().trim().length === 0 && !this.isShowingAutocomplete()) {
-      return [decorated[0] ?? "", decorated[1] ?? "", decorated[decorated.length - 1] ?? ""];
+      return [decorated[0] ?? "", decorated[1] ?? "", decorated[bottomIndex] ?? ""];
     }
 
     return decorated;
