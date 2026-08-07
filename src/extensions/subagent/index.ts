@@ -113,8 +113,8 @@ export default function (pi: ExtensionAPI) {
 			return renderSubagentCall(args, theme);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
-			return renderSubagentResult(result, expanded, theme);
+		renderResult(result, { expanded }, theme, context) {
+			return renderSubagentResult(result, expanded, theme, context);
 		},
 	});
 }

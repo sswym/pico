@@ -162,7 +162,7 @@ function aggregateUsage(results: SingleResult[]) {
 	return total;
 }
 
-export function renderSubagentResult(result: any, expanded: boolean, theme: any) {
+export function renderSubagentResult(result: any, expanded: boolean, theme: any, context?: { isPartial?: boolean }) {
 	const details = result.details as SubagentDetails | undefined;
 	if (!details || details.results.length === 0) {
 		const text = result.content[0];
@@ -200,13 +200,17 @@ export function renderSubagentResult(result: any, expanded: boolean, theme: any)
 	if (details.mode === "single" && details.results.length === 1) {
 		const r = details.results[0]!;
 		const isError = isFailedResult(r);
-		const icon = renderStatusIcon(theme, isError ? "error" : "success");
+		// Live updates arrive with isPartial=true; exitCode starts at 0
+		// (createInitialResult), so isPartial is the only running signal.
+		const isRunning = context?.isPartial === true;
+		const icon = renderStatusIcon(theme, isRunning ? "running" : isError ? "error" : "success");
 		const displayItems = getDisplayItems(r.messages);
 		const finalOutput = getFinalOutput(r.messages);
 
 		if (expanded) {
 			const container = new Container();
 			let header = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
+			if (isRunning) header += ` ${theme.fg("warning", "· 运行中…")}`;
 			if (isError && r.stopReason) header += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
 			container.addChild(new Text(header, 0, 0));
 			if (isError && r.errorMessage) container.addChild(new Text(theme.fg("error", `Error: ${sanitizeTerminalText(r.errorMessage)}`), 0, 0));
@@ -216,7 +220,7 @@ export function renderSubagentResult(result: any, expanded: boolean, theme: any)
 			container.addChild(new Spacer(1));
 			container.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
 			if (displayItems.length === 0 && !finalOutput) {
-				container.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
+				container.addChild(new Text(theme.fg("muted", isRunning ? "(running…)" : "(no output)"), 0, 0));
 			} else {
 				for (const item of displayItems) {
 					if (item.type === "toolCall") {
@@ -231,21 +235,22 @@ export function renderSubagentResult(result: any, expanded: boolean, theme: any)
 			const usageStr = formatUsageStats(r.usage, r.model);
 			if (usageStr) {
 				container.addChild(new Spacer(1));
-				container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
+				container.addChild(new Text(theme.fg("dim", (isRunning ? "进行中 " : "") + usageStr), 0, 0));
 			}
 			return container;
 		}
 
 		let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
+		if (isRunning) text += ` ${theme.fg("warning", "· 运行中…")}`;
 		if (isError && r.stopReason) text += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
 		if (isError && r.errorMessage) text += `\n${theme.fg("error", `Error: ${sanitizeTerminalText(r.errorMessage)}`)}`;
-		else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
+		else if (displayItems.length === 0) text += `\n${theme.fg("muted", isRunning ? "(running…)" : "(no output)")}`;
 		else {
 			text += `\n${renderDisplayItems(displayItems, COLLAPSED_ITEM_COUNT)}`;
 			if (displayItems.length > COLLAPSED_ITEM_COUNT) text += `\n${renderExpandHint(theme)}`;
 		}
 		const usageStr = formatUsageStats(r.usage, r.model);
-		if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
+		if (usageStr) text += `\n${theme.fg("dim", (isRunning ? "进行中 " : "") + usageStr)}`;
 		return new Text(text, 0, 0);
 	}
 

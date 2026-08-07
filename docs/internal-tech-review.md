@@ -40,7 +40,7 @@ flowchart TD
     U[用户终端] --> BIN[bin/pico.ts]
     BIN --> BOOT[bin/env-bootstrap.ts<br/>副作用: 目录/环境水合, 必须先于上游导入]
     BOOT --> MAIN[pi main<br/>agent loop / tool runtime / session / TUI]
-    MAIN --> REG[ExtensionRegistry<br/>21 个扩展工厂, 按序注册]
+    MAIN --> REG[ExtensionRegistry<br/>22 个扩展工厂, 按序注册]
     REG --> E1[prompt 层<br/>vibe / cache-optimizer / language]
     REG --> E2[ui 层<br/>retro-theme / input-history / logo]
     REG --> E3[tools 层<br/>todo / memory / subagent / skill / vision / ask / init / plan / web / lsp / rtk]
@@ -64,7 +64,7 @@ bin/pico.ts
 
 ### 1.4 扩展注册顺序与依赖约束
 
-注册顺序：`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → skill → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → observability → doctor`（**21 个**）。
+注册顺序：`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → skill → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → observability → doctor → help`（**22 个**）。
 
 `ExtensionRegistry.validate()` 强制：名称唯一、`dependsOn` 只能引用已注册扩展（目前仅 logo → retro-theme）。`before_agent_start` 等事件处理器按注册顺序链式合并返回值，因此 **cache-optimizer 先于 memory 改写 systemPrompt**，动态回忆块不会被静态化到缓存前缀。
 
@@ -491,15 +491,41 @@ flowchart TD
 - 实测：模糊需求 25 轮探索零交付；"新增小节"变成覆盖删除原内容；`--foo` 只加检测函数未接入逻辑；删除类任务不跑验证闭环；子代理报告被主回复逐字复述。
 - 修复（`src/prompts/vibe-system.md`）：「新增 X」= 插入不替换；破坏性操作必须有验证闭环并报告破坏面；交付前自查接入链（新符号无调用方 = 未交付）；探索要有界（-p 模式探索不收敛 = 零交付）；子代理结果引用不复述。
 
+### 4.9 第六轮整改（2026-08-07，TUI 端到端交互测试）
+
+依据 TUI 全链路实测（tmux 驱动真实交互，7 组编码需求 + 10 项异常场景），修复 1 高 / 4 中（其中 P1 经复核修正），新增 help 扩展（第 22 个）：
+
+**中：/help 未注册、未知斜杠命令走 LLM（P-2/P-3）**
+- 实测：`/help` 与 `/foobar` 均未被本地拦截，作为普通消息发给 LLM——模型凭记忆作答出现事实失真（把已注册的 /init、/doctor 描述为"不是命令"）；未知命令上模型花费整轮猜测意图。
+- 修复（新扩展 `src/extensions/help/`）：注册 `/help` 离线命令（`pi.getCommands()` 枚举扩展命令 + 上游内置命令表 + 快捷键速查）；`context` 事件检测以 `/` 开头且未注册的用户消息，注入一条 user 角色引导消息（AgentMessage 无 system 角色，未知角色会被 LLM 转换器丢弃），要求模型一句话回答并引导 /help、禁止猜测。同命令名只注入一次。
+- 回归测试：`tests/help.test.ts` 5 条。端到端验证：`/help` 本地即时渲染零 LLM 调用；`/foobar` 模型一句话回答"不是有效命令 + /help 引导"，零猜测。
+
+**中：源码模式退出提示品牌为 pi（P-6）**
+- 实测：`/quit` 后回显 `To resume this session: pi --session-dir …`——用户环境只有 `pico` 可执行，提示命令不可用。
+- 根因：上游 `APP_NAME = package.json 的 piConfig.name || "pi"`，读 `getPackageDir()/package.json`（源码模式 = 上游包）。
+- 修复（`src/runtime/package-shim.ts` + `env-bootstrap.ts`）：在 `PICO_HOME/pkg/` 生成品牌覆盖目录——上游 package.json 全量拷贝 + `piConfig.name: "pico"`（原子写、并发安全），dist/docs/examples/README/CHANGELOG 以 symlink 指向上游；`PI_PACKAGE_DIR` 优先指向覆盖目录，构建失败（只读 home/缺 dist）自动回退上游包。主题/资源解析全部经 symlink 不变。编译模式本已正确（内嵌 package.json 带品牌）。
+- 回归测试：`tests/package-shim.test.ts` 4 条。端到端验证：退出提示改为 `pico --session-dir …`。
+
+**中：子代理运行中面板误渲染成功态（P-1，原报告"无进度"经复核修正）**
+- 实测复核：子代理运行中面板**实时更新**（turns/usage/工具列表逐条增长，原"静止"结论系观测截断误判）；但 single 模式运行中 partial 渲染为绿色 ✓ 成功图标——`createInitialResult` 的 `exitCode: 0` 被 `isFailedResult` 判为成功。
+- 修复：`renderer.ts` 透传上游 `isPartial`（tool_execution_update 语义）作为运行中判据——运行中显示 `● … · 运行中…` + `进行中 N turns ↑Xk …`，完成态保持 ✓。
+- 回归测试：`tests/subagent.test.ts` 新增 running 渲染断言。端到端验证：运行中面板显示 `● scout (user) · 运行中…` + `进行中 2 turns ↑24k ↓537 ctx:13k`。
+
+**低：todo 提示词补充多文件开发场景（P-7）**
+- `src/prompts/todo-tool.md` 增加"多文件功能开发（新建模块 + 修改入口 + 运行验证）"该用示例。
+
+**文档化（上游无 pico 层拦截点，P-4/P-5/P-8）**：见 §5.2 局限表 L20-L23。
+
 ## 5. 当前版本现状与已知局限
 
 ### 5.1 现状
 
-- 功能面完整：20 扩展、497 用例全绿、`bun run verify`（tsc + 全量测试）通过；
+- 功能面完整：22 扩展、647 用例全绿、`bun run verify`（tsc + 全量测试）通过；
 - 第三轮 UX 整改（2026-08-05，依据 `docs/ux-walkthrough-review.md`）：离线 `/help` 与无模型/推理 400/崩溃恢复引导（guidance 扩展）、config.yml 双轨冲突检测、`<inline:N>` 启动噪音消除（InlineExtension hidden）、LSP 缺失命令警告去重与可执行建议、生成阶段动态反馈、计划模式挂起 todo 面板、CLI 品牌统一、MCP 状态可读化、logo 首启文案与真实会话、`/memory status` 类别分布、rtk 启用提示；全部附回归测试；
 - 安全默认值：项目 hooks/MCP 默认关、非交互项目代理默认拒、LSP 写动作默认阻断、计划自动批准默认关；
 - 工具错误语义对齐上游：失败一律 throw（agent loop 仅以异常判定 isError）；第四轮整改（2026-08-05，依据深度技术分析报告）修复 4 高 / 29 中 / 37 低，覆盖 LSP 写透传短路、worktree 冲突与分支保留、子代理退出码、vision SSRF、MCP 并行连接与进程组、事件订阅生命周期、异步化 gate、ANSI 终端注入等；
 - 第五轮整改（2026-08-07，依据端到端测试报告）：记忆提取三方统一门控（`isDurableCandidate`/`classifyMessage`）、`INSTRUCTION_PATTERNS` 扩展覆盖一次性任务祈使句、session topic 只取持久陈述；提示词补充"新增=插入""破坏性操作验证闭环""接入链自查""探索有界""子代理结果引用不复述"；635 用例全绿；
+- 第六轮整改（2026-08-07，依据 TUI 全链路交互测试报告）：`/help` 离线命令（help 扩展）+ 未知斜杠命令 context 引导注入；package-shim 源码模式品牌覆盖（退出提示 `pico --session-dir`）；子代理运行中面板 running 态渲染（isPartial 判据）；todo 提示词补多文件场景；647 用例全绿；
 
 ### 5.2 已知局限（客观记录）
 
@@ -521,6 +547,10 @@ flowchart TD
 | L17 | **cache-optimizer 对 responses/codex 未知字段行为**（已改为不注入，记录原始风险） | 严格网关 400 风险已消除 | 已修 |
 | L18 | **agent_end 全量重抽取**可能重复写入 | 记忆重复 | 已缓解：`seenMessageTexts` 指纹去重 + UNIQUE(scope, content) 幂等；`onPreCompress` 复用同一抽取管线 |
 | L19 | **模型调用错误（如 403/模型不在白名单）以原始文本上屏**：上游 print-mode.js 直接 `console.error(errorMessage)` 后 exit 1，pico 扩展面（事件订阅）在其后触发、`main()` 不抛异常 | 错误信息无引导（用户看不到"模型不在白名单/认证失败"类提示） | 受上游约束；已在错误模型配置场景实测确认，pico 层无法拦截，建议仅作文档记录 |
+| L20 | **Esc 中断提示生硬**：中断 agent 后会话区仅显示 `Error: The operation was aborted.`（上游 TUI 对 stopReason=aborted 的渲染文案），无"已取消"友好说明 | 用户误以为系统报错 | 受上游约束；`/help` 已列出 Esc 中断/Ctrl+D 退出/Ctrl+C 清空键位 |
+| L21 | **Ctrl+C 绑定为"清空输入框"**（上游 keybindings：`app.clear`=ctrl+c、`app.interrupt`=escape、`app.exit`=ctrl+d），agent 运行中按 Ctrl+C 无任何反馈 | 终端直觉键失效，易误判卡死 | 受上游键位约束；键位表已在 `/help` 与 README 明示 |
+| L22 | **网络错误重试文案生硬**：`Error: Connection error.` + `Retrying (1/3) in 2s...` 中英混排、以 Error 样式混入会话区（重试机制本身可靠，实测 1 次即恢复） | 用户误判故障 | 受上游约束；建议上游本地化 |
+| L23 | **未知斜杠命令无本地拦截钩子**：上游 onSubmit 对未注册的 `/xxx` 无"未知命令"分支，直接作为普通消息发送 | 每条误输消耗一次 LLM 往返 | 已缓解：context 事件注入引导（一句话回答 + /help 指引、禁猜测、同命令只注入一次），pico 层无完全本地拦截能力 |
 
 ### 5.3 待优化项与迭代规划（建议排序）
 
@@ -528,6 +558,7 @@ flowchart TD
 2. ~~记忆归档与衰减~~（L12 已落地：时间衰减 + `/memory prune`；自动合并/遗忘仍可迭代）；
 3. **acceptance 命名配对**（L3）——避免隐式下标契约；
 4. **子代理输出上限**（L6）——stderr 截断、sessionMessages 封顶；
+5. **上游交互层文案与键位**（L20-L22）——abort/重试文案本地化、Ctrl+C 语义，随上游升级跟进；
 6. 评估 embedding 检索（L2）与 DNS 级 SSRF 防护（L7）为远期项。
 
 ---

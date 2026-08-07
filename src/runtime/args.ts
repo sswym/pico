@@ -54,10 +54,36 @@ export function withBundledSkills(options: RuntimeArgOptions): string[] {
   return [...rawArgs, "--skill", skillsDir];
 }
 
+/**
+ * True when the user picked an explicit `--tui-mode`, in either the separated
+ * (`--tui-mode fullscreen`) or equals (`--tui-mode=fullscreen`) form. An
+ * explicit choice must never be overridden by the pico default.
+ */
+function hasExplicitTuiMode(rawArgs: string[]): boolean {
+  return rawArgs.includes("--tui-mode") || rawArgs.some((arg) => arg.startsWith("--tui-mode="));
+}
+
+/**
+ * Defaults the interactive TUI to upstream's fullscreen mode (0.84.0+).
+ * Skipped for non-TUI output modes (`-p` / `--mode json|rpc`), package-
+ * management commands, and whenever the user already passed `--tui-mode`.
+ */
+export function withDefaultTuiMode(options: RuntimeArgOptions): string[] {
+  const { rawArgs } = options;
+
+  if (rawArgs.some(isNonTuiArg)) return rawArgs;
+  if (isPackageManagementCommand(rawArgs)) return rawArgs;
+  if (hasExplicitTuiMode(rawArgs)) return rawArgs;
+  return [...rawArgs, "--tui-mode", "fullscreen"];
+}
+
 export function buildRuntimeArgs(options: RuntimeArgOptions): string[] {
   return withBundledSkills({
     ...options,
-    rawArgs: withBundledPromptTemplates(options),
+    rawArgs: withBundledPromptTemplates({
+      ...options,
+      rawArgs: withDefaultTuiMode(options),
+    }),
   });
 }
 

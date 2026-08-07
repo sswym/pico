@@ -21,6 +21,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensurePackageShim } from "../src/runtime/package-shim.ts";
 
 // Normalize exactly like paths.ts's picoHome(): expand a leading ~ and
 // resolve relative overrides against the cwd, so PI_CODING_AGENT_DIR here and
@@ -67,7 +68,9 @@ if (!IS_BUN_BINARY) {
   // A stale/empty value (e.g. inherited from a wrapper harness) breaks theme
   // resolution, so fall back to the installed upstream package in that case.
   if (hasAssets(upstream) && !hasAssets(process.env.PI_PACKAGE_DIR)) {
-    process.env.PI_PACKAGE_DIR = upstream;
+    // Brand overlay first (pico name in quit hints, like compiled mode);
+    // raw upstream package as fallback when the overlay cannot be built.
+    process.env.PI_PACKAGE_DIR = ensurePackageShim(picoHome, upstream) ?? upstream;
   }
 }
 

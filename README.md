@@ -2,7 +2,7 @@
 
 **带长期记忆、子代理委派、任务追踪、规划模式、网页搜索/抓取、MCP 服务器集成与 LSP 代码智能的 Vibe 编码代理。**
 
-基于 `@earendil-works/pi-coding-agent` 的薄封装：上游提供 agent loop、工具运行时与会话管理，pico 通过 21 个扩展注入产品化能力。技术栈：Bun + TypeScript，零外部运行时依赖。
+基于 `@earendil-works/pi-coding-agent` 的薄封装：上游提供 agent loop、工具运行时与会话管理，pico 通过 22 个扩展注入产品化能力。技术栈：Bun + TypeScript，零外部运行时依赖。
 
 ## 快速开始
 
@@ -13,6 +13,8 @@ bun run bin/pico.ts -p "修复 foo.test.ts 中失败的测试"
 bun run bin/pico.ts setup      # 交互式初始化配置
 bun run bin/pico.ts --help     # 查看所有上游标志
 ```
+
+交互式 TUI 默认启用上游全屏模式（等效 `--tui-mode fullscreen`，可在 `/settings` 运行时切换）；偏好常规模式显式传 `--tui-mode regular`。`-p` / `--mode json|rpc` 等非交互模式不受影响。
 
 首次使用建议运行 `pico setup`（写入 `~/.pico/agent/settings.json`，支持按 section 配置：`setup model` / `tools` / `safety` / `ui` / `--reset`）。
 
@@ -34,6 +36,24 @@ bun run bin/pico.ts --help     # 查看所有上游标志
 | /init | 多阶段引导生成/审计 AGENTS.md（绝不写 CLAUDE.md） |
 
 > 各功能完整用法（工具动作表、配置示例、命令参考）：见 [`docs/user-guide.md`](docs/user-guide.md)。
+
+## 交互命令与快捷键
+
+TUI 内输入 `/help` 可随时查看离线命令速查（pico 特有命令、上游内置命令与全部快捷键）。
+
+| 快捷键 | 作用 |
+| --- | --- |
+| `Esc` | 中断当前任务（agent 运行中） |
+| `Ctrl+D` | 退出 pico（输入框为空时） |
+| `Ctrl+C` | 清空输入框（**不是**中断——中断用 Esc） |
+| `Ctrl+V` | 粘贴图片或文本 |
+| `Ctrl+O` | 展开/折叠工具输出 |
+| `!` / `!!` | 运行 bash 命令（`!!` 不进上下文） |
+| `F7` | 折叠/展开 todo 面板 |
+
+pico 特有命令：`/init`（生成或审计 AGENTS.md）、`/doctor`（安全开关与配置冲突）、`/memory`（长期记忆）、`/todo`（任务清单）、`/plan`（计划模式）、`/language`（切换语言）、`/mcp`（MCP 服务器）、`/vision`（视觉模型）等；退出用 `/quit`。
+
+> 注意：以 `/` 开头但未注册的输入（如拼错的命令）会被当作普通消息发给模型——模型会收到本地引导提示并指引你使用 `/help`，不会猜测命令含义。
 
 ## 安全默认值
 

@@ -17,6 +17,8 @@ test("buildRuntimeArgs injects bundled prompts and skills in source mode", () =>
   });
 
   expect(args).toEqual([
+    "--tui-mode",
+    "fullscreen",
     "--prompt-template",
     resolve(import.meta.dir, "..", "src", "prompts"),
     "--skill",
@@ -24,12 +26,43 @@ test("buildRuntimeArgs injects bundled prompts and skills in source mode", () =>
   ]);
 });
 
+test("buildRuntimeArgs defaults to fullscreen TUI only when interactive and unset", () => {
+  const promptsDir = resolve(import.meta.dir, "..", "src", "prompts");
+  const skillsDir = resolve(import.meta.dir, "..", "src", "skills");
+
+  // Explicit separated and equals forms are preserved, not duplicated.
+  expect(buildRuntimeArgs({
+    rawArgs: ["--tui-mode", "regular"],
+    entryMetaUrl,
+    isBunBinary: false,
+  })).toEqual(["--tui-mode", "regular", "--prompt-template", promptsDir, "--skill", skillsDir]);
+
+  expect(buildRuntimeArgs({
+    rawArgs: ["--tui-mode=regular"],
+    entryMetaUrl,
+    isBunBinary: false,
+  })).toEqual(["--tui-mode=regular", "--prompt-template", promptsDir, "--skill", skillsDir]);
+
+  // Non-TUI output modes never get the TUI flag.
+  expect(buildRuntimeArgs({
+    rawArgs: ["-p", "hi"],
+    entryMetaUrl,
+    isBunBinary: false,
+  })).toEqual(["-p", "hi", "--prompt-template", promptsDir, "--skill", skillsDir]);
+
+  expect(buildRuntimeArgs({
+    rawArgs: ["--mode", "json"],
+    entryMetaUrl,
+    isBunBinary: false,
+  })).toEqual(["--mode", "json", "--prompt-template", promptsDir, "--skill", skillsDir]);
+});
+
 test("buildRuntimeArgs respects opt-out and package-management commands", () => {
   expect(buildRuntimeArgs({
     rawArgs: ["--no-skills", "--no-prompt-templates"],
     entryMetaUrl,
     isBunBinary: false,
-  })).toEqual(["--no-skills", "--no-prompt-templates"]);
+  })).toEqual(["--no-skills", "--no-prompt-templates", "--tui-mode", "fullscreen"]);
 
   expect(buildRuntimeArgs({
     rawArgs: ["install", "example"],
@@ -61,7 +94,7 @@ test("buildRuntimeArgs does not duplicate existing bundled paths", () => {
     rawArgs: ["--prompt-template", promptsDir, "--skill", skillsDir],
     entryMetaUrl,
     isBunBinary: false,
-  })).toEqual(["--prompt-template", promptsDir, "--skill", skillsDir]);
+  })).toEqual(["--prompt-template", promptsDir, "--skill", skillsDir, "--tui-mode", "fullscreen"]);
 });
 
 test("isNonTuiArg catches separated AND equals-form non-TUI flags", () => {

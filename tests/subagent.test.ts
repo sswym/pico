@@ -321,6 +321,42 @@ test("subagent renderer counts gate-failed chain steps as failed", () => {
   expect(text).toContain("Step 2: worker ✓");
 });
 
+test("subagent renderer marks live single-run updates as running, not success", () => {
+  const base = {
+    agent: "scout",
+    agentSource: "user" as const,
+    task: "research",
+    exitCode: 0,
+    messages: [{ role: "assistant", content: [{ type: "text", text: "interim" }] }],
+    stderr: "",
+    usage: { input: 512, output: 128, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 3000, turns: 1 },
+  };
+  const details = { mode: "single" as const, agentScope: "user" as const, projectAgentsDir: null, results: [base] };
+
+  // Live partial: must show running markers, never ✓ (exitCode still 0).
+  const live: any = renderSubagentResult(
+    { content: [{ type: "text", text: "(running...)" }], details },
+    false,
+    plainTheme,
+    { isPartial: true },
+  );
+  const liveText = String(live.text ?? live.content ?? live);
+  expect(liveText).toContain("运行中");
+  expect(liveText).toContain("进行中 1 turn ↑512 ↓128 ctx:3.0k");
+  expect(liveText).not.toContain("✓");
+
+  // Final: plain success, no running markers.
+  const done: any = renderSubagentResult(
+    { content: [{ type: "text", text: "done" }], details },
+    false,
+    plainTheme,
+  );
+  const doneText = String(done.text ?? done.content ?? done);
+  expect(doneText).not.toContain("运行中");
+  expect(doneText).not.toContain("进行中");
+  expect(doneText).toContain("✓");
+});
+
 test("subagent runner applies json mode message and tool-result events", () => {
   const result: SingleResult = {
     agent: "worker",
