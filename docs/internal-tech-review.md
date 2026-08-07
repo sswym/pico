@@ -526,6 +526,7 @@ flowchart TD
 - 工具错误语义对齐上游：失败一律 throw（agent loop 仅以异常判定 isError）；第四轮整改（2026-08-05，依据深度技术分析报告）修复 4 高 / 29 中 / 37 低，覆盖 LSP 写透传短路、worktree 冲突与分支保留、子代理退出码、vision SSRF、MCP 并行连接与进程组、事件订阅生命周期、异步化 gate、ANSI 终端注入等；
 - 第五轮整改（2026-08-07，依据端到端测试报告）：记忆提取三方统一门控（`isDurableCandidate`/`classifyMessage`）、`INSTRUCTION_PATTERNS` 扩展覆盖一次性任务祈使句、session topic 只取持久陈述；提示词补充"新增=插入""破坏性操作验证闭环""接入链自查""探索有界""子代理结果引用不复述"；635 用例全绿；
 - 第六轮整改（2026-08-07，依据 TUI 全链路交互测试报告）：`/help` 离线命令（help 扩展）+ 未知斜杠命令 context 引导注入；package-shim 源码模式品牌覆盖（退出提示 `pico --session-dir`）；子代理运行中面板 running 态渲染（isPartial 判据）；todo 提示词补多文件场景；647 用例全绿；
+- 第七轮整改（2026-08-07，依据 TUI 全链路交互测试报告）：失败回合不再静默——`turn_end` 检测 `stopReason:"error"` 时 `ui.notify` 输出"任务失败：<友好原因>"并在 footer 置 `!failed` 标记（下次 turn 清除）；`friendlyErrorMessage` 将上游开发者格式错误（工具 schema 校验 JSON dump、provider HTTP 信封）压缩为可读文案（错误渲染与错误通知共用）；memory 工具结果渲染剥离 `tfidf_vector` 等内部字段（模型仍收完整 payload）；窄屏 footer 左侧按优先级丢弃尾段（git/context）而非硬截断；config.yml 与 settings.json 的 `defaultProvider`/`defaultModel` 冲突检测（`/doctor` 报告 + 启动一次 warning）；默认模型缺 `requiresReasoningContentOnAssistantMessages` 时启动警告一次；探查命令容错提示词；660 用例全绿；
 
 ### 5.2 已知局限（客观记录）
 

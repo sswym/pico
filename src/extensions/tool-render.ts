@@ -10,6 +10,7 @@ import {
   sanitizeTerminalText,
   truncateWithEllipsis,
 } from "./ui/rendering.ts";
+import { friendlyErrorMessage } from "./errors.ts";
 
 const DEFAULT_COLLAPSED_LINES = 8;
 const DEFAULT_COLLAPSED_LINE_LENGTH = 180;
@@ -196,11 +197,14 @@ export function renderToolResultText(
   const clean = sanitizeTerminalText(output);
 
   const color = context.isError ? "error" : "toolOutput";
+  // Error results often carry upstream developer-format text (schema
+  // violations with JSON dumps, provider HTTP envelopes) — condense it.
+  const displayText = context.isError ? friendlyErrorMessage(clean) : clean;
   if (options.expanded) {
     // 2.1.4: expanding MB-scale output (large file reads, base64 images)
     // used to push the whole payload into the TUI diff — cap the render and
     // say where the full text lives.
-    const { preview, hiddenLines, truncatedLine } = previewText(clean, 5000, 5000);
+    const { preview, hiddenLines, truncatedLine } = previewText(displayText, 5000, 5000);
     const capped = hiddenLines > 0 || truncatedLine
       ? `${preview}\n\n[Output truncated in view: ${hiddenLines} lines omitted. Full output preserved in tool details.]`
       : preview;
@@ -209,18 +213,18 @@ export function renderToolResultText(
   }
 
   const { preview, hiddenLines, truncatedLine } = previewText(
-    clean,
+    displayText,
     renderOptions?.collapsedLines ?? DEFAULT_COLLAPSED_LINES,
     renderOptions?.collapsedLineLength ?? DEFAULT_COLLAPSED_LINE_LENGTH,
   );
-  const body = theme.fg(color, preview);
+  const renderedBody = theme.fg(color, preview);
   if (hiddenLines <= 0 && !truncatedLine) {
-    text.setText(`\n${body}`);
+    text.setText(`\n${renderedBody}`);
     return text;
   }
 
   text.setText(
-    `\n${body}\n${renderExpandHint(theme)}`,
+    `\n${renderedBody}\n${renderExpandHint(theme)}`,
   );
   return text;
 }

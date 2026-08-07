@@ -239,6 +239,20 @@ function joinPipe(theme: Theme, parts: string[]): string {
     .join(theme.fg("muted", PIPE));
 }
 
+/**
+ * Fit a priority-ordered segment list into maxWidth by dropping trailing
+ * segments (lowest priority last) before truncating. The left side of the
+ * footer used to hard-truncate at the middle of the git/context segments on
+ * narrow terminals — dropping them keeps model/think/dir readable.
+ */
+function fitSegments(theme: Theme, segments: string[], maxWidth: number): string {
+  for (let keep = segments.length; keep > 0; keep--) {
+    const candidate = joinPipe(theme, segments.slice(0, keep));
+    if (visibleWidth(candidate) <= maxWidth) return candidate;
+  }
+  return truncateToWidth(theme.fg("accent", segments[0] ?? ""), Math.max(0, maxWidth));
+}
+
 function fitStatuses(theme: Theme, statuses: string[], maxWidth: number): string {
   const fitted: string[] = [];
 
@@ -286,8 +300,11 @@ export function renderClaudeLikeFooterLine(
     gitText,
     `◫ ${contextBar(ctx)}`,
   ];
-  const left = joinPipe(theme, leftSegments);
   const minGap = 2;
+  // Right-side statuses keep their fit-first behaviour; the left side drops
+  // trailing segments (git details, context usage) before truncating.
+  const leftMax = Math.max(0, width - minGap - Math.min(20, Math.floor(width * 0.25)));
+  const left = fitSegments(theme, leftSegments, leftMax);
   const rightMaxWidth = Math.max(0, width - visibleWidth(left) - minGap);
   const right = fitStatuses(theme, statuses, rightMaxWidth);
 
@@ -319,7 +336,7 @@ export function renderPrimaryStatusLine(
     formatGit(gitStatus?.branch, gitStatus ?? emptyGitStatus()),
     `◫ ${contextBar(ctx)} AC`,
   ];
-  return truncateToWidth(joinPipe(theme, parts), width);
+  return fitSegments(theme, parts, width);
 }
 
 export function renderExtensionStatusLine(width: number, theme: Theme, footerData: FooterData): string {

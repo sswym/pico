@@ -2032,3 +2032,53 @@ test("/memory prune with no candidates reports nothing to remove", async () => {
     expect(out).toContain("No low-value facts");
   });
 });
+
+test("renderMemoryResultText strips internal noise keys but keeps business fields", () => {
+  const { renderMemoryResultText } = require("../src/extensions/memory/index.ts") as typeof import("../src/extensions/memory/index.ts");
+  const result = {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          id: "memory:#1",
+          action: "add",
+          source: "manual",
+          correction_of: null,
+          tfidf_vector: '{"用户偏好":0.142857}',
+          fact: "use single quotes",
+        }),
+      },
+    ],
+    details: {},
+  };
+  const plainTheme = { fg: (_c: string, t: string) => t, bold: (t: string) => t } as never;
+  const text = renderMemoryResultText(
+    result as never,
+    { expanded: true, isPartial: false } as never,
+    plainTheme,
+    {},
+  ) as unknown as { render: (w: number) => string[] };
+  const rendered = text.render(120).join("\n");
+  expect(rendered).toContain("memory:#1");
+  expect(rendered).toContain("use single quotes");
+  expect(rendered).not.toContain("tfidf_vector");
+  expect(rendered).not.toContain("correction_of");
+  expect(rendered).not.toContain("source");
+});
+
+test("renderMemoryResultText passes non-JSON results through unchanged", () => {
+  const { renderMemoryResultText } = require("../src/extensions/memory/index.ts") as typeof import("../src/extensions/memory/index.ts");
+  const result = {
+    content: [{ type: "text", text: "hello memory" }],
+    details: {},
+  };
+  const plainTheme = { fg: (_c: string, t: string) => t, bold: (t: string) => t } as never;
+  const text = renderMemoryResultText(
+    result as never,
+    { expanded: true, isPartial: false } as never,
+    plainTheme,
+    {},
+  ) as unknown as { render: (w: number) => string[] };
+  const rendered = text.render(120).join("\n");
+  expect(rendered).toContain("hello memory");
+});

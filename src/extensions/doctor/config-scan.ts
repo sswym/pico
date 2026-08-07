@@ -16,7 +16,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { picoAgentHome, picoModelsPath } from "../paths.ts";
-import { readSettingsObject } from "../settings.ts";
+import { readSettings, readSettingsObject } from "../settings.ts";
 
 export const SAFETY_KEYS = [
   "allowUnattendedPlanApproval",
@@ -135,6 +135,72 @@ export function formatConfigYmlConflictLines(): string[] {
     ),
   ];
   return lines;
+}
+
+// ---- config.yml vs settings.json model selection -------------------------
+
+export type ConfigYmlModelKey = "defaultProvider" | "defaultModel";
+
+export interface ConfigYmlModelConflict {
+  key: ConfigYmlModelKey;
+  configYmlValue: string;
+  settingsValue: string;
+}
+
+/**
+ * Parse top-level `key: value` pairs from a config.yml-style document
+ * (indentation based, no quotes). Nested blocks (safety: …) are skipped
+ * because their children are indented.
+ */
+export function parseConfigYmlTopLevel(raw: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const line of raw.split("\n")) {
+    if (/^\s/.test(line)) continue;
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const match = /^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.+)$/.exec(trimmed);
+    if (match) result[match[1]!] = match[2]!.trim();
+  }
+  return result;
+}
+
+/**
+ * defaultProvider/defaultModel present in config.yml that differ from
+ * settings.json. settings.json wins at runtime; a differing config.yml is a
+ * silent surprise when the user edits the "wrong" file.
+ */
+export function detectConfigYmlModelConflicts(): ConfigYmlModelConflict[] {
+  let yml: Record<string, string>;
+  try {
+    yml = parseConfigYmlTopLevel(readFileSync(join(picoAgentHome(), "config.yml"), "utf-8"));
+  } catch {
+    return [];
+  }
+  const conflicts: ConfigYmlModelConflict[] = [];
+  const settings = readSettings();
+  for (const key of ["defaultProvider", "defaultModel"] as const) {
+    const ymlValue = yml[key];
+    if (ymlValue === undefined) continue;
+    const settingsValue = settings[key];
+    if (typeof settingsValue !== "string") continue;
+    if (ymlValue !== settingsValue) {
+      conflicts.push({ key, configYmlValue: ymlValue, settingsValue });
+    }
+  }
+  return conflicts;
+}
+
+export function formatConfigYmlModelConflictLines(): string[] {
+  const conflicts = detectConfigYmlModelConflicts();
+  if (conflicts.length === 0) return [];
+  return [
+    "Config conflict (config.yml model selection is IGNORED by pico — settings.json wins):",
+    ...conflicts.map(
+      (c) =>
+        `  ${c.key}: config.yml=${c.configYmlValue} but settings.json=${c.settingsValue}. ` +
+        `Update settings.json (or remove the key from config.yml).`,
+    ),
+  ];
 }
 
 // ---- models.json reasoning-compat scan ----------------------------------

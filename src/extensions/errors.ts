@@ -99,3 +99,43 @@ function classifyByMessage(lower: string): ErrorCode {
   if (lower.includes("schema")) return "schema_violation";
   return "unknown";
 }
+
+/**
+ * Turn raw upstream error text into something a user can read. Upstream
+ * surfaces two developer-oriented formats that used to land on screen
+ * verbatim:
+ *
+ *  1. Tool schema violations:
+ *     `Validation failed for tool "askUserQuestion":\n  - /questions/0/options: ...\n\nReceived arguments:\n{...JSON...}`
+ *  2. Provider HTTP envelopes:
+ *     `Error: 400: {"message":"...","type":"..."}` or `{"message":"..."}`
+ *
+ * Unrecognized text is returned unchanged so this never loses information.
+ */
+export function friendlyErrorMessage(raw: string): string {
+  const trimmed = raw.trim();
+
+  const validation = /^Validation failed for tool "([^"]+)"(?::\s*([\s\S]*))?$/.exec(trimmed);
+  if (validation) {
+    const tool = validation[1] ?? "unknown";
+    const detail = (validation[2] ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.startsWith("-"));
+    const reason = detail ? detail.slice(1).trim() : "参数不符合工具要求";
+    return `工具 "${tool}" 参数校验失败：${reason}`;
+  }
+
+  const envelope = /^Error:\s*\d{3}:\s*(\{[\s\S]*\})$/.exec(trimmed);
+  const jsonPart = envelope?.[1] ?? (/^(\{[\s\S]*\})$/.exec(trimmed)?.[1] ?? null);
+  if (jsonPart) {
+    try {
+      const parsed = JSON.parse(jsonPart) as { message?: unknown };
+      if (typeof parsed.message === "string" && parsed.message.trim()) return parsed.message.trim();
+    } catch {
+      // not JSON — fall through to the raw text
+    }
+  }
+
+  return trimmed;
+}

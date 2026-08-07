@@ -161,3 +161,34 @@ test("renderToolResultText strips ANSI sequences from tool output", () => {
   expect(rendered).not.toContain("\x1b");
   expect(rendered).toContain("red");
 });
+
+test("renderToolResultText condenses schema validation errors on error results", () => {
+  const text = renderToolResultText(
+    {
+      content: [
+        {
+          type: "text",
+          text: 'Validation failed for tool "askUserQuestion":\n  - /questions/0/options: must not have fewer than 2 items\n\nReceived arguments:\n{"questions":[]}',
+        },
+      ],
+      details: {},
+    },
+    { expanded: true, isPartial: false },
+    plainTheme,
+    { lastComponent: undefined, isError: true },
+  );
+  const rendered = renderedText(text as unknown as { render: (width: number) => string[] });
+  expect(rendered).toContain("参数校验失败");
+  expect(rendered).not.toContain("Received arguments");
+});
+
+test("renderToolResultText leaves non-error results untouched", () => {
+  const text = renderToolResultText(
+    { content: [{ type: "text", text: "plain result" }], details: {} },
+    { expanded: true, isPartial: false },
+    plainTheme,
+    { lastComponent: undefined },
+  );
+  const rendered = renderedText(text as unknown as { render: (width: number) => string[] });
+  expect(rendered).toContain("plain result");
+});

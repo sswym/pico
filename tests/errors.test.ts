@@ -5,6 +5,7 @@
 import { expect, test } from "bun:test";
 import {
   classifyError,
+  friendlyErrorMessage,
   toolError,
   ToolError,
   type ClassifiedError,
@@ -99,4 +100,34 @@ test("classifyError never throws on non-Error throw values", () => {
   // non-Error values are preserved as the cause
   expect(classifyError(null).cause).toBe(null);
   expect(classifyError("string boom").cause).toBe("string boom");
+});
+
+test("friendlyErrorMessage condenses schema validation dumps", () => {
+  const raw = [
+    'Validation failed for tool "askUserQuestion":',
+    "  - /questions/0/options: must not have fewer than 2 items",
+    "",
+    "Received arguments:",
+    '{"questions":[{"question":"x","options":[{"label":"only one"}]}]}',
+  ].join("\n");
+  const out = friendlyErrorMessage(raw);
+  expect(out).toContain("工具 \"askUserQuestion\" 参数校验失败");
+  expect(out).toContain("must not have fewer than 2 items");
+  expect(out).not.toContain("Received arguments");
+  expect(out).not.toContain('"questions"');
+});
+
+test("friendlyErrorMessage extracts provider envelope messages", () => {
+  const envelope = 'Error: 400: {"message":"Error from provider (Console): Upstream failed","type":"invalid_request_error","code":"invalid_request_error"}';
+  const out = friendlyErrorMessage(envelope);
+  expect(out).toBe("Error from provider (Console): Upstream failed");
+
+  const bareJson = '{"message":"The `reasoning_content` must be passed back","param":"","code":"x"}';
+  expect(friendlyErrorMessage(bareJson)).toBe("The `reasoning_content` must be passed back");
+});
+
+test("friendlyErrorMessage passes through unrecognized text unchanged", () => {
+  const plain = "Something went wrong here";
+  expect(friendlyErrorMessage(plain)).toBe(plain);
+  expect(friendlyErrorMessage("  ")).toBe("");
 });

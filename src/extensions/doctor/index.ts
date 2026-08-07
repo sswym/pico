@@ -1,7 +1,7 @@
 /**
  * /doctor surfaces pico's local safety switches and capability boundaries.
  */
-import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import pkg from "../../../package.json" with { type: "json" };
 import {
   capabilitySummary,
@@ -12,7 +12,10 @@ import { validateCurrentSettings } from "../settings-schema.ts";
 import { picoSettingsPath } from "../paths.ts";
 import {
   formatConfigYmlConflictLines,
+  formatConfigYmlModelConflictLines,
   formatReasoningCompatLines,
+  detectConfigYmlModelConflicts,
+  detectReasoningCompatIssues,
 } from "./config-scan.ts";
 
 function enabled(value: boolean): string {
@@ -53,11 +56,53 @@ export function buildDoctorReport(cwd: string): string {
     "Settings validation:",
     ...settingsValidationLines,
     ...formatConfigYmlConflictLines(),
+    ...formatConfigYmlModelConflictLines(),
     ...formatReasoningCompatLines(),
   ].join("\n");
 }
 
+/**
+ * Startup advisory for the "dual config" trap. config.yml vs settings.json
+ * model conflicts and a default model missing the reasoning-content compat
+ * flag only show up in /doctor — by then the user has already hit a silent
+ * surprise (wrong provider, 400s on multi-turn calls). Warn once per session
+ * instead.
+ */
+function startupConfigAdvisories(ctx: ExtensionContext): void {
+  const modelConflicts = detectConfigYmlModelConflicts();
+  if (modelConflicts.length > 0) {
+    const keys = modelConflicts.map((c) => c.key).join("、");
+    try {
+      ctx.ui.notify(
+        `配置冲突：config.yml 的 ${keys} 与 settings.json 不一致，实际生效 settings.json。运行 /doctor 查看详情。`,
+        "warning",
+      );
+    } catch {}
+    return;
+  }
+  const settings = readSettings();
+  const issues = detectReasoningCompatIssues();
+  const missing = issues.find(
+    (issue) =>
+      !issue.hasCompatFlag &&
+      issue.provider === settings.defaultProvider &&
+      issue.model === settings.defaultModel,
+  );
+  if (!missing) return;
+  try {
+    ctx.ui.notify(
+      `当前默认模型 ${missing.provider}/${missing.model} 缺少 requiresReasoningContentOnAssistantMessages 兼容配置，` +
+        "多轮对话可能触发 400 错误。运行 /doctor 查看修复指引。",
+      "warning",
+    );
+  } catch {}
+}
+
 export const doctorExtension: ExtensionFactory = (pi: ExtensionAPI) => {
+  pi.on("session_start", (_event, ctx) => {
+    startupConfigAdvisories(ctx);
+  });
+
   pi.registerCommand("doctor", {
     description: "Show pico safety switches and capability boundaries",
     handler: async (_args, ctx) => {

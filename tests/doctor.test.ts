@@ -83,6 +83,7 @@ test("doctor extension registers /doctor and sends a visible report", async () =
   const commands = new Map<string, any>();
   const messages: any[] = [];
   const fakePi = {
+    on: () => {},
     registerCommand: (name: string, opts: any) => commands.set(name, opts),
     sendMessage: (message: any) => messages.push(message),
   };
@@ -99,6 +100,7 @@ test("doctor extension registers /doctor and sends a visible report", async () =
 // ---- config.yml dual-track detection (P0) --------------------------------
 
 import {
+  detectConfigYmlModelConflicts,
   detectConfigYmlSafetyConflicts,
   detectReasoningCompatIssues,
   formatConfigYmlConflictLines,
@@ -283,6 +285,100 @@ test("buildDoctorReport includes model summary and version", () => {
     expect(report).toContain("provider: zen-openai");
     expect(report).toContain("model: deepseek-v4-flash-free");
     expect(report).toContain("pico v");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("detectConfigYmlModelConflicts flags default provider/model drift", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-doctor-models-"));
+  process.env.PICO_HOME = home;
+  try {
+    const agentDir = join(home, "agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, "config.yml"),
+      "env:\n  TAVILY_API_KEY: x\nsafety:\n  enableProjectHooks: false\ndefaultProvider: zen-openai\ndefaultModel: deepseek-v4-flash-free\n",
+    );
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ defaultProvider: "kevimllm", defaultModel: "deepseek-v4-flash" }),
+    );
+
+    const conflicts = detectConfigYmlModelConflicts();
+    expect(conflicts).toEqual([
+      { key: "defaultProvider", configYmlValue: "zen-openai", settingsValue: "kevimllm" },
+      { key: "defaultModel", configYmlValue: "deepseek-v4-flash-free", settingsValue: "deepseek-v4-flash" },
+    ]);
+
+    const report = buildDoctorReport("/repo");
+    expect(report).toContain("config.yml model selection is IGNORED");
+    expect(report).toContain("defaultProvider: config.yml=zen-openai but settings.json=kevimllm");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("detectConfigYmlModelConflicts is empty when configs agree or keys are absent", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-doctor-models-ok-"));
+  process.env.PICO_HOME = home;
+  try {
+    const agentDir = join(home, "agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "config.yml"), "defaultProvider: kevimllm\ndefaultModel: deepseek-v4-flash\n");
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ defaultProvider: "kevimllm", defaultModel: "deepseek-v4-flash" }),
+    );
+    expect(detectConfigYmlModelConflicts()).toEqual([]);
+
+    writeFileSync(join(agentDir, "config.yml"), "safety:\n  enableProjectHooks: false\n");
+    expect(detectConfigYmlModelConflicts()).toEqual([]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session_start notifies once on model config conflicts", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-doctor-notify-"));
+  process.env.PICO_HOME = home;
+  try {
+    const agentDir = join(home, "agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "config.yml"), "defaultProvider: zen-openai\n");
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ defaultProvider: "kevimllm", defaultModel: "deepseek-v4-flash" }),
+    );
+    writeFileSync(
+      join(agentDir, "models.json"),
+      JSON.stringify({
+        providers: {
+          kevimllm: {
+            models: [{ id: "deepseek-v4-flash", reasoning: true, compat: { requiresReasoningContentOnAssistantMessages: true } }],
+          },
+        },
+      }),
+    );
+
+    const notifications: Array<{ message: string; type?: string }> = [];
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+    const fakePi = {
+      on: (event: string, handler: (event: unknown, ctx: unknown) => void) => handlers.set(event, handler),
+      registerCommand: () => {},
+    };
+    doctorExtension(fakePi as never);
+    await handlers.get("session_start")!({}, {
+      ui: {
+        notify: (message: string, type?: string) => notifications.push({ message, type }),
+      },
+    } as never);
+
+    expect(notifications.length).toBe(1);
+    expect(notifications[0]!.type).toBe("warning");
+    expect(notifications[0]!.message).toContain("defaultProvider");
+    // With a compat-flagged default model, no second advisory fires.
+    expect(notifications[0]!.message).not.toContain("requiresReasoningContentOnAssistantMessages");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

@@ -69,6 +69,10 @@ pico 特有命令：`/init`（生成或审计 AGENTS.md）、`/doctor`（安全�
 `/doctor` 可查看所有开关状态与来源。
 
 > **注意**：安全开关只认 `settings.json` 的 `safety` 字段与环境变量。上游旧版 `config.yml` 里同名 `safety` 键会被**静默忽略**——`/doctor` 检测到这种"写错位置"的配置时会明确告警并给出迁移指引。
+>
+> `config.yml` 里的 `defaultProvider` / `defaultModel` 同样**不生效**（实际读取 `settings.json`）——两者不一致时，启动时会弹出一次警告，`/doctor` 也列出冲突明细。
+>
+> **DeepSeek 系网关（如自定义 OpenAI 兼容代理）的多轮对话 400**：若报错 `The reasoning_content in the thinking mode must be passed back to the API`，说明该模型缺 `compat.requiresReasoningContentOnAssistantMessages: true`。在 `~/.pico/agent/models.json` 的对应模型/提供商补上该标志即可；`/doctor` 会列出所有缺标志的推理模型，默认模型缺失时启动也会警告一次。
 
 ## 文档导航
 

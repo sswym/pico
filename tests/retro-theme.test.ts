@@ -388,3 +388,89 @@ test("retroThemeExtension does not override a user-configured theme (2.1.1)", as
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("narrow footer drops trailing segments instead of hard-truncating them", () => {
+  const ctx = fakeCtx({
+    model: { id: "deepseek-v4-flash" },
+    getContextUsage: () => ({ tokens: 21000, percent: 10.5, contextWindow: 200000 }),
+    cwd: "/home/david/pico",
+  });
+  const git = { branch: "feature/long-branch-name", staged: 1, unstaged: 2, untracked: 3 };
+  const footerData = {
+    getGitBranch: () => "feature/long-branch-name",
+    getExtensionStatuses: () => ["MCP: 1 connected"],
+  };
+  const options = { getThinkingLevel: () => "max" };
+
+  // At 60 columns the git details and context usage may be dropped, but the
+  // leading segments (model, thinking, dir) must stay intact — no mid-string
+  // truncation of the model name.
+  const line60 = renderClaudeLikeFooterLine(60, ctx, plainTheme as any, footerData, git, options);
+  expect(visibleWidth(line60)).toBeLessThanOrEqual(60);
+  expect(line60).toContain("deepseek-v4-flash");
+  expect(line60).toContain("think:max");
+
+  // At 32 columns the primary line keeps only what fits, still starting with
+  // the model and never exceeding the width.
+  const line32 = renderPrimaryStatusLine(32, ctx, plainTheme as any, git, options);
+  expect(visibleWidth(line32)).toBeLessThanOrEqual(32);
+  expect(line32).toContain("deepseek-v4-flash");
+
+  // At 15 columns even the model itself must truncate with an ellipsis.
+  const line15 = renderPrimaryStatusLine(15, ctx, plainTheme as any, git, options);
+  expect(visibleWidth(line15)).toBeLessThanOrEqual(15);
+  expect(line15).toContain("...");
+});
+
+test("retroThemeExtension notifies and marks footer on failed turns", async () => {
+  const handlers = new Map<string, (event: any, ctx: any) => void>();
+  const fakePi = {
+    on: (event: string, h: (event: any, ctx: any) => void) => handlers.set(event, h),
+  };
+  const notifications: Array<{ message: string; type?: string }> = [];
+  const statuses: Array<[string, string | undefined]> = [];
+  const fakeUi = {
+    theme: plainTheme,
+    notify: (message: string, type?: string) => notifications.push({ message, type }),
+    setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
+  };
+
+  retroThemeExtension(fakePi as any);
+
+  await handlers.get("turn_start")!({}, { ui: fakeUi });
+  expect(statuses).toEqual([["pico.lastError", undefined]]);
+  statuses.length = 0;
+
+  await handlers.get("turn_end")!(
+    {
+      type: "turn_end",
+      turnIndex: 0,
+      message: { role: "assistant", stopReason: "error", errorMessage: 'Error: 400: {"message":"Upstream failed"}' },
+      toolResults: [],
+    },
+    { ui: fakeUi },
+  );
+  expect(notifications).toHaveLength(1);
+  expect(notifications[0]!.type).toBe("error");
+  expect(notifications[0]!.message).toContain("Upstream failed");
+  expect(statuses).toEqual([["pico.lastError", "!failed"]]);
+});
+
+test("retroThemeExtension ignores non-error turns", async () => {
+  const handlers = new Map<string, (event: any, ctx: any) => void>();
+  const fakePi = {
+    on: (event: string, h: (event: any, ctx: any) => void) => handlers.set(event, h),
+  };
+  const notifications: Array<{ message: string; type?: string }> = [];
+  retroThemeExtension(fakePi as any);
+
+  await handlers.get("turn_end")!(
+    { type: "turn_end", turnIndex: 0, message: { role: "assistant", stopReason: "end_turn" }, toolResults: [] },
+    { ui: { notify: (message: string, type?: string) => notifications.push({ message, type }) } },
+  );
+  await handlers.get("turn_end")!(
+    { type: "turn_end", turnIndex: 1, message: { role: "assistant", stopReason: "error" }, toolResults: [] },
+    { ui: { notify: (message: string, type?: string) => notifications.push({ message, type }) } },
+  );
+  expect(notifications).toHaveLength(0);
+});

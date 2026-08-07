@@ -9,9 +9,13 @@
 import { Type } from "@earendil-works/pi-ai";
 import {
   defineTool,
+  type AgentToolResult,
   type ExtensionAPI,
   type ExtensionFactory,
+  type Theme,
+  type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
+import { type Text } from "@earendil-works/pi-tui";
 import {
   autoExtractFromMessages,
   isLikelyCorrection,
@@ -28,6 +32,52 @@ import { CATEGORY_LIST, CORRECTED_BOOST, SCOPE_PROJECT } from "./schema.ts";
 import { executeMemoryToolAction, type MemoryToolParams } from "./tool.ts";
 import { executeMemoryCommand } from "./command.ts";
 import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
+
+/**
+ * Render a memory tool result without the internal plumbing. The raw result
+ * is a JSON dump of the fact store row(s) — tfidf vectors, source flags,
+ * correction metadata — which is noise on screen. Strip the internal keys
+ * (the model still receives the full payload) and pretty-print what is left.
+ */
+const MEMORY_RENDER_NOISE_KEYS = new Set(["tfidf_vector", "vector", "embedding", "correction_of", "source"]);
+
+function stripMemoryRenderNoise(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripMemoryRenderNoise);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value)) {
+      if (MEMORY_RENDER_NOISE_KEYS.has(key)) continue;
+      out[key] = stripMemoryRenderNoise(child);
+    }
+    return out;
+  }
+  return value;
+}
+
+export function renderMemoryResultText(
+  result: AgentToolResult<unknown>,
+  options: ToolRenderResultOptions,
+  theme: Theme,
+  context: { lastComponent?: unknown; isError?: boolean },
+): Text {  const output = result.content
+    .filter((c): c is { type: "text"; text: string } => c.type === "text" && typeof c.text === "string")
+    .map((c) => c.text)
+    .join("\n");
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    parsed = null;
+  }
+  if (parsed === null || typeof parsed !== "object") {
+    return renderToolResultText(result, options, theme, context);
+  }
+  const slim = {
+    ...result,
+    content: [{ type: "text" as const, text: JSON.stringify(stripMemoryRenderNoise(parsed), null, 2) }],
+  };
+  return renderToolResultText(slim, options, theme, context);
+}
 
 const MemoryParams = Type.Object({
   action: Type.Union([
@@ -181,7 +231,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         return renderToolCallText("memory", args, theme, context);
       },
       renderResult(result, options, theme, context) {
-        return renderToolResultText(result, options, theme, context);
+        return renderMemoryResultText(result, options, theme, context);
       },
       async execute(_id, params, _signal, _onUpdate, ctx) {
         // Capture cwd for project-scoped memory.
@@ -206,7 +256,7 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           return renderToolCallText(name, args, theme, context);
         },
         renderResult(result, options, theme, context) {
-          return renderToolResultText(result, options, theme, context);
+          return renderMemoryResultText(result, options, theme, context);
         },
         async execute(_id, params, _signal, _onUpdate, ctx) {
           const text = manager.handleToolCall(name, params as Record<string, unknown>, {

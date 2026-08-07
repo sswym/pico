@@ -14,8 +14,10 @@ import type {
   ExtensionAPI,
   ExtensionFactory,
   ToolExecutionStartEvent,
+  TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import claudeCodeDarkTheme from "../../theme/claude-code-dark.json" with { type: "json" };
+import { friendlyErrorMessage } from "../errors.ts";
 import { picoAgentHome } from "../paths.ts";
 import { installClaudeLikeFooter } from "./footer.ts";
 import { ActivityTracker } from "./activity.ts";
@@ -58,6 +60,25 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // never fire — reset the tracker so no stale timer/sink leaks into the
   // next session. finish() is idempotent when already idle.
   pi.on("session_shutdown", () => activity.finish());
+
+  // Failed turns (provider 400s, stream failures) used to end with a blank
+  // assistant message and the status row simply going idle — the failure was
+  // invisible. Surface a notification + a footer marker until the next turn.
+  pi.on("turn_end", (event: TurnEndEvent, ctx) => {
+    const message = event.message as { stopReason?: string; errorMessage?: string };
+    if (message?.stopReason !== "error" || !message.errorMessage) return;
+    try {
+      ctx.ui.notify(`任务失败：${friendlyErrorMessage(message.errorMessage)}`, "error");
+      ctx.ui.setStatus("pico.lastError", "!failed");
+    } catch {
+      // notify/setStatus are no-ops when no UI is attached (non-interactive).
+    }
+  });
+  pi.on("turn_start", (_event, ctx) => {
+    try {
+      ctx.ui.setStatus("pico.lastError", undefined);
+    } catch {}
+  });
 
   pi.on("session_start", async (_event, ctx) => {
     activity.attach((message) => ctx.ui.setWorkingMessage(message));
