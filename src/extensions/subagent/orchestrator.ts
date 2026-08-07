@@ -538,12 +538,22 @@ export async function runSubagentRequest(
 		}
 		const lastResult = results.at(-1);
 		const aborted = lastResult?.stopReason === "aborted" || signal?.aborted;
+		// Chain 只把最后一步输出回传父进程，中间步骤（scout/worker）对父 agent
+		// 是黑盒——把每步输出摘要附在结果尾部，父 agent 才能汇总/审计每一步。
+		const summarizedSteps = aborted ? results : results.slice(0, -1);
+		const stepSummaries = summarizedSteps
+			.map((r, i) => {
+				const label = r.label ? ` (${r.label})` : "";
+				const status = r.stopReason === "aborted" ? "aborted" : "completed";
+				return `### Step ${i + 1}: ${r.agent}${label} — ${status}\n\n${truncateOutput(getResultOutput(r), 1500)}`;
+			})
+			.join("\n\n---\n\n");
 		const contentText = aborted
-			? `Chain aborted after ${results.length} of ${chain.length} steps.\n\nCompleted steps:\n${results
-					.map((r) => `### [${r.agent}] ${r.stopReason === "aborted" ? "aborted" : "completed"}\n\n${truncateOutput(getResultOutput(r), 8192)}`)
-					.join("\n\n---\n\n")}`
+			? `Chain aborted after ${results.length} of ${chain.length} steps.\n\n${stepSummaries}`
 			: lastResult
-				? getFinalOutput(lastResult.messages) || "(no output)"
+				? `${getFinalOutput(lastResult.messages) || "(no output)"}${
+						stepSummaries.length > 0 ? `\n\n---\n\n## Step summaries\n\n${stepSummaries}` : ""
+					}`
 				: "(no output)";
 		return {
 			content: [{ type: "text", text: contentText }],
