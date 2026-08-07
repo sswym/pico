@@ -39,6 +39,7 @@ src/generated/
 
 # OMC plugin state
 .omc/
+.omo/
 
 # local pico LSP override
 .pico/lsp.json
