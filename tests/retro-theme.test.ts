@@ -450,10 +450,42 @@ test("retroThemeExtension notifies and marks footer on failed turns", async () =
     },
     { ui: fakeUi },
   );
+  // Deferred: nothing fires on turn_end alone — the retry cycle may continue.
+  expect(notifications).toHaveLength(0);
+  expect(statuses).toHaveLength(0);
+
+  await handlers.get("agent_settled")!({ type: "agent_settled" }, { ui: fakeUi });
   expect(notifications).toHaveLength(1);
   expect(notifications[0]!.type).toBe("error");
   expect(notifications[0]!.message).toContain("Upstream failed");
   expect(statuses).toEqual([["pico.lastError", "!failed"]]);
+});
+
+test("retroThemeExtension notifies exactly once across a retry cycle", async () => {
+  const handlers = new Map<string, (event: any, ctx: any) => void>();
+  const fakePi = {
+    on: (event: string, h: (event: any, ctx: any) => void) => handlers.set(event, h),
+  };
+  const notifications: Array<{ message: string; type?: string }> = [];
+  retroThemeExtension(fakePi as any);
+
+  // Three failed attempts (the upstream retry cycle), then one settled.
+  for (let i = 0; i < 3; i++) {
+    await handlers.get("turn_end")!(
+      {
+        type: "turn_end",
+        turnIndex: i,
+        message: { role: "assistant", stopReason: "error", errorMessage: "502: {\"message\":\"upstream unreachable\",\"type\":\"api_error\"}" },
+        toolResults: [],
+      },
+      { ui: { notify: (message: string, type?: string) => notifications.push({ message, type }) } },
+    );
+  }
+  expect(notifications).toHaveLength(0);
+  await handlers.get("agent_settled")!({ type: "agent_settled" }, { ui: { notify: (message: string, type?: string) => notifications.push({ message, type }) } });
+  expect(notifications).toHaveLength(1);
+  expect(notifications[0]!.message).toContain("upstream unreachable");
+  expect(notifications[0]!.message).not.toContain('"type"');
 });
 
 test("retroThemeExtension ignores non-error turns", async () => {
@@ -472,6 +504,7 @@ test("retroThemeExtension ignores non-error turns", async () => {
     { type: "turn_end", turnIndex: 1, message: { role: "assistant", stopReason: "error" }, toolResults: [] },
     { ui: { notify: (message: string, type?: string) => notifications.push({ message, type }) } },
   );
+  await handlers.get("agent_settled")!({ type: "agent_settled" }, { ui: { notify: (message: string, type?: string) => notifications.push({ message, type }) } });
   expect(notifications).toHaveLength(0);
 });
 
@@ -508,6 +541,7 @@ test("retroThemeExtension does not render user-initiated cancels as failures", a
     },
     { ui: fakeUi },
   );
+  await handlers.get("agent_settled")!({ type: "agent_settled" }, { ui: fakeUi });
   expect(notifications).toHaveLength(0);
   expect(statuses).toHaveLength(0);
 });

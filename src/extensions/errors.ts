@@ -126,7 +126,10 @@ export function friendlyErrorMessage(raw: string): string {
     return `工具 "${tool}" 参数校验失败：${reason}`;
   }
 
-  const envelope = /^Error:\s*\d{3}:\s*(\{[\s\S]*\})$/.exec(trimmed);
+  // Upstream surfaces provider envelopes as `Error: 400: {...}` or the
+  // bare `502: {...}` (observed: OpenAI-completions failure messages carry
+  // the status code without an "Error: " prefix). Accept both forms.
+  const envelope = /^(?:Error:\s*)?\d{3}:\s*(\{[\s\S]*\})$/.exec(trimmed);
   const jsonPart = envelope?.[1] ?? (/^(\{[\s\S]*\})$/.exec(trimmed)?.[1] ?? null);
   if (jsonPart) {
     try {

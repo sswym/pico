@@ -27,6 +27,34 @@ function enabled(value: boolean): string {
   return value ? "enabled" : "disabled";
 }
 
+/** Labels matching upstream's HTTP idle timeout choices. */
+const REQUEST_TIMEOUT_LABELS: Array<[number, string]> = [
+  [30_000, "30 sec"],
+  [60_000, "1 min"],
+  [120_000, "2 min"],
+  [300_000, "5 min"],
+];
+
+/**
+ * Effective per-request model timeout. Upstream reads `httpIdleTimeoutMs`
+ * from the same settings.json (default 300000ms, 0 = disabled). Surfacing
+ * it here keeps the 5-minute silent-wait default visible instead of
+ * surprising users when a provider hangs.
+ */
+function requestTimeoutSummary(): string[] {
+  const raw = readSettings().httpIdleTimeoutMs;
+  let ms: number | undefined;
+  if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) {
+    ms = raw;
+  } else if (typeof raw === "string" && raw.trim().toLowerCase() === "disabled") {
+    ms = 0;
+  }
+  if (ms === 0) return ["  disabled (0 = no timeout; key httpIdleTimeoutMs)"];
+  if (ms === undefined) return ["  5 min (default; key httpIdleTimeoutMs)"];
+  const label = REQUEST_TIMEOUT_LABELS.find(([candidate]) => candidate === ms)?.[1] ?? `${ms / 1000} sec`;
+  return [`  ${label} (settings.json; key httpIdleTimeoutMs)`];
+}
+
 /** Latest lsp_status snapshot (published by the lsp extension). */
 let lspFailures: LspStatusEvent["failures"] = [];
 
@@ -72,6 +100,9 @@ export function buildDoctorReport(cwd: string): string {
     ...formatConfigYmlModelConflictLines(),
     ...formatReasoningCompatLines(),
     ...formatMissingDefaultModelLines(),
+    "",
+    "Request timeout:",
+    ...requestTimeoutSummary(),
     "",
     "LSP:",
     ...lspLines,

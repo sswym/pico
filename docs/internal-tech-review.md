@@ -560,6 +560,46 @@ flowchart TD
 
 **文档**：AGENTS.md 信号段落重写、扩展计数 22→23；README 计数同步；§5.2 L20 更新为部分缓解（上游 "Operation aborted" 渲染仍受上游约束）。
 
+### 4.11 第九轮整改（2026-08-08，第二轮全链路实测修复，1 高 / 3 中 / 2 低，全部附回归测试）
+
+依据当日第二轮全链路实测（子代理故障注入 / 网关断开 / 上游挂起黑盒），修复 1 高 / 3 中 / 2 低：
+
+**高：子代理 spawn 与 `-p` 守卫冲突，源码模式子代理必崩（P-1，第八轮 P-8 引入的回归）**
+- 实测：`subagent` 工具派发后子进程全部 exit 2，报 `pico: -p/--print 缺少提示词`；`Parallel: 0/2 succeeded`。直接复现 `pico -p --session /tmp/x.jsonl "Task: hi"` → exit 2。
+- 根因：`process.ts:buildAgentProcessArgs` 生成 `["--mode","json","-p","--session",…,"Task: …"]`——`-p` 后紧跟 `--session` 标志；第八轮新增的 `missingPrintPrompt` 只检查 `-p` 的**紧邻下一参数**，把"后跟标志"误判为缺提示词。上游语义：`-p` 仅当下一参数非标志时才消费为提示词，否则提示词取位置参数。
+- 修复：守卫抽为 `src/runtime/print-guard.ts`（可测试模块）：`-p` 无紧邻值时扫描剩余 argv 找位置参数，跳过取值标志（--session/--model/--tools/--max-tokens/--thinking/--export/--extension/-e/--skill/--prompt-template/--theme/--system-prompt/--append-system-prompt）及其值；仍无提示词才报错。`pico -p --session X "Task: …"` 通过，`pico -p --session X`（真无提示词）仍 exit 2。
+- 回归测试 10 条（print-guard.test.ts）+ subagent.test.ts 跨模块断言（buildAgentProcessArgs 输出必须过守卫）。端到端验证：子代理并行 2/2 succeeded，结果正确且模型交叉验证。
+
+**中：重试循环中每次失败尝试各弹一条"任务失败"通知（P-2）**
+- 实测：网关故障一轮 4 次失败尝试 → 4+ 条重复「任务失败」toast；最终 `Retry failed after 3 attempts` 结论被淹没。
+- 根因：`retro-theme` 在 `turn_end` 通知，而上游每个重试尝试都发射一次 `turn_end`（stopReason=error）。
+- 修复：通知延迟到 `agent_settled`（上游保证仅在重试循环完全结束后发射一次）：turn_end 只记录最后错误，agent_settled 单次通知 + 置 `!failed`；aborted/无 errorMessage 路径照旧排除；session_shutdown 清残留。
+- 回归测试：retro-theme.test.ts 重写 3 条 + 新增重试循环去重 1 条。端到端验证：故障注入一轮后「任务失败」恰好 1 次。
+
+**中：`friendlyErrorMessage` 不识别无 `Error:` 前缀的状态信封（P-3）**
+- 实测：`任务失败：502: {"message":"upstream unreachable…","type":"api_error"}`——原始 JSON 直接上屏。
+- 根因：信封正则 `/^Error:\s*\d{3}:\s*(\{…\})$/` 要求 `Error:` 前缀，实测 errorMessage 为 `502: {…}`。
+- 修复：正则兼容可选前缀 `^(?:Error:\s*)?\d{3}:`。
+- 回归测试 1 条（errors.test.ts）。
+
+**中：模型请求超时不可见、不可配（P-4）**
+- 实测：上游挂起（黑盒服务器）时单次请求 300s 静默等待（仅 thinking Ns 计时），超时后进入重试循环，最坏 4×300s≈20 分钟。
+- 定位：超时来自上游 `settings.httpIdleTimeoutMs`（默认 300000ms，0=禁用，同文件 settings.json 直通）——机制存在但 pico 无任何展示/校验。
+- 修复：`settings-schema.ts` 增加 `httpIdleTimeoutMs` 校验（非负有限数值 / "disabled" / 数值字符串）；`/doctor` 新增 `Request timeout:` 段（生效值 + 来源 + key）。超时期间无倒计时、无进度提示仍受上游 TUI 约束（§5.2 L24）。
+- 回归测试：settings-schema.test.ts 2 条 + doctor.test.ts 1 条。端到端验证：设置 `httpIdleTimeoutMs: 60000` 后黑盒挂起精确 60s 超时（原 300s）。
+
+**低：plan 模式激活后模型仍先尝试写工具（P-5，模型遵守度）**
+- 实测：`/plan` 生效后收到需求，模型第一轮直接发 `edit`×2（被工具门禁拦截后转为 SubmitPlan）；探针确认系统提示已含计划规则段 → 属模型未遵守，门禁兜底有效。
+- 修复：`prompts/plan-mode.md` 硬性规则首条补"收到新需求第一动作必须是只读调研并 SubmitPlan，绝不先尝试写操作（写工具会被门禁拦截并浪费一整轮）"。
+- 端到端验证：计划流（SubmitPlan→ExitPlanMode→批准→实施→测试）全通。注：行为依模型而异，门禁是真正安全边界。
+
+**低：LSP 启动失败噪音（P-6）**
+- 实测：无 typescript 依赖的项目每次启动打原始 tsserver 错误全文。
+- 修复：`manager.ts` 新增 `friendlyLspInitError()`：命中 "Could not find a valid TypeScript installation" 时折叠为一行可行动提示（含 `bun add -d typescript`），原始错误仍进 /doctor。
+- 回归测试 2 条（lsp.test.ts）。端到端验证：启动屏显示折叠文案。
+
+**文档**：AGENTS.md 配置小节补 `httpIdleTimeoutMs`；§5.2 新增 L24/L25。
+
 ## 5. 当前版本现状与已知局限
 
 ### 5.1 现状
@@ -571,7 +611,8 @@ flowchart TD
 - 第五轮整改（2026-08-07，依据端到端测试报告）：记忆提取三方统一门控（`isDurableCandidate`/`classifyMessage`）、`INSTRUCTION_PATTERNS` 扩展覆盖一次性任务祈使句、session topic 只取持久陈述；提示词补充"新增=插入""破坏性操作验证闭环""接入链自查""探索有界""子代理结果引用不复述"；635 用例全绿；
 - 第六轮整改（2026-08-07，依据 TUI 全链路交互测试报告）：`/help` 离线命令（help 扩展）+ 未知斜杠命令 context 引导注入；package-shim 源码模式品牌覆盖（退出提示 `pico --session-dir`）；子代理运行中面板 running 态渲染（isPartial 判据）；todo 提示词补多文件场景；647 用例全绿；
 - 第七轮整改（2026-08-07，依据 TUI 全链路交互测试报告）：失败回合不再静默——`turn_end` 检测 `stopReason:"error"` 时 `ui.notify` 输出"任务失败：<友好原因>"并在 footer 置 `!failed` 标记（下次 turn 清除）；`friendlyErrorMessage` 将上游开发者格式错误（工具 schema 校验 JSON dump、provider HTTP 信封）压缩为可读文案（错误渲染与错误通知共用）；memory 工具结果渲染剥离 `tfidf_vector` 等内部字段（模型仍收完整 payload）；窄屏 footer 左侧按优先级丢弃尾段（git/context）而非硬截断；config.yml 与 settings.json 的 `defaultProvider`/`defaultModel` 冲突检测（`/doctor` 报告 + 启动一次 warning）；默认模型缺 `requiresReasoningContentOnAssistantMessages` 时启动警告一次；探查命令容错提示词；660 用例全绿；
-- 第八轮整改（2026-08-08，依据全链路实测报告）：记忆提取补"请为…新增…"指令模式 + "注意"模式收紧为句首/带冒号 + `note_add` 拒绝任务指令与错误占位符（事实与 MEMORY.md 双路径防污染）；新增 `signals` 扩展（第 23 个）：外部 SIGINT 运行中取消/空闲退出、SIGTERM 优雅关闭（`ctx.abort()`/`ctx.shutdown()`）；非交互 plan 拒绝保持写锁（throw 语义）；config.yml safety 键一次性自动迁移（幂等、跳过 env/settings 已 pin 键，SAFETY_KEYS 补 enableProjectLsp）；取消不再渲染"任务失败"；subagent 工具 `list: true` 发现机制（错误文案同步更新）；LSP 初始化失败进 /doctor（lsp_status 事件 + LSP 段）；`-p` 空提示词 exit 2；686 用例全绿；
+- 第八轮整改（2026-08-08，依据全链路实测报告）：记忆提取补"请为…新增…"指令模式 + "注意"模式收紧为句首/带冒号 + `note_add` 拒绝任务指令与错误占位符（事实与 MEMORY.md 双路径防污染）；新增 `signals` 扩展（第 23 个）：外部 SIGINT 运行中取消/空闲退出、SIGTERM 优雅关闭（`ctx.abort()`/`ctx.shutdown()`）；非交互 plan 拒绝保持写锁（throw 语义）；config.yml safety 键一次性自动迁移（幂等、跳过 env/settings 已 pin 键，SAFETY_KEYS 补 enableProjectLsp）；取消不再渲染"任务失败"；subagent 工具 `list: true` 发现机制（错误文案同步更新）；LSP 初始化失败进 /doctor（lsp_status 事件 + LSP 段）；`-p` 空提示词 exit 2 守卫；
+- 第九轮整改（2026-08-08，依据第二轮全链路实测报告）：修复第八轮 `-p` 守卫与子代理 spawn 参数冲突（源码模式子代理必崩，高）——守卫抽为 `print-guard.ts` 支持"提示词在后置位置参数"；失败通知从 turn_end 延迟到 agent_settled（重试循环只通知一次）；`friendlyErrorMessage` 兼容无 `Error:` 前缀的状态信封（502 JSON 不再裸上屏）；`httpIdleTimeoutMs` 校验 + /doctor `Request timeout:` 段（超时可配置，实测 60s 生效）；plan 提示词补"先规划后动手"首条规则；LSP 无 TS 项目启动文案折叠为可行动提示；704 用例全绿；
 
 ### 5.2 已知局限（客观记录）
 
@@ -597,6 +638,8 @@ flowchart TD
 | L21 | **Ctrl+C 绑定为"清空输入框"**（上游 keybindings：`app.clear`=ctrl+c、`app.interrupt`=escape、`app.exit`=ctrl+d），agent 运行中按 Ctrl+C 无任何反馈 | 终端直觉键失效，易误判卡死 | 受上游键位约束；键位表已在 `/help` 与 README 明示 |
 | L22 | **网络错误重试文案生硬**：`Error: Connection error.` + `Retrying (1/3) in 2s...` 中英混排、以 Error 样式混入会话区（重试机制本身可靠，实测 1 次即恢复） | 用户误判故障 | 受上游约束；建议上游本地化 |
 | L23 | **未知斜杠命令无本地拦截钩子**：上游 onSubmit 对未注册的 `/xxx` 无"未知命令"分支，直接作为普通消息发送 | 每条误输消耗一次 LLM 往返 | 已缓解：context 事件注入引导（一句话回答 + /help 指引、禁猜测、同命令只注入一次），pico 层无完全本地拦截能力 |
+| L24 | **模型请求等待期间无超时倒计时/进度提示**：挂起时仅 `thinking Ns` 计时器；超时值 `settings.httpIdleTimeoutMs` 默认 300s（0=禁用），pico 已校验 + /doctor 展示，但等待期 UX 与倒计时受上游 TUI 约束 | 长等待期用户无感知 | 受上游约束；已文档化配置键 |
+| L25 | **全新 PICO_HOME 首启主题加载时序**：TUI 初始化先于 retro-theme 的 session_start 主题文件同步，首启报一次 `Failed to load theme "claude-code-dark"` 并回退 dark，次启恢复正常 | 首启一次噪音告警 | 已知；可在首启路径预写主题文件消除 |
 
 ### 5.3 待优化项与迭代规划（建议排序）
 

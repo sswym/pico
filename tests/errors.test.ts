@@ -126,6 +126,14 @@ test("friendlyErrorMessage extracts provider envelope messages", () => {
   expect(friendlyErrorMessage(bareJson)).toBe("The `reasoning_content` must be passed back");
 });
 
+test("friendlyErrorMessage extracts prefix-less status envelopes (502 gateway errors)", () => {
+  const raw =
+    '502: {"message":"upstream unreachable: error sending request for url (https://opencode.ai/zen/v1/chat/completions)","type":"api_error"}';
+  const out = friendlyErrorMessage(raw);
+  expect(out).toBe("upstream unreachable: error sending request for url (https://opencode.ai/zen/v1/chat/completions)");
+  expect(out).not.toContain('"type"');
+});
+
 test("friendlyErrorMessage passes through unrecognized text unchanged", () => {
   const plain = "Something went wrong here";
   expect(friendlyErrorMessage(plain)).toBe(plain);

@@ -158,6 +158,14 @@ function makeFakePi() {
 }
 ```
 
+### 模型请求超时（settings.json `httpIdleTimeoutMs`）
+
+单次模型请求超时由上游读取同一份 `~/.pico/agent/settings.json` 的 `httpIdleTimeoutMs`（单位 ms；`0` = 禁用；也接受 `"disabled"` 或数值字符串），**默认 300000（5 分钟）**。上游挂起时表现为"等待 Ns 计时 + 超时后自动重试（最多 3 次，指数退避）"，最坏约 4×超时。pico 侧已做校验（非法值进 /doctor）并在 /doctor 的 `Request timeout:` 段展示生效值。示例：
+
+```json
+{ "httpIdleTimeoutMs": 60000 }
+```
+
 ## 编辑注意事项
 
 - `bin/env-bootstrap.ts` 有副作用（设置路径），必须在 `bin/pico.ts` 最先导入

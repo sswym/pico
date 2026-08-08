@@ -225,3 +225,20 @@ test("validateCurrentSettings validates a settings file on disk", () => {
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("httpIdleTimeoutMs accepts valid timeout forms", () => {
+  for (const value of [30_000, 0, "60000", "disabled"]) {
+    const result = validateSettingsObject({ httpIdleTimeoutMs: value });
+    expect(result.valid, `value: ${String(value)}`).toBe(true);
+    expect(result.issues).toEqual([]);
+  }
+});
+
+test("httpIdleTimeoutMs rejects invalid timeout forms", () => {
+  const cases = [-1, Number.NaN, Infinity, "", "5 min", true, { ms: 100 }];
+  for (const value of cases) {
+    const result = validateSettingsObject({ httpIdleTimeoutMs: value });
+    expect(result.valid, `value: ${String(value)}`).toBe(false);
+    expect(result.issues[0]!.key).toBe("httpIdleTimeoutMs");
+  }
+});

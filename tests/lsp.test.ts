@@ -43,6 +43,7 @@ import {
   syncDocument,
   syncDocumentForFile,
   stopServer,
+  friendlyLspInitError,
 } from "../src/extensions/lsp/manager.ts";
 import { LspClient, LspError, COMMAND_NOT_FOUND } from "../src/extensions/lsp/client.ts";
 import type { TextEdit } from "../src/extensions/lsp/types.ts";
@@ -1463,4 +1464,21 @@ test("ensureServer surfaces command-not-found when every candidate is missing", 
   // first missing command is rethrown (matches the old behavior).
   expect(error).toBeInstanceOf(LspError);
   expect((error as LspError).errorCode).toBe(COMMAND_NOT_FOUND);
+});
+
+describe("friendlyLspInitError", () => {
+  test("collapses the TypeScript-not-installed init failure to an actionable hint", () => {
+    const raw =
+      'Request initialize failed with message: Could not find a valid TypeScript installation. ' +
+      'Please ensure that the "typescript" dependency is installed in the workspace or that a valid `tsserver.path` is specified. Exiting.';
+    const out = friendlyLspInitError("typescript-language-server", raw);
+    expect(out).toContain("skipped: TypeScript not installed");
+    expect(out).toContain("bun add -d typescript");
+    expect(out).not.toContain("tsserver.path");
+  });
+
+  test("passes other init errors through unchanged", () => {
+    const raw = "Request initialize failed with message: connection refused";
+    expect(friendlyLspInitError("json-lsp", raw)).toBe(raw);
+  });
 });

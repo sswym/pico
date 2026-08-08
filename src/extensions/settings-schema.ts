@@ -156,6 +156,35 @@ function checkLanguage(obj: Record<string, unknown>, issues: SettingsIssue[]): v
 }
 
 /**
+ * Upstream consumes `httpIdleTimeoutMs` from the same settings.json as the
+ * per-request model timeout (default 300000ms; 0 = disabled; accepts
+ * "disabled" or a numeric string). Validate it here so a typo surfaces in
+ * /doctor instead of throwing at request time upstream.
+ */
+function checkHttpIdleTimeout(obj: Record<string, unknown>, issues: SettingsIssue[]): void {
+  const value = obj.httpIdleTimeoutMs;
+  if (value === undefined) return;
+  const path = "httpIdleTimeoutMs";
+  const expected = "non-negative number (ms), or \"disabled\"";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) {
+      issues.push(makeIssue(path, expected, `must be a finite non-negative number (got ${String(value)})`, value));
+    }
+    return;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.toLowerCase() === "disabled") return;
+    const numeric = Number(trimmed);
+    if (trimmed.length === 0 || !Number.isFinite(numeric) || numeric < 0) {
+      issues.push(makeIssue(path, expected, `unrecognized timeout value "${value}"`, value));
+    }
+    return;
+  }
+  issues.push(makeIssue(path, expected, `must be a number or string (got ${typeName(value)})`, value));
+}
+
+/**
  * Validate a namespace object (e.g. "safety", "memory"). A present-but-not-
  * object namespace is one issue; otherwise every known field is checked
  * independently (逐 key 隔离). `key` is the local lookup key, `path` the
@@ -211,6 +240,7 @@ export function validateSettingsObject(obj: unknown): SettingsValidationResult {
   checkLanguage(obj, issues);
   checkString(obj, "defaultProvider", "defaultProvider", issues, { nonEmpty: true });
   checkString(obj, "defaultModel", "defaultModel", issues, { nonEmpty: true });
+  checkHttpIdleTimeout(obj, issues);
 
   return { issues, valid: issues.length === 0 };
 }

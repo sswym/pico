@@ -64,17 +64,39 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // Failed turns (provider 400s, stream failures) used to end with a blank
   // assistant message and the status row simply going idle — the failure was
   // invisible. Surface a notification + a footer marker until the next turn.
-  pi.on("turn_end", (event: TurnEndEvent, ctx) => {
+  // The notification is deferred to `agent_settled`: upstream auto-retries
+  // failed requests (each attempt emits its own turn_end), so notifying on
+  // turn_end spammed one "任务失败" toast per retry attempt. agent_settled
+  // fires once after the retry cycle settles, so the failure surfaces a
+  // single time with the final attempt's error.
+  let lastTurnError: { errorMessage: string } | null = null;
+
+  pi.on("turn_end", (event: TurnEndEvent) => {
     const message = event.message as { stopReason?: string; errorMessage?: string };
     // A user-initiated cancel (Esc) ends the turn with stopReason "aborted"
     // (and some providers surface the same cancel as an error result whose
     // message is "Operation aborted") — that is not a task failure and must
     // not render as one.
-    if (message?.stopReason === "aborted") return;
-    if (message?.stopReason !== "error" || !message.errorMessage) return;
-    if (/aborted/i.test(message.errorMessage)) return;
+    if (message?.stopReason === "aborted") {
+      lastTurnError = null;
+      return;
+    }
+    if (message?.stopReason !== "error" || !message.errorMessage) {
+      lastTurnError = null;
+      return;
+    }
+    if (/aborted/i.test(message.errorMessage)) {
+      lastTurnError = null;
+      return;
+    }
+    lastTurnError = { errorMessage: message.errorMessage };
+  });
+  pi.on("agent_settled", (_event, ctx) => {
+    if (!lastTurnError) return;
+    const errorMessage = lastTurnError.errorMessage;
+    lastTurnError = null;
     try {
-      ctx.ui.notify(`任务失败：${friendlyErrorMessage(message.errorMessage)}`, "error");
+      ctx.ui.notify(`任务失败：${friendlyErrorMessage(errorMessage)}`, "error");
       ctx.ui.setStatus("pico.lastError", "!failed");
     } catch {
       // notify/setStatus are no-ops when no UI is attached (non-interactive).
@@ -84,6 +106,11 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     try {
       ctx.ui.setStatus("pico.lastError", undefined);
     } catch {}
+  });
+  // A session ending between turn_end and agent_settled must not leak a
+  // stale failure into the next session.
+  pi.on("session_shutdown", () => {
+    lastTurnError = null;
   });
 
   pi.on("session_start", async (_event, ctx) => {

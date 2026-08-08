@@ -102,19 +102,10 @@ if ((rawArgs.includes("--help") || rawArgs.includes("-h")) && !rawArgs.includes(
 }
 
 // ── Missing prompt for -p/--print ───────────────────────────────────────
-// `pico -p` / `pico --print` without a following prompt used to exit 0
-// silently — scripts passing an empty argument got a no-op run with no
-// diagnostic. Refuse loudly with a non-zero exit code instead.
-function missingPrintPrompt(raw: string[]): boolean {
-  for (let i = 0; i < raw.length; i++) {
-    const arg = raw[i]!;
-    if (arg !== "-p" && arg !== "--print") continue;
-    const next = raw[i + 1];
-    if (next === undefined || next.startsWith("-") || next.trim().length === 0) return true;
-    i++; // skip the consumed prompt value
-  }
-  return false;
-}
+// `pico -p` / `pico --print` without a prompt used to exit 0 silently —
+// scripts passing an empty argument got a no-op run with no diagnostic.
+// Refuse loudly with a non-zero exit code instead.
+import { missingPrintPrompt } from "../src/runtime/print-guard.ts";
 
 const isHelpOrVersion =
   rawArgs.includes("--help") || rawArgs.includes("-h") || rawArgs.includes("--version") || rawArgs.includes("-v");

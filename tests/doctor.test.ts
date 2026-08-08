@@ -555,3 +555,24 @@ test("detectMissingDefaultModel returns null when provider/model is unset", () =
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("buildDoctorReport surfaces the request timeout with its source", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-doctor-timeout-home-"));
+  process.env.PICO_HOME = home;
+  try {
+    const report = buildDoctorReport("/repo");
+    expect(report).toContain("Request timeout:");
+    expect(report).toContain("5 min (default; key httpIdleTimeoutMs)");
+
+    const agentDir = join(home, "agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ httpIdleTimeoutMs: 60_000 }));
+    const configured = buildDoctorReport("/repo");
+    expect(configured).toContain("1 min (settings.json; key httpIdleTimeoutMs)");
+
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ httpIdleTimeoutMs: 0 }));
+    expect(buildDoctorReport("/repo")).toContain("disabled (0 = no timeout; key httpIdleTimeoutMs)");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});

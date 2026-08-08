@@ -84,6 +84,23 @@ function recordInitFailure(state: LspManagerState, serverName: string, message: 
   state.runtime.initFailures.set(serverName, { at: Date.now(), message });
 }
 
+/**
+ * Compact console rendering for init failures. The raw server error (e.g.
+ * tsserver's "Could not find a valid TypeScript installation… Exiting.")
+ * is developer noise on the TUI startup screen for projects that simply
+ * lack a dependency — collapse the common case to an actionable hint.
+ * The full message still lands in /doctor via recordInitFailure.
+ */
+export function friendlyLspInitError(serverName: string, message: string): string {
+  if (/could not find a valid typescript installation/i.test(message)) {
+    return (
+      `${serverName} skipped: TypeScript not installed in this workspace ` +
+      `(install with "bun add -d typescript" to enable TS language features).`
+    );
+  }
+  return message;
+}
+
 /** Probe results cached per (command, cwd): warmup runs it on every session. */
 const unsupportedProbeCache = new Map<string, string | null>();
 
@@ -446,7 +463,7 @@ export async function ensureServer(
           throw err;
         }
         const msg = err instanceof LspError ? err.message : String(err);
-        console.error(`[lsp] Failed to start ${name}:`, msg);
+        console.error(`[lsp] Failed to start ${name}:`, friendlyLspInitError(name, msg));
         recordInitFailure(state, name, msg);
         state.servers.delete(name);
         // Reap the spawned process — otherwise a server that started its
@@ -550,7 +567,7 @@ export async function ensureNamedServer(
         throw err;
       }
       const msg = err instanceof LspError ? err.message : String(err);
-      console.error(`[lsp] Failed to start ${name}:`, msg);
+      console.error(`[lsp] Failed to start ${name}:`, friendlyLspInitError(name, msg));
       recordInitFailure(state, name, msg);
       state.servers.delete(name);
       // Reap the spawned process — mirrors ensureServer, otherwise a server

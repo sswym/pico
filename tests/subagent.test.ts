@@ -37,6 +37,7 @@ import {
   runJsonProcess,
   type SpawnedProcessLike,
 } from "../src/extensions/subagent/process.ts";
+import { missingPrintPrompt } from "../src/runtime/print-guard.ts";
 import {
   formatUsageStats,
   renderSubagentCall,
@@ -1922,4 +1923,18 @@ test("discoverAgents parses output schema and maxRequests from frontmatter", () 
     else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+test("buildAgentProcessArgs output passes the -p prompt guard (subagent spawn regression)", () => {
+  const agent = {
+    name: "worker",
+    description: "d",
+    systemPrompt: "",
+    model: "model-a",
+    source: "user" as const,
+    filePath: "/tmp/agents/worker.md",
+  };
+  const args = buildAgentProcessArgs(agent, "Task: do work", "/tmp/session.json", "/tmp/prompt.md", undefined);
+  // The child is spawned as `pico ...args`; the -p guard must accept it.
+  expect(missingPrintPrompt(args)).toBe(false);
 });
