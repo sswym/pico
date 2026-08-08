@@ -106,6 +106,19 @@ function isDenial(text: string): boolean {
   return DENIAL_PATTERNS.some((p) => p.test(text));
 }
 
+/**
+ * Internal error placeholders that must never be stored as durable facts:
+ * unresolved subagent chain output references (buildChainTask substitutes
+ * its error text into the task), plus unsubstituted chain template tokens.
+ * Subagent task prompts travel as user messages in child sessions — without
+ * this filter the error text froze into long-term memory as facts.
+ */
+const INTERNAL_PLACEHOLDER_PATTERNS = [
+  /\[CHAIN ERROR:/i,
+  /\{outputs\.\w+\}/,
+  /\{previous\}/,
+];
+
 /** Patterns that capture learnings from experience. */
 const INSIGHT_PATTERNS = [
   /\b(?:note|remember|keep in mind)\s+that\s*[:.]?\s/i,
@@ -217,6 +230,7 @@ export interface ExtractOptions {
 export function isDurableCandidate(text: string): boolean {
   const t = text.trim();
   if (t.length < 4) return false;
+  if (INTERNAL_PLACEHOLDER_PATTERNS.some((p) => p.test(t))) return false;
   if (INSTRUCTION_PATTERNS.some((p) => p.test(t))) return false;
   if (isHelpRequest(t)) return false;
   if (isDenial(t)) return false;

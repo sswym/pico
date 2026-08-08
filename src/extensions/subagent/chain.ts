@@ -3,6 +3,21 @@ export interface ChainTaskStep {
 	reads?: string[];
 }
 
+const CHAIN_ERROR_RE = /\[CHAIN ERROR: output "([^"]+)" not found/g;
+
+/** Output names referenced by `{outputs.<name>}` placeholders that no
+ *  completed step defined — buildChainTask substitutes its error text for
+ *  them. The orchestrator fails the chain before spawning when any exist,
+ *  so a broken reference can never silently reach a downstream agent. */
+export function findUnresolvedChainReferences(text: string): string[] {
+	const names = new Set<string>();
+	for (const match of text.matchAll(CHAIN_ERROR_RE)) {
+		const name = match[1];
+		if (name) names.add(name);
+	}
+	return [...names];
+}
+
 export type ReadFile = (filePath: string) => string;
 
 /** Cap for {previous} inlining (2.4.7): a MB-scale prior step would explode

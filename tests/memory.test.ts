@@ -211,6 +211,19 @@ test("autoExtractFromMessages picks up preferences and decisions", () => {
   expect(store.count()).toBe(before + 2);
 });
 
+test("internal chain placeholders are never stored as facts", () => {
+  const before = store.count();
+  const extracted = autoExtractFromMessages(store, [
+    { role: "user", content: 'Task: research the code.\n[CHAIN ERROR: output "0" not found — the step that defines it must run first, or the name is misspelled]' },
+    { role: "user", content: "Use {outputs.plan} and {previous} to continue." },
+  ]);
+  expect(extracted).toBe(0);
+  expect(store.count()).toBe(before);
+  expect(isDurableCandidate("plain statement")).toBe(true);
+  expect(isDurableCandidate('Task with [CHAIN ERROR: output "x" not found]')).toBe(false);
+  expect(isDurableCandidate("Use {outputs.x} to continue")).toBe(false);
+});
+
 // ---- New tests for enhanced features ------------------------------------
 
 test("schema migration adds new columns with defaults", () => {

@@ -16,6 +16,7 @@ import {
   formatReasoningCompatLines,
   formatMissingDefaultModelLines,
   detectConfigYmlModelConflicts,
+  detectConfigYmlSafetyConflicts,
   detectReasoningCompatIssues,
   detectMissingDefaultModel,
 } from "./config-scan.ts";
@@ -66,21 +67,40 @@ export function buildDoctorReport(cwd: string): string {
 
 /**
  * Startup advisory for the "dual config" trap. config.yml vs settings.json
- * model conflicts and a default model missing the reasoning-content compat
- * flag only show up in /doctor — by then the user has already hit a silent
- * surprise (wrong provider, 400s on multi-turn calls). Warn once per session
- * instead.
+ * model/safety conflicts and a default model missing the reasoning-content
+ * compat flag only show up in /doctor — by then the user has already hit a
+ * silent surprise (wrong provider, ignored safety switches, 400s on
+ * multi-turn calls). Warn once per session instead.
  */
+function notifyConfigWarning(ctx: ExtensionContext, message: string): void {
+  try {
+    if (ctx.hasUI) {
+      ctx.ui.notify(message, "warning");
+    } else {
+      process.stderr.write(`[pico] ${message}\n`);
+    }
+  } catch {}
+}
+
 function startupConfigAdvisories(ctx: ExtensionContext): void {
+  const safetyConflicts = detectConfigYmlSafetyConflicts();
+  if (safetyConflicts.length > 0) {
+    const detail = safetyConflicts
+      .map((c) => `${c.key}（config.yml=${c.configYmlValue}，实际生效=${c.effectiveValue}）`)
+      .join("、");
+    notifyConfigWarning(
+      ctx,
+      `配置冲突：config.yml 的 safety 开关被 pico 忽略（实际只认 settings.json 与 env）：${detail}。` +
+        "运行 /doctor 查看迁移指引。",
+    );
+  }
   const modelConflicts = detectConfigYmlModelConflicts();
   if (modelConflicts.length > 0) {
     const keys = modelConflicts.map((c) => c.key).join("、");
-    try {
-      ctx.ui.notify(
-        `配置冲突：config.yml 的 ${keys} 与 settings.json 不一致，实际生效 settings.json。运行 /doctor 查看详情。`,
-        "warning",
-      );
-    } catch {}
+    notifyConfigWarning(
+      ctx,
+      `配置冲突：config.yml 的 ${keys} 与 settings.json 不一致，实际生效 settings.json。运行 /doctor 查看详情。`,
+    );
     return;
   }
   const settings = readSettings();

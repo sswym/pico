@@ -6,7 +6,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { allowUnattendedProjectAgents } from "../policy.ts";
-import { buildChainTask } from "./chain.ts";
+import { buildChainTask, findUnresolvedChainReferences } from "./chain.ts";
 import { mapWithConcurrencyLimit } from "./concurrency.ts";
 import { loadSubagentConfig, positiveInt, resolveSpawnWhitelist } from "./config.ts";
 import { runWithFallbackModels } from "./fallback.ts";
@@ -468,6 +468,25 @@ export async function runSubagentRequest(
 				outputs,
 				(filePath) => fs.readFileSync(filePath, "utf-8"),
 			);
+			const unresolved = findUnresolvedChainReferences(taskWithContext);
+			if (unresolved.length > 0) {
+				const available = Object.keys(outputs);
+				const stepSummaries =
+					results.length > 0
+						? `\n\nSteps completed before the error:\n${results
+								.map((r, j) => `- step ${j + 1} [${r.agent}]: ${truncateOutput(getResultOutput(r), 300)}`)
+								.join("\n")}`
+						: "";
+				throw new Error(
+					`Chain reference error at step ${i + 1} (${step.agent}): the task references {outputs.${unresolved.join("}, {outputs.")}} ` +
+						`which no completed step defines` +
+						(available.length > 0
+							? ` (available outputs: ${available.join(", ")})`
+							: " (no earlier step declared an \"output\" label)") +
+						`. Fix the step task to use {outputs.<label>} matching an earlier step's "output" field, or inline the needed text directly, then retry.` +
+						stepSummaries,
+				);
+			}
 
 			const stepAgents = step.model
 				? agents.map((a) => (a.name === step.agent ? { ...a, model: step.model } : a))

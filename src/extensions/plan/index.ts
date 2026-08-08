@@ -258,7 +258,8 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         const text = approved
           ? `Plan approved. Plan mode disabled.\n\n${summary}`
           : !ctx.hasUI
-            ? `Plan NOT approved (non-interactive). Plan mode disabled and write tools re-enabled. ` +
+            ? `Plan NOT approved (non-interactive). Plan mode disabled and write tools re-enabled, but the submitted plan was NOT approved — do not execute it as-is. ` +
+              `Re-enter plan mode (EnterPlanMode) to revise, or explain in your reply why you proceed differently. ` +
               `For automatic approval in batch runs, set PICO_ALLOW_UNATTENDED_PLAN_APPROVAL=1.`
             : `Plan rejected. Stay in plan mode and refine ${path}.`;
 

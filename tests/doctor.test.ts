@@ -370,6 +370,7 @@ test("session_start notifies once on model config conflicts", async () => {
     };
     doctorExtension(fakePi as never);
     await handlers.get("session_start")!({}, {
+      hasUI: true,
       ui: {
         notify: (message: string, type?: string) => notifications.push({ message, type }),
       },
@@ -381,6 +382,38 @@ test("session_start notifies once on model config conflicts", async () => {
     // With a compat-flagged default model, no second advisory fires.
     expect(notifications[0]!.message).not.toContain("requiresReasoningContentOnAssistantMessages");
   } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session_start notifies on config.yml safety conflicts (ignored switches)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-doctor-safety-notify-"));
+  process.env.PICO_HOME = home;
+  const realWrite = process.stderr.write.bind(process.stderr);
+  try {
+    const agentDir = join(home, "agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "config.yml"), "safety:\n  allowUnattendedPlanApproval: true\n");
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProvider: "x", defaultModel: "y" }));
+
+    const stderr = new Map<boolean, string[]>();
+    process.stderr.write = ((chunk: unknown) => {
+      stderr.set(true, [...(stderr.get(true) ?? []), String(chunk)]);
+      return true;
+    }) as typeof process.stderr.write;
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+    const fakePi = {
+      on: (event: string, handler: (event: unknown, ctx: unknown) => void) => handlers.set(event, handler),
+      registerCommand: () => {},
+    };
+    doctorExtension(fakePi as never);
+    await handlers.get("session_start")!({}, { hasUI: false, ui: {} } as never);
+
+    const written = stderr.get(true)?.join("") ?? "";
+    expect(written).toContain("safety");
+    expect(written).toContain("allowUnattendedPlanApproval");
+  } finally {
+    process.stderr.write = realWrite;
     rmSync(home, { recursive: true, force: true });
   }
 });

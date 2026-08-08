@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describeSiblingResults, runSubagentRequest } from "../src/extensions/subagent/orchestrator.ts";
 import { discoverAgents } from "../src/extensions/subagent/agents.ts";
-import { buildChainTask } from "../src/extensions/subagent/chain.ts";
+import { buildChainTask, findUnresolvedChainReferences } from "../src/extensions/subagent/chain.ts";
 import { mapWithConcurrencyLimit } from "../src/extensions/subagent/concurrency.ts";
 import { isProviderFailure, runWithFallbackModels } from "../src/extensions/subagent/fallback.ts";
 import {
@@ -770,6 +770,19 @@ test("buildChainTask substitutes previous and named outputs", () => {
   );
 
   expect(task).toBe('Use prior result, saved plan, and [CHAIN ERROR: output "missing" not found — the step that defines it must run first, or the name is misspelled].');
+});
+
+test("findUnresolvedChainReferences reports names that no step defined", () => {
+  const resolved = buildChainTask({ task: "Use {previous} and {outputs.plan}." }, "prior", { plan: "p" }, () => "");
+  expect(findUnresolvedChainReferences(resolved)).toEqual([]);
+
+  const broken = buildChainTask(
+    { task: "Use {outputs.plan} and {outputs.0}, then {previous}" },
+    "prior",
+    {},
+    () => "",
+  );
+  expect(findUnresolvedChainReferences(broken).sort()).toEqual(["0", "plan"]);
 });
 
 test("buildChainTask caps {previous} to keep downstream context bounded", () => {
