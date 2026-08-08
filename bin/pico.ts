@@ -101,6 +101,28 @@ if ((rawArgs.includes("--help") || rawArgs.includes("-h")) && !rawArgs.includes(
   printBrandedHelpHeader();
 }
 
+// ── Missing prompt for -p/--print ───────────────────────────────────────
+// `pico -p` / `pico --print` without a following prompt used to exit 0
+// silently — scripts passing an empty argument got a no-op run with no
+// diagnostic. Refuse loudly with a non-zero exit code instead.
+function missingPrintPrompt(raw: string[]): boolean {
+  for (let i = 0; i < raw.length; i++) {
+    const arg = raw[i]!;
+    if (arg !== "-p" && arg !== "--print") continue;
+    const next = raw[i + 1];
+    if (next === undefined || next.startsWith("-") || next.trim().length === 0) return true;
+    i++; // skip the consumed prompt value
+  }
+  return false;
+}
+
+const isHelpOrVersion =
+  rawArgs.includes("--help") || rawArgs.includes("-h") || rawArgs.includes("--version") || rawArgs.includes("-v");
+if (!isHelpOrVersion && missingPrintPrompt(rawArgs)) {
+  console.error('pico: -p/--print 缺少提示词（例如 pico -p "你的需求"）。');
+  process.exit(2);
+}
+
 const args = buildRuntimeArgs({
   rawArgs,
   entryMetaUrl: import.meta.url,
@@ -122,8 +144,6 @@ process.title = "pico";
 // Clear the screen only for interactive TTY sessions. `--print`/`--mode
 // rpc|json` consumers read stdout programmatically, and the brand layer just
 // printed help above — a stray clear would destroy both.
-const isHelpOrVersion =
-  rawArgs.includes("--help") || rawArgs.includes("-h") || rawArgs.includes("--version") || rawArgs.includes("-v");
 const isNonTuiMode = rawArgs.some(isNonTuiArg);
 if (process.stdout.isTTY && !isHelpOrVersion && !isNonTuiMode) {
   console.clear();

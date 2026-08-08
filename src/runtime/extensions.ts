@@ -15,6 +15,7 @@ import { observabilityExtension } from "../extensions/observability.ts";
 import { planExtension } from "../extensions/plan/index.ts";
 import { retroThemeExtension } from "../extensions/retro-theme/index.ts";
 import { rtkExtension } from "../extensions/rtk/index.ts";
+import { signalsExtension } from "../extensions/signals.ts";
 import skillExtension from "../extensions/skill/index.ts";
 import subagentExtension from "../extensions/subagent/index.ts";
 import { todoExtension } from "../extensions/todo/index.ts";
@@ -148,6 +149,7 @@ export const defaultExtensions = [
     safety: { touchesFilesystem: true, spawnsProcess: true },
   },
   { name: "observability", factory: observabilityExtension, phase: "runtime" },
+  { name: "signals", factory: signalsExtension, phase: "runtime" },
   { name: "doctor", factory: doctorExtension, phase: "diagnostics" },
   { name: "help", factory: helpExtension, phase: "diagnostics" },
 ] satisfies readonly PicoExtension[];

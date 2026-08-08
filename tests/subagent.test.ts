@@ -432,7 +432,7 @@ test("process helpers build initial and unknown-agent results", () => {
   const unknown = createUnknownAgentResult("missing", "run", [agent], 3);
   expect(unknown.exitCode).toBe(1);
   expect(unknown.agentSource).toBe("unknown");
-  expect(unknown.stderr).toBe('Unknown agent: "missing". Available agents: "worker".');
+  expect(unknown.stderr).toBe('Unknown agent: "missing". Call subagent with list: true to enumerate available agents.');
   expect(unknown.step).toBe(3);
 });
 
@@ -1428,6 +1428,34 @@ test("runGateAfterSuccess returns last repair result when repair attempts are ex
   expect(final).toBe(repair);
   expect(final.stopReason).toBe("gate_failed");
   expect(final.errorMessage).toContain("after 1 self-repair attempt");
+});
+
+test("runSubagentRequest list:true enumerates agents without running anything", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "pico-list-agents-"));
+  try {
+    const result = await runSubagentRequest(
+      { list: true },
+      undefined,
+      undefined,
+      {
+        cwd,
+        hasUI: false,
+        ui: { confirm: async () => true },
+        sessionManager: undefined,
+      },
+    );
+    expect(result.content[0]?.type).toBe("text");
+    const first = result.content[0];
+    if (!first || first.type !== "text") throw new Error("expected text content");
+    const text = first.text;
+    expect(text).toContain("Available subagents");
+    // Built-in agents are discoverable without any config files.
+    expect(text).toContain("worker");
+    expect(text).toContain("scout");
+    expect(text).toContain("(user)");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("non-interactive runs refuse project-local agents without the opt-in env flag", async () => {

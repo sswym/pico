@@ -207,7 +207,7 @@ test("SubmitPlan fails outside plan mode", async () => {
   await expect(run).rejects.toThrow("not active");
 });
 
-test("ExitPlanMode in non-UI mode auto-releases plan mode instead of deadlocking", async () => {
+test("ExitPlanMode in non-UI mode stays locked when not approved", async () => {
   const pi = makeFakePi();
   planExtension(pi as any);
   const ctx = makeCtx({ sessionId: "exit-test", hasUI: false });
@@ -215,15 +215,16 @@ test("ExitPlanMode in non-UI mode auto-releases plan mode instead of deadlocking
   expect(__getPlanStateForTests().planActive).toBe(true);
 
   const exit = pi.tools.get("ExitPlanMode")!;
-  const result = await exit.execute("c2", {}, undefined, undefined, ctx);
+  // 8.x: a non-interactive denial keeps write tools BLOCKED — re-enabling
+  // them and relying on the model to self-restrain let unapproved plans
+  // execute (observed in batch runs). Failure is expressed by throwing.
+  await expect(exit.execute("c2", {}, undefined, undefined, ctx)).rejects.toThrow(/NOT approved \(non-interactive\)/);
+  await expect(exit.execute("c3", {}, undefined, undefined, ctx)).rejects.toThrow(/PICO_ALLOW_UNATTENDED_PLAN_APPROVAL/);
+  expect(__getPlanStateForTests().planActive).toBe(true);
 
-  expect(result.details.approved).toBe(false);
-  expect(result.details.plan).toMatch(/# Plan/);
-  // 2.5.6: non-interactive runs must not stay locked in read-only plan mode
-  // forever — the batch run gets "not approved" and writes are re-enabled.
-  expect(result.content[0].text).toContain("NOT approved (non-interactive)");
-  expect(result.content[0].text).toContain("PICO_ALLOW_UNATTENDED_PLAN_APPROVAL");
-  expect(__getPlanStateForTests().planActive).toBe(false);
+  // Writes stay blocked while plan mode is active.
+  const block = pi.handlers["tool_call"]![0]!({ toolName: "bash" }, {}) as { block: boolean };
+  expect(block.block).toBe(true);
 });
 
 test("ExitPlanMode in non-UI mode can be explicitly approved by env", async () => {

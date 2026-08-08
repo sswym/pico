@@ -15,7 +15,7 @@ import { MemoryStore } from "../src/extensions/memory/store.ts";
 import { BuiltinMemoryProvider } from "../src/extensions/memory/builtin-provider.ts";
 import { HolographicMemoryProvider } from "../src/extensions/memory/holographic-provider.ts";
 import { CuratedMemoryStore, resetCuratedMemoryDir } from "../src/extensions/memory/curated-store.ts";
-import { autoExtractFromMessages, classifyMessage, isDurableCandidate } from "../src/extensions/memory/extract.ts";
+import { autoExtractFromMessages, classifyMessage, isDurableCandidate, isTaskDirective } from "../src/extensions/memory/extract.ts";
 import { scanSecrets } from "../src/extensions/memory/secrets.ts";
 import { executeMemoryToolAction } from "../src/extensions/memory/tool.ts";
 import {
@@ -927,6 +927,25 @@ test("memory tool note actions route through curated memory store", () => {
   );
   expect(JSON.parse(remove.content[0]!.text).success).toBe(true);
   expect(curated.list("user").user).toHaveLength(0);
+
+  // 8.1: note_add must not freeze one-time task prompts / internal error
+  // text into curated notes (they are injected into every session prompt).
+  // Failure is thrown (upstream derives tool errors from exceptions).
+  expect(() =>
+    executeMemoryToolAction(
+      { action: "note_add", target: "user", content: "请为 demo-app 新增一个 todo stats 子命令，注意先看现有代码" },
+      { provider: fakeProvider, manager, currentCwd: null, curated },
+    ),
+  ).toThrow(/note_add 拒绝/);
+  expect(curated.list("user").user).not.toContain("请为 demo-app 新增一个 todo stats 子命令");
+
+  expect(() =>
+    executeMemoryToolAction(
+      { action: "note_add", target: "user", content: 'Task: 调研结论 [CHAIN ERROR: output "0" not found]' },
+      { provider: fakeProvider, manager, currentCwd: null, curated },
+    ),
+  ).toThrow(/note_add 拒绝/);
+  expect(curated.list("user").user).toHaveLength(0);
 });
 
 test("memory tool passes project scope to related and reason providers", () => {
@@ -1594,6 +1613,15 @@ test("2.6.3: classifyMessage keeps durable statements but rejects directives/que
   expect(isDurableCandidate("use memory tool action=add to store this")).toBe(false);
   expect(isDurableCandidate("把 foo.ts 改成 1")).toBe(false);
   expect(isDurableCandidate("I prefer bun over npm")).toBe(true);
+  // 8.1: "请为 <对象> 新增 …"（带句中"注意…"提醒的任务原文）不得入库
+  expect(classifyMessage("请为 demo-app 新增一个 todo stats 子命令：统计已完成与未完成数量；注意先看现有代码再动手")).toBeUndefined();
+  expect(isDurableCandidate("请为 demo-app 新增一个 todo stats 子命令：统计已完成与未完成数量；注意先看现有代码再动手")).toBe(false);
+  expect(isTaskDirective("请为 demo-app 新增一个 todo stats 子命令")).toBe(true);
+  // 句中"注意"不再触发 insight（句首/带冒号的提醒仍可入库）
+  expect(classifyMessage("麻烦注意下这里的缩进风格，我们统一用 2 空格")).toBeUndefined();
+  expect(classifyMessage("注意：提交前必须跑 bun run verify")).toBe("insight");
+  // 合法结论不受"请为"模式误伤
+  expect(classifyMessage("请记住：bun test 是唯一门禁")).toBe("insight");
 });
 
 test("2.6.3: directive mixed with a remember-tail is still a task, not a fact", () => {

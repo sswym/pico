@@ -40,7 +40,7 @@ flowchart TD
     U[用户终端] --> BIN[bin/pico.ts]
     BIN --> BOOT[bin/env-bootstrap.ts<br/>副作用: 目录/环境水合, 必须先于上游导入]
     BOOT --> MAIN[pi main<br/>agent loop / tool runtime / session / TUI]
-    MAIN --> REG[ExtensionRegistry<br/>22 个扩展工厂, 按序注册]
+    MAIN --> REG[ExtensionRegistry<br/>23 个扩展工厂, 按序注册]
     REG --> E1[prompt 层<br/>vibe / cache-optimizer / language]
     REG --> E2[ui 层<br/>retro-theme / input-history / logo]
     REG --> E3[tools 层<br/>todo / memory / subagent / skill / vision / ask / init / plan / web / lsp / rtk]
@@ -60,11 +60,11 @@ bin/pico.ts
   → main(args, { extensionFactories })
 ```
 
-**编译二进制模式**：`prepareEmbeddedRuntime()` 把嵌入资源（prompts/skills/themes/agents）解包到 `$TMPDIR/pico-<rand>`，注册 exit/SIGINT/SIGTERM 清理，并设置 `PI_PACKAGE_DIR` 指向解包目录。
+**编译二进制模式**：`prepareEmbeddedRuntime()` 把嵌入资源（prompts/skills/themes/agents）解包到 `$TMPDIR/pico-<rand>`，注册 `exit` 清理（信号处理由 `signals` 扩展负责，见 §1.4 之后），并设置 `PI_PACKAGE_DIR` 指向解包目录。
 
 ### 1.4 扩展注册顺序与依赖约束
 
-注册顺序：`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → skill → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → observability → doctor → help`（**22 个**）。
+注册顺序：`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → skill → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → observability → signals → doctor → help`（**23 个**）。
 
 `ExtensionRegistry.validate()` 强制：名称唯一、`dependsOn` 只能引用已注册扩展（目前仅 logo → retro-theme）。`before_agent_start` 等事件处理器按注册顺序链式合并返回值，因此 **cache-optimizer 先于 memory 改写 systemPrompt**，动态回忆块不会被静态化到缓存前缀。
 
@@ -516,6 +516,50 @@ flowchart TD
 
 **文档化（上游无 pico 层拦截点，P-4/P-5/P-8）**：见 §5.2 局限表 L20-L23。
 
+### 4.10 第八轮整改（2026-08-08，全链路实测报告修复，8 项全部附回归测试）
+
+依据本日全链路实测报告（headless + TUI 双通道，8 类问题），修复 2 高 / 4 中 / 2 低：
+
+**高：记忆库仍被任务原文污染（P-1）**
+- 实测：`"请为 demo-app 新增一个 todo stats 子命令：…；注意先看现有代码再动手"` 被自动提取为 insight 事实（fact #80）——根因是句中"注意…"命中 INSIGHT_PATTERNS 宽泛模式，且"请为…新增…"不在 INSTRUCTION_PATTERNS；同时模型会主动 `note_add` 把任务原文/`[CHAIN ERROR…]` 报错文本写进 MEMORY.md（注入所有会话提示词，实测导致跨项目回答错乱）。
+- 修复：`extract.ts` INSTRUCTION_PATTERNS 增加"请为/请给/请把 <对象> 新增/实现/修复…"祈使模式（宾语可紧贴动作词，中文无空格）；INSIGHT_PATTERNS 的"注意/记住/留意/切记"收紧为**句首或带冒号**（句中提醒不再把整条任务带成 insight）；新增导出 `isTaskDirective()`（任务指令 + 帮助请求 + 内部错误占位符），`tool.ts` 的 `note_add` 对命中内容**拒绝**并提示"完成任务后记录结论"。
+- 回归测试 6 条（memory.test.ts）；端到端验证：带"注意"句式的任务会话后 facts 0 新增、MEMORY.md 不变。
+
+**高：外部 SIGINT 直接杀死进程（P-2）**
+- 实测：pico 与上游均无 `process.on('SIGINT')` 常驻处理器，`kill -INT` 使整个进程 exit 1，无任务取消、无会话落盘（会话文件停在工具调用前）。
+- 修复：新增 `signals` 扩展（第 23 个）：运行中 SIGINT → `ctx.abort()`（等价 Esc 中断，5s 内第二次 SIGINT 强制优雅退出）；空闲 SIGINT / SIGTERM → `ctx.shutdown()`（上游优雅关闭路径，session flush + MCP 清理）。处理器进程级只注册一次，`/reload` 不叠加。
+- 回归测试：`tests/signals.test.ts` 6 条。端到端验证：SIGINT 取消 sleep 任务、TUI 存活、显示"收到 SIGINT：已取消当前任务"；空闲 SIGINT 优雅退出 exit 0。
+
+**中：非交互 plan 拒绝后写锁被强制重开（P-3）**
+- 实测：`--plan -p` 无 env 时 ExitPlanMode 返回"NOT approved"却主动 `planActive=false` 重开写锁，模型无视"do not execute it as-is"直接执行（实测 quadruple 被写入）。
+- 修复：`plan/index.ts` 非交互拒绝改为 **throw + 保持写锁**（工具失败语义，模型可结束回合或重跑设 `PICO_ALLOW_UNATTENDED_PLAN_APPROVAL=1`；重复调用无意义已写明）。删除死代码分支。
+- 回归测试：plan.test.ts 重写该用例（断言 throw + planActive 保持 + tool_call 仍阻断）。端到端验证：拒绝后 math.js 零改动。
+
+**中：config.yml safety 开关静默失效（P-4）**
+- 实测：config.yml 的 `allowUnattendedPlanApproval: true` 等被 pico 忽略（仅认 settings.json 与 env），每次启动告警但用户意图不落地。
+- 修复：`doctor` 启动检测到冲突时**一次性自动迁移**——仅迁移"未 pin"的键（settings 已设或 env 已设的键跳过），写入 settings.json safety（保留其余字段），告警改为"已迁移"提示；`SAFETY_KEYS` 补上遗漏的 `enableProjectLsp`。
+- 回归测试 2 条（doctor.test.ts）。端到端验证：隔离 home 首启迁移成功、二启零告警（幂等）；真实 home 生效（/doctor 显示 enabled (settings)）。
+
+**中：取消渲染为"任务失败"（P-5）**
+- 实测：Esc/SIGINT 取消后 TUI 显示 `Error: 任务失败：The operation was aborted.` + `!failed` 徽标。
+- 修复：`retro-theme` turn_end 跳过 `stopReason === "aborted"` 与 errorMessage 含 "aborted" 的取消路径——取消不再渲染为失败。
+- 回归测试 1 条。端到端验证：SIGINT 取消后无"任务失败"/`!failed`，仅上游 "Command aborted" + 中性提示。
+
+**中：子代理枚举只能靠故意触发错误（P-6）**
+- 实测：模型用伪造 agent 名 `__definitely_wrong_agent_name__` 触发 "Unknown agent" 错误来枚举 16 个 agent；工具描述甚至固化了"call with an obviously wrong agent name"这个 hack。
+- 修复：`subagent` 工具新增 `list: true` 参数（返回 name/source/description，不执行任何任务）；"Unknown agent" 错误改为提示 list 模式；工具描述同步更新。
+- 回归测试 1 条 + 1 处断言更新。端到端验证：`list: true` 26ms 返回 16 个 agent 完整清单。
+
+**低：LSP 启动失败仅一行 stderr（P-7）**
+- 修复：`manager.ts` 导出 `getInitFailures()`；`lsp` 扩展在 warmup 完成与 status action 时发布 `lsp_status` 事件；`doctor` 订阅缓存并在报告追加 `LSP:` 段（失败服务器 + 原因 + 时间）。
+- 回归测试 1 条。端到端验证：/doctor 显示 `typescript-language-server: init failed — Could not find a valid TypeScript installation…`。
+
+**低：`-p` 空提示词静默退出 0（P-8）**
+- 修复：`bin/pico.ts` 检测 `-p/--print` 后无值/空字符串/后跟标志 → stderr 提示 + exit 2（`--help/--version` 组合除外）。
+- 端到端验证：`-p ""` / `-p` / `-p --plan` 均 exit 2 并给出用法。
+
+**文档**：AGENTS.md 信号段落重写、扩展计数 22→23；README 计数同步；§5.2 L20 更新为部分缓解（上游 "Operation aborted" 渲染仍受上游约束）。
+
 ## 5. 当前版本现状与已知局限
 
 ### 5.1 现状
@@ -527,6 +571,7 @@ flowchart TD
 - 第五轮整改（2026-08-07，依据端到端测试报告）：记忆提取三方统一门控（`isDurableCandidate`/`classifyMessage`）、`INSTRUCTION_PATTERNS` 扩展覆盖一次性任务祈使句、session topic 只取持久陈述；提示词补充"新增=插入""破坏性操作验证闭环""接入链自查""探索有界""子代理结果引用不复述"；635 用例全绿；
 - 第六轮整改（2026-08-07，依据 TUI 全链路交互测试报告）：`/help` 离线命令（help 扩展）+ 未知斜杠命令 context 引导注入；package-shim 源码模式品牌覆盖（退出提示 `pico --session-dir`）；子代理运行中面板 running 态渲染（isPartial 判据）；todo 提示词补多文件场景；647 用例全绿；
 - 第七轮整改（2026-08-07，依据 TUI 全链路交互测试报告）：失败回合不再静默——`turn_end` 检测 `stopReason:"error"` 时 `ui.notify` 输出"任务失败：<友好原因>"并在 footer 置 `!failed` 标记（下次 turn 清除）；`friendlyErrorMessage` 将上游开发者格式错误（工具 schema 校验 JSON dump、provider HTTP 信封）压缩为可读文案（错误渲染与错误通知共用）；memory 工具结果渲染剥离 `tfidf_vector` 等内部字段（模型仍收完整 payload）；窄屏 footer 左侧按优先级丢弃尾段（git/context）而非硬截断；config.yml 与 settings.json 的 `defaultProvider`/`defaultModel` 冲突检测（`/doctor` 报告 + 启动一次 warning）；默认模型缺 `requiresReasoningContentOnAssistantMessages` 时启动警告一次；探查命令容错提示词；660 用例全绿；
+- 第八轮整改（2026-08-08，依据全链路实测报告）：记忆提取补"请为…新增…"指令模式 + "注意"模式收紧为句首/带冒号 + `note_add` 拒绝任务指令与错误占位符（事实与 MEMORY.md 双路径防污染）；新增 `signals` 扩展（第 23 个）：外部 SIGINT 运行中取消/空闲退出、SIGTERM 优雅关闭（`ctx.abort()`/`ctx.shutdown()`）；非交互 plan 拒绝保持写锁（throw 语义）；config.yml safety 键一次性自动迁移（幂等、跳过 env/settings 已 pin 键，SAFETY_KEYS 补 enableProjectLsp）；取消不再渲染"任务失败"；subagent 工具 `list: true` 发现机制（错误文案同步更新）；LSP 初始化失败进 /doctor（lsp_status 事件 + LSP 段）；`-p` 空提示词 exit 2；686 用例全绿；
 
 ### 5.2 已知局限（客观记录）
 
@@ -548,7 +593,7 @@ flowchart TD
 | L17 | **cache-optimizer 对 responses/codex 未知字段行为**（已改为不注入，记录原始风险） | 严格网关 400 风险已消除 | 已修 |
 | L18 | **agent_end 全量重抽取**可能重复写入 | 记忆重复 | 已缓解：`seenMessageTexts` 指纹去重 + UNIQUE(scope, content) 幂等；`onPreCompress` 复用同一抽取管线 |
 | L19 | **模型调用错误（如 403/模型不在白名单）以原始文本上屏**：上游 print-mode.js 直接 `console.error(errorMessage)` 后 exit 1，pico 扩展面（事件订阅）在其后触发、`main()` 不抛异常 | 错误信息无引导（用户看不到"模型不在白名单/认证失败"类提示） | 受上游约束；已在错误模型配置场景实测确认，pico 层无法拦截，建议仅作文档记录 |
-| L20 | **Esc 中断提示生硬**：中断 agent 后会话区仅显示 `Error: The operation was aborted.`（上游 TUI 对 stopReason=aborted 的渲染文案），无"已取消"友好说明 | 用户误以为系统报错 | 受上游约束；`/help` 已列出 Esc 中断/Ctrl+D 退出/Ctrl+C 清空键位 |
+| L20 | **Esc/SIGINT 中断的上游渲染文案生硬**：中断后会话区显示 `Error: The operation was aborted.`（上游 TUI 对 stopReason=aborted 的渲染文案），无"已取消"友好说明 | 用户误以为系统报错 | 部分缓解（第八轮）：pico 侧不再叠加"任务失败"、取消以中性 notify 提示，SIGINT 取消已接通 `ctx.abort()`；上游渲染文案本身受上游约束；`/help` 已列出键位 |
 | L21 | **Ctrl+C 绑定为"清空输入框"**（上游 keybindings：`app.clear`=ctrl+c、`app.interrupt`=escape、`app.exit`=ctrl+d），agent 运行中按 Ctrl+C 无任何反馈 | 终端直觉键失效，易误判卡死 | 受上游键位约束；键位表已在 `/help` 与 README 明示 |
 | L22 | **网络错误重试文案生硬**：`Error: Connection error.` + `Retrying (1/3) in 2s...` 中英混排、以 Error 样式混入会话区（重试机制本身可靠，实测 1 次即恢复） | 用户误判故障 | 受上游约束；建议上游本地化 |
 | L23 | **未知斜杠命令无本地拦截钩子**：上游 onSubmit 对未注册的 `/xxx` 无"未知命令"分支，直接作为普通消息发送 | 每条误输消耗一次 LLM 往返 | 已缓解：context 事件注入引导（一句话回答 + /help 指引、禁猜测、同命令只注入一次），pico 层无完全本地拦截能力 |
@@ -583,7 +628,7 @@ bun test tests/<feature>.test.ts  # 单文件测试
 
 编译模式注意：
 
-- 二进制内置 prompts/skills/themes/agents 资源，启动时解包到 `$TMPDIR/pico-<rand>`（exit/SIGINT/SIGTERM 清理）；`PI_PACKAGE_DIR` 指向解包目录；
+- 二进制内置 prompts/skills/themes/agents 资源，启动时解包到 `$TMPDIR/pico-<rand>`（`exit` 清理；SIGINT/SIGTERM 由 `signals` 扩展接管：运行中取消、空闲退出）；`PI_PACKAGE_DIR` 指向解包目录；
 - `build/package.json` 设 `piConfig.name="pico"`，上游据此读 `PICO_CODING_AGENT_DIR`；
 - 版本检查默认禁用（`PI_SKIP_VERSION_CHECK=1`），避免 wrapper 版本与上游版本误报更新。
 

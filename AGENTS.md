@@ -40,7 +40,7 @@ bun run update-deps               # 升级 @earendil-works/pi-* 到最新版，�
 
 ## 架构
 
-pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 22 个 ExtensionFactory 插件注入功能。
+pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 23 个 ExtensionFactory 插件注入功能。
 
 ### 入口链
 
@@ -52,14 +52,14 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 
 ### 扩展注册顺序
 
-唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（**22 个扩展**）。每个带 `phase: "prompt" | "ui" | "tools" | "runtime" | "diagnostics"`、可选 `dependsOn` / `safety` 元数据；注册时校验**重名**与 **dependsOn 必须先于依赖者注册**。所有工厂以 `hidden: true` 注册，避免上游启动面板出现 `<inline:N>` 占位噪行。
+唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（**23 个扩展**）。每个带 `phase: "prompt" | "ui" | "tools" | "runtime" | "diagnostics"`、可选 `dependsOn` / `safety` 元数据；注册时校验**重名**与 **dependsOn 必须先于依赖者注册**。所有工厂以 `hidden: true` 注册，避免上游启动面板出现 `<inline:N>` 占位噪行。
 
 `vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → skill → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → doctor`
 
 ### 双运行模式（源码 vs 编译二进制）
 
 - **源码模式**：`bun run start` 直跑 TS。**编译模式**：`scripts/build.ts` 生成的单文件二进制 `build/pico`，资源（prompts/skills/theme/export-html）先内嵌成 `src/generated/embedded-assets.ts`，运行时由 `embedded-runtime.ts` 检测 Bun 内部 URL 特征（`$bunfs`）解压到临时目录，加载完成后注册 exit 清理。
-- **刻意不注册 SIGINT/SIGTERM**：以免抢占宿主优雅关闭（session flush、MCP shutdown）。不要给嵌入式运行时加信号清理。
+- **信号处理**：`signals` 扩展注册 SIGINT/SIGTERM 处理器（进程级仅注册一次，`/reload` 不叠加）：运行中收到 SIGINT → `ctx.abort()` 取消当前任务（等价 Esc 中断，5s 内第二次 SIGINT 强制优雅退出）；空闲时 SIGINT / 任意 SIGTERM → `ctx.shutdown()` 走宿主优雅关闭（session flush、MCP shutdown）。不要给嵌入式运行时再加信号清理（embedded-runtime 只注册 `exit` 清理）。
 - 两级**递归护栏**（防 LLM 失控递归）：hook 进程与子代理子进程都在启动时拒绝运行（`PICO_HOOK_RECURSION_GUARD==1` / `PICO_SUBAGENT_DEPTH≥3`），这俩变量**不要手动设置**。
 
 ### 子代理分层（src/extensions/subagent/）
@@ -82,7 +82,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 ### 关键目录
 
 ```
-src/extensions/    — 22 个功能扩展（memory、subagent、lsp、plan 等）
+src/extensions/    — 23 个功能扩展（memory、subagent、lsp、plan、signals 等）
 src/runtime/       — 启动链：参数构建、嵌入资源解包、setup 命令、扩展注册表
 src/setup/         — `pico setup` 向导
 src/prompts/       — 系统提示词模板（.md）

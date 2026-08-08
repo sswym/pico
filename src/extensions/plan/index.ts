@@ -245,23 +245,23 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           planActive = false;
           publishPlanMode(false);
         } else if (!ctx.hasUI) {
-          // 2.5.6: non-interactive runs without PICO_ALLOW_UNATTENDED_PLAN_APPROVAL
-          // used to deadlock — ExitPlanMode always answered "needs interactive
-          // approval" and the model was stuck in read-only plan mode forever,
-          // only killable by killing the process. Auto-release the lock:
-          // the batch run gets an explicit "not approved" and writes are
-          // re-enabled; the model may re-enter plan mode if it needs to.
-          planActive = false;
-          publishPlanMode(false);
+          // Non-interactive denial must NOT re-enable write tools: the plan
+          // approval gate is the whole point of plan mode, and a model that
+          // is told "not approved but writes are unlocked" executes anyway
+          // (observed in batch runs). Staying locked is not a deadlock —
+          // the model can always end the turn with a text reply, or the
+          // operator can re-run with PICO_ALLOW_UNATTENDED_PLAN_APPROVAL=1.
+          throw new Error(
+            `Plan NOT approved (non-interactive). Plan mode stays active and write tools remain blocked. ` +
+              `Set PICO_ALLOW_UNATTENDED_PLAN_APPROVAL=1 to auto-approve in batch runs, or end the turn to stop. ` +
+              `Repeated ExitPlanMode calls without approval change nothing.`,
+          );
         }
 
+        // Non-UI denial already threw above, so only two branches remain.
         const text = approved
           ? `Plan approved. Plan mode disabled.\n\n${summary}`
-          : !ctx.hasUI
-            ? `Plan NOT approved (non-interactive). Plan mode disabled and write tools re-enabled, but the submitted plan was NOT approved — do not execute it as-is. ` +
-              `Re-enter plan mode (EnterPlanMode) to revise, or explain in your reply why you proceed differently. ` +
-              `For automatic approval in batch runs, set PICO_ALLOW_UNATTENDED_PLAN_APPROVAL=1.`
-            : `Plan rejected. Stay in plan mode and refine ${path}.`;
+          : `Plan rejected. Stay in plan mode and refine ${path}.`;
 
         return {
           content: [{ type: "text" as const, text }],

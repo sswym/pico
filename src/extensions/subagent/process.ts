@@ -127,14 +127,13 @@ export function createUnknownAgentResult(
 	availableAgents: AgentConfig[],
 	step: number | undefined,
 ): SingleResult {
-	const available = availableAgents.map((a) => `"${a.name}"`).join(", ") || "none";
 	return {
 		agent: agentName,
 		agentSource: "unknown",
 		task,
 		exitCode: 1,
 		messages: [],
-		stderr: `Unknown agent: "${agentName}". Available agents: ${available}.`,
+		stderr: `Unknown agent: "${agentName}". Call subagent with list: true to enumerate available agents.`,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
 		step,
 	};

@@ -124,8 +124,10 @@ const INSIGHT_PATTERNS = [
   /\b(?:note|remember|keep in mind)\s+that\s*[:.]?\s/i,
   /\b(?:insight|lesson|takeaway)\s*:/i,
   /\b(?:this\s+)?(?:always|never)\s+(?:fails|happens|works)\s+(?:because|when|if)\b/i,
-  // 中文：经验/教训
-  /(?:记住|留意|注意|切记)\s*[:：]?\s*.+/,
+  // 中文：经验/教训。提醒句只在句首或带冒号时算 insight——句中"注意/留意"
+  // 往往是一次性任务提醒（"注意先看现有代码"），把整条任务原文带进记忆库。
+  /^\s*(?:记住|留意|注意|切记)\s*[:：]?\s*.+/,
+  /(?:记住|留意|注意|切记)\s*[:：]\s*.+/,
   /(?:经验|教训|心得)\s*[:：]/,
   /(?:总是|从来|一般)\s*(?:失败|出错|有效|好用)\s*(?:因为|当|如果)/,
 ];
@@ -195,6 +197,10 @@ const INSTRUCTION_PATTERNS = [
   /(?:优化|改进|重构)(?:一下|下|了)?\s*\S+/,
   // "新增/修复 <X> …然后(运行|验证|提交|告诉我)"
   /(?:新增|创建|添加|补上|删掉|删除|移除|修复|实现|完成)(?:一下|下|了)?\s+\S+.{0,80}?(?:然后|并|再|同时|，|。)?\s*(?:运行|测试|验证|提交|告诉我|输出)/,
+  // "请为/请给/请把 <对象> 新增/实现/修复 <X> …"——"请为 demo-app 新增一个
+  // todo stats 子命令：…" 这类任务原文曾因句中"注意…"被 insight 模式误收。
+  // 宾语可紧贴动作词（中文无空格："新增一个"）。
+  /^\s*请\s*(?:为|给|把)?\s*\S+\s*(?:新增|添加|创建|实现|修复|删除|移除|修改|更新|优化|重构|生成|补充|补上|做成|完成|写)\s*\S+/,
 ];
 
 // ---- Message helpers -----------------------------------------------------
@@ -236,6 +242,19 @@ export function isDurableCandidate(text: string): boolean {
   if (isDenial(t)) return false;
   if (isQuestion(t)) return false;
   return true;
+}
+
+/**
+ * True when the text is a one-time task directive or an internal error
+ * placeholder — never a durable conclusion. Shared by the auto-extraction
+ * gate (via isDurableCandidate) and the memory tool's note_add, which must
+ * not freeze raw task prompts or error text into curated MEMORY.md notes.
+ */
+export function isTaskDirective(text: string): boolean {
+  const t = text.trim();
+  if (INTERNAL_PLACEHOLDER_PATTERNS.some((p) => p.test(t))) return true;
+  if (INSTRUCTION_PATTERNS.some((p) => p.test(t))) return true;
+  return isHelpRequest(t);
 }
 
 /**

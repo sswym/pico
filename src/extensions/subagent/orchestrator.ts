@@ -71,6 +71,7 @@ export interface SubagentChainItem extends SubagentTaskItem {
 }
 
 export interface SubagentRequest {
+	list?: boolean;
 	agent?: string;
 	task?: string;
 	tasks?: SubagentTaskItem[];
@@ -344,6 +345,19 @@ export async function runSubagentRequest(
 	const discovery = discoverAgents(ctx.cwd, agentScope);
 	const agents = discovery.agents;
 	const confirmProjectAgents = params.confirmProjectAgents ?? true;
+
+	// Discovery mode: return the authoritative agent list without running
+	// anything. Models previously had to trigger an "Unknown agent" error to
+	// enumerate agents — the error path was the only list endpoint.
+	if (params.list === true) {
+		const lines = agents.length > 0
+			? agents.map((a) => `- ${a.name} (${a.source}): ${(a.description ?? "").split("\n")[0] || "no description"}`)
+			: ["(no agents available)"];
+		return {
+			content: [{ type: "text", text: `Available subagents (scope: ${agentScope}):\n${lines.join("\n")}` }],
+			details: { mode: "single", agentScope, projectAgentsDir: discovery.projectAgentsDir, results: [] },
+		};
+	}
 
 	// Instance-level tuning from ~/.pico/subagent.json (2.7.x): parallel caps,
 	// spawn allowlist, and session persistence can all be configured there.

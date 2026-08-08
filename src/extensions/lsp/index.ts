@@ -27,6 +27,7 @@ import {
   formatHoverResult,
   formatLocations,
   formatDiagnosticsForFile,
+  getInitFailures,
 } from "./manager.ts";
 import type { LspManagerState } from "./manager.ts";
 import { resolveFormattingOptions } from "./format-options.ts";
@@ -34,6 +35,7 @@ import { getInstallHint, installServer, formatInstallHint } from "./install.ts";
 import { applyTextEditsToString } from "./edits.ts";
 import { DiagnosticsLedger } from "./diagnostics-ledger.ts";
 import { allowLspFormatOnWrite, allowProjectLsp } from "../policy.ts";
+import { publishExtensionEvent } from "../events.ts";
 import { sanitizeTerminalText } from "../ui/rendering.ts";
 import {
   normalizeLocations,
@@ -248,6 +250,11 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     return await withMissingServerInstall(ctx, () => ensureServer(state, workspaceRoot), opts);
   }
 
+  /** Push the current init-failure snapshot so /doctor can surface it. */
+  function publishLspStatus(): void {
+    publishExtensionEvent("lsp_status", { failures: getInitFailures(state) });
+  }
+
   async function syncDocumentWithInstall(
     workspaceRoot: string,
     filePath: string,
@@ -288,6 +295,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
         // ── Actions that don't need a running server ────────────────────
         if (action === "status") {
+          publishLspStatus();
           return executeStatusAction(state, ctx.cwd);
         }
 
@@ -650,6 +658,10 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`[lsp] startup warmup failed: ${msg}`);
       }
+    } finally {
+      // Surfacing failures (e.g. "typescript-language-server init failed")
+      // on the /doctor panel — the stderr line alone was easy to miss.
+      publishLspStatus();
     }
   });
 

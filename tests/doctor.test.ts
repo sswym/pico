@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildDoctorReport, doctorExtension } from "../src/extensions/doctor/index.ts";
+import { buildDoctorReport, doctorExtension, migrateConfigYmlSafetyKeys } from "../src/extensions/doctor/index.ts";
+import { publishExtensionEvent } from "../src/extensions/events.ts";
 import { detectMissingDefaultModel } from "../src/extensions/doctor/config-scan.ts";
 import {
   allowProjectHooks,
@@ -175,6 +176,91 @@ test("detectConfigYmlSafetyConflicts flags keys that differ from settings.json",
     const lines = formatConfigYmlConflictLines();
     expect(lines.join("\n")).toContain("config.yml safety keys are IGNORED by pico");
     expect(lines.join("\n")).toContain('Move it to settings.json "safety"');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("migrateConfigYmlSafetyKeys copies inert config.yml values into settings.json once", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-doctor-migrate-"));
+  process.env.PICO_HOME = home;
+  try {
+    const agentDir = join(home, "agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "claude-code-dark" }));
+    writeFileSync(join(agentDir, "config.yml"), REAL_STYLE_CONFIG_YML);
+
+    const migrated = migrateConfigYmlSafetyKeys();
+    expect(migrated.sort()).toEqual(["allowLspFormatOnWrite", "allowUnattendedPlanApproval", "enableProjectMcp"]);
+
+    const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+    expect(settings.safety).toEqual({
+      allowUnattendedPlanApproval: true,
+      allowLspFormatOnWrite: true,
+      enableProjectMcp: true,
+    });
+    expect(settings.theme).toBe("claude-code-dark"); // unrelated keys preserved
+
+    // Idempotent: second run migrates nothing and the conflict is gone.
+    expect(migrateConfigYmlSafetyKeys()).toEqual([]);
+    expect(detectConfigYmlSafetyConflicts()).toEqual([]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("migrateConfigYmlSafetyKeys skips env-pinned and settings-pinned keys", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-doctor-migrate2-"));
+  process.env.PICO_HOME = home;
+  const savedPlan = process.env.PICO_ALLOW_UNATTENDED_PLAN_APPROVAL;
+  try {
+    const agentDir = join(home, "agent");
+    mkdirSync(agentDir, { recursive: true });
+    // settings.json explicitly pins allowLspFormatOnWrite=false; env pins
+    // allowUnattendedPlanApproval — neither should be overwritten.
+    process.env.PICO_ALLOW_UNATTENDED_PLAN_APPROVAL = "1";
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ safety: { allowLspFormatOnWrite: false } }),
+    );
+    writeFileSync(join(agentDir, "config.yml"), REAL_STYLE_CONFIG_YML);
+
+    const migrated = migrateConfigYmlSafetyKeys();
+    // enableProjectMcp (true in config.yml) is the only unpinned key.
+    expect(migrated).toEqual(["enableProjectMcp"]);
+
+    const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+    expect(settings.safety.allowLspFormatOnWrite).toBe(false); // user pin kept
+    expect(settings.safety.allowUnattendedPlanApproval).toBeUndefined(); // env-pinned, not persisted
+    expect(settings.safety.enableProjectMcp).toBe(true);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    if (savedPlan === undefined) delete process.env.PICO_ALLOW_UNATTENDED_PLAN_APPROVAL;
+    else process.env.PICO_ALLOW_UNATTENDED_PLAN_APPROVAL = savedPlan;
+  }
+});
+
+test("buildDoctorReport surfaces LSP init failures after lsp_status event", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-doctor-lsp-"));
+  process.env.PICO_HOME = home;
+  try {
+    const pi = {
+      on: () => {},
+      registerCommand: () => {},
+    } as never;
+    doctorExtension(pi);
+    publishExtensionEvent("lsp_status", {
+      failures: [{ server: "typescript-language-server", at: Date.now(), message: "Could not find a valid TypeScript installation" }],
+    });
+
+    const report = buildDoctorReport(home);
+    expect(report).toContain("LSP:");
+    expect(report).toContain("typescript-language-server: init failed");
+    expect(report).toContain("Could not find a valid TypeScript installation");
+
+    // A clean snapshot clears the section back to the neutral line.
+    publishExtensionEvent("lsp_status", { failures: [] });
+    expect(buildDoctorReport(home)).toContain("no init failures recorded");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

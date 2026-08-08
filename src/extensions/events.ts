@@ -8,9 +8,14 @@ export interface PlanModeChangedEvent {
   active: boolean;
 }
 
+export interface LspStatusEvent {
+  failures: Array<{ server: string; at: number; message: string }>;
+}
+
 export interface ExtensionEvents {
   subagent_completed: SubagentCompletedEvent;
   plan_mode_changed: PlanModeChangedEvent;
+  lsp_status: LspStatusEvent;
 }
 
 type Handler<K extends keyof ExtensionEvents> = (event: ExtensionEvents[K]) => void;

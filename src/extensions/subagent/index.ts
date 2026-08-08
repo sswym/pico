@@ -38,6 +38,9 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 });
 
 const SubagentParams = Type.Object({
+	list: Type.Optional(
+		Type.Boolean({ description: "If true, return the list of available agents (name, source, description) and run nothing." }),
+	),
 	agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (for single mode)" })),
 	task: Type.Optional(Type.String({ description: "Task to delegate (for single mode)" })),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for parallel execution" })),
@@ -91,12 +94,12 @@ export default function (pi: ExtensionAPI) {
 			"- Trivial edits, single-line fixes, or simple Q&A",
 			"",
 			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} and {outputs.name} placeholders).",
-			"16 built-in agents (scout, planner, worker, reviewer, oracle, researcher, verifier, debugger, architect, consensus, consultant, director, editor, quick, product, executor) — run /help for the full list.",
+			"To enumerate available agents (built-in + user/project overrides), call this tool with list: true — it returns names, sources and descriptions without running anything.",
 			"Agent frontmatter supports: model, tools, thinking, maxExecutionTimeMs (default 30 min if unset), maxTokens, fallbackModels, systemPromptMode, inheritProjectContext, inheritSkills, acceptance.",
 			"User-level overrides may live in ~/.pico/agent/agents/<name>.md (same name = replaces built-in) or ~/.pico/subagent.json (partial field overrides).",
 			'Project-local agents in .pico/agents are opt-in: set agentScope: "both" (or "project").',
 			"Project agents are repo-controlled; interactive sessions confirm before running them, and non-interactive runs refuse them unless PICO_ALLOW_UNATTENDED_PROJECT_AGENTS=1 is set.",
-			"Do NOT shell out to `ls` to discover agents - call this tool with an obviously wrong agent name to get the authoritative list, or use /help.",
+			"Do NOT shell out to `ls` to discover agents - use the list: true mode of this tool instead.",
 		].join(" "),
 		parameters: SubagentParams,
 

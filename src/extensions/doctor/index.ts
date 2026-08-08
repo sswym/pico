@@ -7,9 +7,10 @@ import {
   capabilitySummary,
   safetyStatuses,
 } from "../policy.ts";
-import { readSettings } from "../settings.ts";
+import { readSettings, readSettingsObject, writeSettings, isSettingsDamaged } from "../settings.ts";
 import { validateCurrentSettings } from "../settings-schema.ts";
 import { picoSettingsPath } from "../paths.ts";
+import { subscribeSessionExtensionEvent, type LspStatusEvent } from "../events.ts";
 import {
   formatConfigYmlConflictLines,
   formatConfigYmlModelConflictLines,
@@ -19,11 +20,15 @@ import {
   detectConfigYmlSafetyConflicts,
   detectReasoningCompatIssues,
   detectMissingDefaultModel,
+  type SafetyKey,
 } from "./config-scan.ts";
 
 function enabled(value: boolean): string {
   return value ? "enabled" : "disabled";
 }
+
+/** Latest lsp_status snapshot (published by the lsp extension). */
+let lspFailures: LspStatusEvent["failures"] = [];
 
 function modelSummary(): string[] {
   const settings = readSettings();
@@ -40,6 +45,11 @@ export function buildDoctorReport(cwd: string): string {
   const settingsValidationLines = settingsValidation.valid
     ? ["  ok"]
     : settingsValidation.issues.map((issue) => `  ${issue.key}: ${issue.message}`);
+  const lspLines = lspFailures.length > 0
+    ? lspFailures.map(
+        (f) => `  ${f.server}: init failed — ${f.message} (${new Date(f.at).toISOString()})`,
+      )
+    : ["  no init failures recorded"];
   return [
     "pico doctor",
     "",
@@ -62,6 +72,9 @@ export function buildDoctorReport(cwd: string): string {
     ...formatConfigYmlModelConflictLines(),
     ...formatReasoningCompatLines(),
     ...formatMissingDefaultModelLines(),
+    "",
+    "LSP:",
+    ...lspLines,
   ].join("\n");
 }
 
@@ -82,10 +95,58 @@ function notifyConfigWarning(ctx: ExtensionContext, message: string): void {
   } catch {}
 }
 
+/**
+ * One-shot migration: safety keys the user wrote into the legacy config.yml
+ * (which pico ignores) are copied into settings.json's `safety` object when
+ * the user has not already pinned that key there or via env. Natural
+ * idempotency: after the write, the key's source becomes "settings" and the
+ * conflict disappears. Damaged settings.json is never touched.
+ */
+export function migrateConfigYmlSafetyKeys(): SafetyKey[] {
+  if (isSettingsDamaged()) return [];
+  const conflicts = detectConfigYmlSafetyConflicts();
+  if (conflicts.length === 0) return [];
+
+  const sources: Record<string, "env" | "settings" | "default"> = {};
+  for (const status of safetyStatuses()) sources[status.settingsKey] = status.source;
+  const settings = readSettings();
+  const safety = { ...readSettingsObject("safety") };
+  const migrated: SafetyKey[] = [];
+
+  for (const conflict of conflicts) {
+    // env/settings already control this key — writing config.yml's value
+    // would silently override an explicit user choice (env wins at runtime,
+    // but the persisted value would still surprise later).
+    if (sources[conflict.key] !== "default") continue;
+    safety[conflict.key] = conflict.configYmlValue;
+    migrated.push(conflict.key);
+  }
+
+  if (migrated.length === 0) return [];
+  settings.safety = safety;
+  try {
+    writeSettings(settings);
+  } catch {
+    return []; // read-only settings file — keep the advisory path
+  }
+  return migrated;
+}
+
 function startupConfigAdvisories(ctx: ExtensionContext): void {
   const safetyConflicts = detectConfigYmlSafetyConflicts();
   if (safetyConflicts.length > 0) {
-    const detail = safetyConflicts
+    const migrated = migrateConfigYmlSafetyKeys();
+    if (migrated.length > 0) {
+      notifyConfigWarning(
+        ctx,
+        `检测到 config.yml 的 safety 开关被 pico 忽略，已将 ${migrated.join("、")} 自动迁移到 settings.json 的 safety 字段（config.yml 原值保留，后续以 settings.json 为准）。运行 /doctor 查看详情。`,
+      );
+      // Remaining conflicts (env-pinned or settings-pinned keys) still need
+      // the advisory below — re-scan to exclude the migrated ones.
+      const remaining = detectConfigYmlSafetyConflicts();
+      if (remaining.length === 0) return;
+    }
+    const detail = detectConfigYmlSafetyConflicts()
       .map((c) => `${c.key}（config.yml=${c.configYmlValue}，实际生效=${c.effectiveValue}）`)
       .join("、");
     notifyConfigWarning(
@@ -141,6 +202,14 @@ function startupConfigAdvisories(ctx: ExtensionContext): void {
 export const doctorExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.on("session_start", (_event, ctx) => {
     startupConfigAdvisories(ctx);
+  });
+
+  // Cache the LSP init-failure snapshot published by the lsp extension so
+  // /doctor can show why a language server did not come up (the startup
+  // stderr line is easy to miss). Session-scoped: a /reload re-runs the
+  // factory and must not stack duplicate subscriptions.
+  subscribeSessionExtensionEvent("lsp_status", (event) => {
+    lspFailures = event.failures;
   });
 
   pi.registerCommand("doctor", {

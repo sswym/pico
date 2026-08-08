@@ -2,7 +2,7 @@
 
 **带长期记忆、子代理委派、任务追踪、规划模式、网页搜索/抓取、MCP 服务器集成与 LSP 代码智能的 Vibe 编码代理。**
 
-基于 `@earendil-works/pi-coding-agent` 的薄封装：上游提供 agent loop、工具运行时与会话管理，pico 通过 22 个扩展注入产品化能力。技术栈：Bun + TypeScript，零外部运行时依赖。
+基于 `@earendil-works/pi-coding-agent` 的薄封装：上游提供 agent loop、工具运行时与会话管理，pico 通过 23 个扩展注入产品化能力。技术栈：Bun + TypeScript，零外部运行时依赖。
 
 ## 快速开始
 

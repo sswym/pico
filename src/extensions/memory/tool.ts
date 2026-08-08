@@ -3,6 +3,7 @@ import type { ProviderManager } from "./provider-manager.ts";
 import type { CuratedMemoryStore, CuratedTarget } from "./curated-store.ts";
 import { VALID_CATEGORIES, type Category, type Scope } from "./schema.ts";
 import { projectScopeKey } from "./query-scope.ts";
+import { isTaskDirective } from "./extract.ts";
 import { toolError, type ErrorCode } from "../errors.ts";
 
 export interface MemoryToolParams {
@@ -273,6 +274,16 @@ export function executeMemoryToolAction(
       case "note_add": {
         if (!curated) return errorResult("curated memory is not available");
         if (!params.content) return errorResult("'content' is required for note_add");
+        // Curated notes are injected into EVERY next-session prompt snapshot.
+        // One-time task prompts and internal error placeholders ("[CHAIN ERROR
+        // …]", "{previous}") are not durable knowledge — a model that records
+        // the task it was asked to do must be told to store the conclusion
+        // instead, otherwise cross-project task debris crowds out real notes.
+        if (isTaskDirective(params.content)) {
+          return errorResult(
+            "note_add 拒绝：内容看起来是一次性任务指令或内部错误文本，不是持久结论。请完成任务后记录结论（经验/约定/决策），而不是任务原文。",
+          );
+        }
         const target = parseCuratedTarget(params.target);
         return jsonResult(curated.add(target, params.content));
       }

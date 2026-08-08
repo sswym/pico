@@ -23,6 +23,7 @@ export const SAFETY_KEYS = [
   "allowLspFormatOnWrite",
   "enableProjectHooks",
   "enableProjectMcp",
+  "enableProjectLsp",
 ] as const;
 
 export type SafetyKey = (typeof SAFETY_KEYS)[number];

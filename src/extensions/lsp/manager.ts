@@ -594,6 +594,21 @@ export function __recordInitFailureForTests(state: LspManagerState, serverName: 
   recordInitFailure(state, serverName, message);
 }
 
+export interface LspInitFailure {
+  server: string;
+  at: number;
+  message: string;
+}
+
+/** Snapshot of every server whose initialization failed this session. */
+export function getInitFailures(state: LspManagerState): LspInitFailure[] {
+  const failures: LspInitFailure[] = [];
+  for (const [server, record] of state.runtime.initFailures) {
+    failures.push({ server, at: record.at, message: record.message });
+  }
+  return failures;
+}
+
 export function __checkInitBackoffForTests(state: LspManagerState, serverName: string): void {
   checkInitBackoff(state, serverName);
 }
