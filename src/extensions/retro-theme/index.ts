@@ -66,7 +66,13 @@ export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // invisible. Surface a notification + a footer marker until the next turn.
   pi.on("turn_end", (event: TurnEndEvent, ctx) => {
     const message = event.message as { stopReason?: string; errorMessage?: string };
+    // A user-initiated cancel (Esc) ends the turn with stopReason "aborted"
+    // (and some providers surface the same cancel as an error result whose
+    // message is "Operation aborted") — that is not a task failure and must
+    // not render as one.
+    if (message?.stopReason === "aborted") return;
     if (message?.stopReason !== "error" || !message.errorMessage) return;
+    if (/aborted/i.test(message.errorMessage)) return;
     try {
       ctx.ui.notify(`任务失败：${friendlyErrorMessage(message.errorMessage)}`, "error");
       ctx.ui.setStatus("pico.lastError", "!failed");

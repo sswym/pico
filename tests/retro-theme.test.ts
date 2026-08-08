@@ -474,3 +474,40 @@ test("retroThemeExtension ignores non-error turns", async () => {
   );
   expect(notifications).toHaveLength(0);
 });
+
+test("retroThemeExtension does not render user-initiated cancels as failures", async () => {
+  interface FakeUi {
+    notify: (message: string, type?: string) => void;
+    setStatus: (key: string, value: unknown) => void;
+  }
+  type TurnEndHandler = (event: unknown, ctx: { ui: FakeUi }) => void;
+  const handlers = new Map<string, TurnEndHandler>();
+  const fakePi = {
+    on: (event: string, h: TurnEndHandler) => handlers.set(event, h),
+  };
+  const notifications: Array<{ message: string; type?: string }> = [];
+  const statuses: Array<[string, unknown]> = [];
+  const fakeUi: FakeUi = {
+    notify: (message: string, type?: string) => notifications.push({ message, type }),
+    setStatus: (key: string, value: unknown) => statuses.push([key, value]),
+  };
+  retroThemeExtension(fakePi as never);
+
+  // 8.x: stopReason "aborted" (Esc interrupt path)
+  await handlers.get("turn_end")!(
+    { type: "turn_end", turnIndex: 0, message: { role: "assistant", stopReason: "aborted" }, toolResults: [] },
+    { ui: fakeUi },
+  );
+  // Provider-level abort surfaced as an error result
+  await handlers.get("turn_end")!(
+    {
+      type: "turn_end",
+      turnIndex: 1,
+      message: { role: "assistant", stopReason: "error", errorMessage: "The operation was aborted." },
+      toolResults: [],
+    },
+    { ui: fakeUi },
+  );
+  expect(notifications).toHaveLength(0);
+  expect(statuses).toHaveLength(0);
+});
