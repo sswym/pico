@@ -8,7 +8,8 @@
  * All tests redirect PICO_HOME to a temp dir so the real cache is untouched.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, unlinkSync, statSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -137,6 +138,27 @@ describe("undo-redo sandbox", () => {
         // socket already removed by close
       }
     }
+  });
+
+  test("sandbox gets a .git gitdir redirect so git works inside it", async () => {
+    // Bash runs inside the sandbox, whose copy omits `.git/` — without a
+    // gitdir redirect, every git command would report "not a git repository".
+    execSync("git init -q", { cwd: projDir });
+    const sandboxRoot = join(testHome, "sandbox");
+    const state = new SandboxState(projDir, sandboxRoot, () => {});
+    await state.initialize();
+
+    expect(statSync(join(sandboxRoot, ".git")).isFile()).toBe(true);
+    expect(readFileSync(join(sandboxRoot, ".git"), "utf8")).toBe(
+      `gitdir: ${join(projDir, ".git")}\n`,
+    );
+
+    // git resolves the real repo from inside the sandbox.
+    const gitDir = execSync("git rev-parse --absolute-git-dir", {
+      cwd: sandboxRoot,
+      encoding: "utf8",
+    }).trim();
+    expect(gitDir).toBe(join(projDir, ".git"));
   });
 });
 

@@ -46,3 +46,11 @@ src/generated/
 
 # Codegraph index
 .codegraph/
+
+# local sync scripts
+sync-to-master.sh
+
+# test run reports (codegraph full-test deliverables)
+FEATURE_MAP.md
+TEST-REPORT.md
+COVERAGE-CHECK.md

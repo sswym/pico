@@ -95,6 +95,38 @@ async function writeSandboxMeta(
 	);
 }
 
+/**
+ * Point the sandbox at the real .git via a gitdir redirect file so git
+ * commands (which run inside the sandbox, see tools.ts spawnHook) work there.
+ * The real `.git` dir is intentionally not copied into the sandbox (ignored),
+ * so without this file git would report "not a git repository" everywhere.
+ */
+async function createSandboxGitRedirect(
+	realRoot: string,
+	sandboxRoot: string,
+): Promise<void> {
+	let realGitDir = path.join(realRoot, ".git");
+	try {
+		const gitStat = await stat(realGitDir);
+		if (!gitStat.isDirectory()) {
+			// .git may itself be a redirect file (worktree/submodule layout):
+			// resolve its gitdir so the sandbox points at the real repo.
+			const raw = await readFile(realGitDir, "utf-8");
+			const match = raw.match(/^gitdir:\s*(.+)$/m);
+			if (!match) return;
+			realGitDir = path.resolve(realRoot, match[1]!.trim());
+		}
+	} catch {
+		// Not a git repository — nothing to redirect to.
+		return;
+	}
+	await writeFile(
+		path.join(sandboxRoot, ".git"),
+		`gitdir: ${realGitDir}\n`,
+		"utf-8",
+	);
+}
+
 export async function prepareSandbox(
 	realRoot: string,
 	sandboxRoot: string,
@@ -134,6 +166,7 @@ export async function prepareSandbox(
 		},
 	});
 	await writeSandboxMeta(sandboxRoot, { realRoot });
+	await createSandboxGitRedirect(realRoot, sandboxRoot);
 	return { reused: false };
 }
 
@@ -148,6 +181,13 @@ async function scanDirectoryStats(
 		for (const entry of entries) {
 			const absolutePath = path.join(dirPath, entry.name);
 			const relative = toPosix(path.relative(rootPath, absolutePath));
+
+			// The sandbox carries a `.git` gitdir redirect file (see
+			// createSandboxGitRedirect), never a real `.git` dir; keep it out
+			// of the tracked stats so diffs never try to sync it either way.
+			if (entry.name === ".git") {
+				continue;
+			}
 
 			if (entry.isDirectory()) {
 				if (shouldIgnore(ignoreMatcher, relative, true)) {
