@@ -40,10 +40,10 @@ flowchart TD
     U[用户终端] --> BIN[bin/pico.ts]
     BIN --> BOOT[bin/env-bootstrap.ts<br/>副作用: 目录/环境水合, 必须先于上游导入]
     BOOT --> MAIN[pi main<br/>agent loop / tool runtime / session / TUI]
-    MAIN --> REG[ExtensionRegistry<br/>25 个扩展工厂, 按序注册]
-    REG --> E1[prompt 层<br/>vibe / cache-optimizer / language]
+    MAIN --> REG[ExtensionRegistry<br/>27 个扩展工厂, 按序注册]
+    REG --> E1[prompt 层<br/>vibe / auto-thinking / cache-optimizer / language]
     REG --> E2[ui 层<br/>retro-theme / input-history / logo]
-    REG --> E3[tools 层<br/>todo / memory / subagent / skill / vision / ask / init / plan / web / lsp / rtk]
+    REG --> E3[tools 层<br/>todo / memory / context-pruner / subagent / skill / vision / ask / init / plan / web / lsp / rtk]
     REG --> E4[runtime 层<br/>hooks / mcp]
     REG --> E5[diagnostics 层<br/>doctor]
     E3 --> CORE[上游核心<br/>事件总线/工具执行器/会话存储]
@@ -694,6 +694,10 @@ flowchart TD
 - 第十轮整改（2026-08-10，依据第三轮全链路实测报告）：LSP typescript-native 探测失败文案补可行动安装引导（workspace 有 typescript 包时提示装 typescript-language-server）；researcher 子代理工具白名单 web_search/web_fetch → webSearch/webFetch（与注册名一致，子代理恢复 web 工具）；记忆库存量污染清理（MEMORY.md 清空 + facts 删 32 条，防线核实有效）；撤销 askUserQuestion 误报；706 用例全绿；
 - 第十一轮整改（2026-08-10，集成 pi-automode 自动护栏）：第 24 个扩展 `automode`（源码移植 + pico 化：配置路径 PICO_HOME/.pico、默认关闭、状态行 ⏵⏵ auto mode on/off、/automode 命令）；tool_call 拦截管线（deny/ask → 确定性硬拒绝 → 只读快路径 → 两阶段分类器 fail-closed）；加固分类器异常 fail-closed 与 bash 组合命令拆段匹配；723 用例全绿；
 - 第十二轮整改（2026-08-10，集成 pi-undo-redo 沙箱回滚）：第 25 个扩展 `undo-redo`（源码移植 + pico 化：缓存 ${PICO_HOME}/agent/cache/undo-redo、create*Tool 覆盖内置工具沙箱化、/undo /redo /diff-stack 命令 + undo_redo 工具 + ctrl+shift+z/y 编辑器快捷键）；快照按会话叶节点保存恢复，/tree 导航联动；733 用例全绿；
+- 第十三轮整改（2026-08-10，基于 oh-my-pi 增强机制对比，见 `docs/analysis-llm-capability-vs-oh-my-pi.md`）：新增 2 个扩展，总 27 个——
+  - 第 26 个扩展 `auto-thinking`（prompt 层，`src/extensions/auto-thinking/`）：`ultrathink` 关键词（正文独立词、跳过代码块/行内代码/XML）→ `setThinkingLevel("max")` + `<system-notice>` 多步推理提醒，agent_end 自动恢复原等级；`/thinking <level>` 命令（off|minimal|low|medium|high|xhigh|max，按模型 clamp）；`PICO_AUTO_THINKING_DISABLE` / `PICO_ULTRATHINK_NOTICE_ONLY` 开关；移植自 oh-my-pi `modes/ultrathink.ts` + `thinking.ts`。真实验证：print 模式会话 `thinking_level_change` 记录 `high → max → high`；
+  - 第 27 个扩展 `context-pruner`（`src/extensions/context-pruner/`）：挂上游 `context` 事件（transformContext，每次 LLM 调用前），同一文件完整 read 被后续 read 取代时旧结果替换为 `[Superseded by a newer read of this file]`；分范围 read（offset/limit）永不裁剪；`PICO_CONTEXT_PRUNER_DISABLE` 开关；移植自 oh-my-pi `session-maintenance.ts #pruneStaleToolResults`。真实验证：读同一文件两次后第二次请求前裁剪 21934→12273 字节；
+  - vibe-system.md 末尾新增"交付证据与硬约束"段（evidence-and-output + `<critical>` 收尾块，移植自 oh-my-pi DELIVERY CONTRACT）；759 用例全绿；
 
 ### 5.2 已知局限（客观记录）
 

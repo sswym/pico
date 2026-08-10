@@ -1,4 +1,6 @@
 import type { ExtensionFactory, InlineExtension } from "@earendil-works/pi-coding-agent";
+import { autoThinkingExtension } from "../extensions/auto-thinking/index.ts";
+import { contextPrunerExtension } from "../extensions/context-pruner/index.ts";
 import { askExtension } from "../extensions/ask/index.ts";
 import automodeExtension from "../extensions/automode/index.ts";
 import { cacheOptimizerExtension } from "../extensions/cache-optimizer/index.ts";
@@ -86,6 +88,7 @@ export class ExtensionRegistry {
 
 export const defaultExtensions = [
   { name: "vibe", factory: vibeExtension, phase: "prompt" },
+  { name: "auto-thinking", factory: autoThinkingExtension, phase: "prompt" },
   { name: "cache-optimizer", factory: cacheOptimizerExtension, phase: "prompt" },
   { name: "todo", factory: todoExtension, phase: "tools" },
   { name: "retro-theme", factory: retroThemeExtension, phase: "ui" },
@@ -97,6 +100,11 @@ export const defaultExtensions = [
     factory: memoryExtension,
     phase: "tools",
     safety: { touchesFilesystem: true },
+  },
+  {
+    name: "context-pruner",
+    factory: contextPrunerExtension,
+    phase: "tools",
   },
   {
     name: "subagent",

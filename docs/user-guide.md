@@ -288,6 +288,23 @@ subagent(chain=[
 
 `src/prompts/vibe-system.md` 会被追加到每条系统提示词末尾。四条规则——*先思考再编码、用最少的代码解决问题、手术式修改、目标驱动执行*——从 `~/.claude/CLAUDE.md` 中提炼。目标是让 pico 先问后猜、不重构相邻代码、并将每行 diff 追溯到明确需求。
 
+### 10.1 强制思考（`ultrathink` 关键词 + `/thinking` 命令）
+
+`auto-thinking` 扩展（`src/extensions/auto-thinking/`）提供两级强制思考控制：
+
+- **`ultrathink` 关键词**：在用户消息的正文中（独立小写词，代码块/行内代码/XML 标签内不生效）出现 `ultrathink` 时，该轮 thinking 等级提升到 `max`（按模型能力 clamp），并在系统提示词中注入 `<system-notice>` 多步推理提醒；该轮结束后自动恢复原等级。模仿 Claude Code 的 ultrathink 模式。
+- **`/thinking <level>` 命令**：显式设置会话 thinking 等级，`off | minimal | low | medium | high | xhigh | max`（按模型能力 clamp）；不带参数时显示当前等级。
+
+环境变量开关：`PICO_AUTO_THINKING_DISABLE=1` 整体禁用；`PICO_ULTRATHINK_NOTICE_ONLY=1` 只注入 notice 不提升等级。
+
+### 10.2 上下文裁剪（`context-pruner` 扩展）
+
+`context-pruner` 扩展（`src/extensions/context-pruner/`）挂在上游 `context` 事件（每次 LLM 调用前）：同一文件被完整读取（无 offset/limit）后又被重新读取时，旧的 read 结果替换为 `[Superseded by a newer read of this file]` 标记，避免模型重复背负已过时的文件内容。分范围读取（offset/limit）是互补视图，永不裁剪。环境变量开关：`PICO_CONTEXT_PRUNER_DISABLE=1`。
+
+### 10.3 交付证据契约
+
+`vibe-system.md` 末尾的"交付证据与硬约束"段落要求：每条交付断言都要能追溯到观察到的证据（工具结果、`file:line`、测试输出）；未直接观察到的推断显式标记 `[INFERENCE]`；收尾前自查"每一句实质性陈述都能指出支撑它的观察"。该段与 oh-my-pi 的 DELIVERY CONTRACT / `<critical>` 块同源，置于系统提示词末尾以最大化约束效力。
+
 ---
 
 ## 11. 内置技能

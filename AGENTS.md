@@ -52,7 +52,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 
 ### 扩展注册顺序
 
-唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（**25 个扩展**）。每个带 `phase: "prompt" | "ui" | "tools" | "runtime" | "diagnostics"`、可选 `dependsOn` / `safety` 元数据；注册时校验**重名**与 **dependsOn 必须先于依赖者注册**。所有工厂以 `hidden: true` 注册，避免上游启动面板出现 `<inline:N>` 占位噪行。
+唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（**27 个扩展**）。每个带 `phase: "prompt" | "ui" | "tools" | "runtime" | "diagnostics"`、可选 `dependsOn` / `safety` 元数据；注册时校验**重名**与 **dependsOn 必须先于依赖者注册**。所有工厂以 `hidden: true` 注册，避免上游启动面板出现 `<inline:N>` 占位噪行。
 
 `vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → skill → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → doctor`
 

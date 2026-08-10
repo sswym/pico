@@ -2,7 +2,7 @@
 
 **带长期记忆、子代理委派、任务追踪、规划模式、网页搜索/抓取、MCP 服务器集成与 LSP 代码智能的 Vibe 编码代理。**
 
-基于 `@earendil-works/pi-coding-agent` 的薄封装：上游提供 agent loop、工具运行时与会话管理，pico 通过 23 个扩展注入产品化能力。技术栈：Bun + TypeScript，零外部运行时依赖。
+基于 `@earendil-works/pi-coding-agent` 的薄封装：上游提供 agent loop、工具运行时与会话管理，pico 通过 27 个扩展注入产品化能力。技术栈：Bun + TypeScript，零外部运行时依赖。
 
 ## 快速开始
 
@@ -51,7 +51,7 @@ TUI 内输入 `/help` 可随时查看离线命令速查（pico 特有命令、�
 | `!` / `!!` | 运行 bash 命令（`!!` 不进上下文） |
 | `F7` | 折叠/展开 todo 面板 |
 
-pico 特有命令：`/init`（生成或审计 AGENTS.md）、`/doctor`（安全开关与配置冲突）、`/memory`（长期记忆）、`/todo`（任务清单）、`/plan`（计划模式）、`/language`（切换语言）、`/mcp`（MCP 服务器）、`/vision`（视觉模型）等；退出用 `/quit`。
+pico 特有命令：`/init`（生成或审计 AGENTS.md）、`/doctor`（安全开关与配置冲突）、`/memory`（长期记忆）、`/todo`（任务清单）、`/plan`（计划模式）、`/language`（切换语言）、`/mcp`（MCP 服务器）、`/vision`（视觉模型）、`/thinking`（思考等级）等；退出用 `/quit`。消息正文出现 `ultrathink` 关键词会临时提升该轮思考等级到模型上限并注入多步推理提醒。
 
 > 注意：以 `/` 开头但未注册的输入（如拼错的命令）会被当作普通消息发给模型——模型会收到本地引导提示并指引你使用 `/help`，不会猜测命令含义。
 
