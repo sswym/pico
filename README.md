@@ -87,7 +87,7 @@ pico 特有命令：`/init`（生成或审计 AGENTS.md）、`/doctor`（安全�
 ## 测试与开发
 
 ```bash
-bun run verify              # tsc --noEmit + 全量测试（706 用例 / 35 文件，完全离线）
+bun run verify              # tsc --noEmit + 全量测试（723 用例 / 36 文件，完全离线）
 bun test tests/<feature>.test.ts
 bun run build               # 三阶段构建，产出独立二进制（~102MB）
 bun run start               # 源码模式启动（开发用）

@@ -1,5 +1,6 @@
 import type { ExtensionFactory, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { askExtension } from "../extensions/ask/index.ts";
+import automodeExtension from "../extensions/automode/index.ts";
 import { cacheOptimizerExtension } from "../extensions/cache-optimizer/index.ts";
 import { doctorExtension } from "../extensions/doctor/index.ts";
 import { helpExtension } from "../extensions/help/index.ts";
@@ -121,6 +122,12 @@ export const defaultExtensions = [
     factory: initExtension,
     phase: "tools",
     safety: { touchesFilesystem: true },
+  },
+  {
+    name: "automode",
+    factory: automodeExtension,
+    phase: "tools",
+    safety: { touchesFilesystem: true, usesNetwork: true },
   },
   { name: "plan", factory: planExtension, phase: "tools" },
   { name: "web", factory: webExtension, phase: "tools", safety: { usesNetwork: true } },

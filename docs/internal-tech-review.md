@@ -40,7 +40,7 @@ flowchart TD
     U[用户终端] --> BIN[bin/pico.ts]
     BIN --> BOOT[bin/env-bootstrap.ts<br/>副作用: 目录/环境水合, 必须先于上游导入]
     BOOT --> MAIN[pi main<br/>agent loop / tool runtime / session / TUI]
-    MAIN --> REG[ExtensionRegistry<br/>23 个扩展工厂, 按序注册]
+    MAIN --> REG[ExtensionRegistry<br/>24 个扩展工厂, 按序注册]
     REG --> E1[prompt 层<br/>vibe / cache-optimizer / language]
     REG --> E2[ui 层<br/>retro-theme / input-history / logo]
     REG --> E3[tools 层<br/>todo / memory / subagent / skill / vision / ask / init / plan / web / lsp / rtk]
@@ -64,7 +64,7 @@ bin/pico.ts
 
 ### 1.4 扩展注册顺序与依赖约束
 
-注册顺序：`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → skill → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → observability → signals → doctor → help`（**23 个**）。
+注册顺序：`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → skill → vision → ask → init → automode → plan → web → lsp → rtk → hooks → mcp → observability → signals → doctor → help`（**24 个**）。
 
 `ExtensionRegistry.validate()` 强制：名称唯一、`dependsOn` 只能引用已注册扩展（目前仅 logo → retro-theme）。`before_agent_start` 等事件处理器按注册顺序链式合并返回值，因此 **cache-optimizer 先于 memory 改写 systemPrompt**，动态回忆块不会被静态化到缓存前缀。
 
@@ -628,6 +628,32 @@ flowchart TD
 
 **测试基线**：704 → 706 全绿（`bun run verify`）。
 
+### 4.13 第十一轮整改（2026-08-10，集成 pi-automode 自动护栏扩展，723 用例全绿）
+
+将 Claude Code 风格 auto mode 护栏（`@czottmann/pi-automode` v1.11.0）移植为 pico 第 24 个内置扩展 `src/extensions/automode/`（14 模块，MIT 许可，源码级移植并 pico 化）。
+
+**拦截管线**（tool_call 事件，注册顺序在 plan 之前——上游 runner 对第一个 `block: true` 短路，安全层先于流程层判定）：
+1. `permissions.deny` / 被拒的 `permissions.ask`（工具模式匹配）
+2. 确定性硬拒绝（shell profile 写入、`authorized_keys`、cron/launchd 持久化、TLS/证书弱化、root/home 破坏性删除、`.pico/automode*` 控件文件）——不 consult 模型
+3. 只读工具快路径（`read/grep/find/ls`，`classifyReadOnlyTools` 可关闭）
+4. 两阶段分类器（1-token 快速过滤器 + 结构化审查，独立分类器模型），**fail-closed**：模型缺失/失败/异常一律阻断
+
+**pico 化适配**：
+- 配置路径：`~/.pi/agent/automode.json` → `${picoAgentHome()}/automode.json`；`.pi/automode.local.json` / `.pi/automode.json` → `.pico/automode.local.json` / `.pico/automode.json`（共享项目配置仍只能贡献 permissions，不能关闭护栏）；`PI_AUTOMODE_SETTINGS_JSON` → `PICO_AUTOMODE_SETTINGS_JSON`
+- **默认关闭**（`enabled: false`，与 pico 安全默认值一致）：原版默认启用会让无配置用户每个副作用工具调用都过分类器（模型调用/延迟/意外阻断）；显式开启后完整生效
+- UI：状态行 `AM● a:0 d:0`（setStatus "automode"）；`/automode` + `/auto-mode` 命令（status/on/off/reload/reset/defaults/config/denials/model）
+- 上游契约核实：`tool_call` handler 返回 `{ block: true, reason }` 阻断（与 plan 门禁同机制，0.83 上游支持）；`ctx.modelRegistry`/`ui.confirm(opts.signal)`/`pi.appendEntry`/`complete/completeSimple`(pi-ai/compat) 全部可用
+
+**对原版的两处加固**：
+1. **classify 异常 fail-closed 完整性**：原版 `await classify(...)` 无 catch——分类器 throw 会以工具错误传播而非干净阻断；pico 版 catch 后返回 `block: "Classifier error; auto mode fails closed: …"`
+2. **bash 组合命令拆段匹配**：原版 `bash(rm -rf *)` 用 `^rm -rf.*$` 对整条命令匹配，`mkdir x && rm -rf x` 可绕过 deny；pico 版按 shell 分隔符（`&&`/`||`/`|`/`;`/换行）拆段，任一段命中即拦截（对齐 Claude Code 语义）
+
+**回归测试**：`tests/automode.test.ts` 17 条（默认关闭、配置 precedence、共享项目不能开护栏、permissions 匹配含组合命令、确定性硬拒绝、read-only 快路径、分类器放行/阻断/异常 fail-closed、disabled 直通、safety-control 路径防护）。端到端验证：`rm -rf` 单命令与 `mkdir && rm -rf` 组合命令均被 deny 拦截（模型收到 block 原因并遵守）、正常 write 经分类器放行、状态行与 `/automode status` 正常。
+
+**已知局限**（继承原版声明）：非沙箱（扩展运行在 pico 进程内）；不拦截用户 `!`/`!!` shell 命令；分类器提示与内置规则为本地实现（Claude Code 私有规则不可得）；分类器安全依赖模型可用性（fail-closed 保证判断不了即阻断）。
+
+**测试基线**：706 → 723 全绿（+17 automode）。
+
 ## 5. 当前版本现状与已知局限
 
 ### 5.1 现状
@@ -642,6 +668,7 @@ flowchart TD
 - 第八轮整改（2026-08-08，依据全链路实测报告）：记忆提取补"请为…新增…"指令模式 + "注意"模式收紧为句首/带冒号 + `note_add` 拒绝任务指令与错误占位符（事实与 MEMORY.md 双路径防污染）；新增 `signals` 扩展（第 23 个）：外部 SIGINT 运行中取消/空闲退出、SIGTERM 优雅关闭（`ctx.abort()`/`ctx.shutdown()`）；非交互 plan 拒绝保持写锁（throw 语义）；config.yml safety 键一次性自动迁移（幂等、跳过 env/settings 已 pin 键，SAFETY_KEYS 补 enableProjectLsp）；取消不再渲染"任务失败"；subagent 工具 `list: true` 发现机制（错误文案同步更新）；LSP 初始化失败进 /doctor（lsp_status 事件 + LSP 段）；`-p` 空提示词 exit 2 守卫；
 - 第九轮整改（2026-08-08，依据第二轮全链路实测报告）：修复第八轮 `-p` 守卫与子代理 spawn 参数冲突（源码模式子代理必崩，高）——守卫抽为 `print-guard.ts` 支持"提示词在后置位置参数"；失败通知从 turn_end 延迟到 agent_settled（重试循环只通知一次）；`friendlyErrorMessage` 兼容无 `Error:` 前缀的状态信封（502 JSON 不再裸上屏）；`httpIdleTimeoutMs` 校验 + /doctor `Request timeout:` 段（超时可配置，实测 60s 生效）；plan 提示词补"先规划后动手"首条规则；LSP 无 TS 项目启动文案折叠为可行动提示；704 用例全绿；
 - 第十轮整改（2026-08-10，依据第三轮全链路实测报告）：LSP typescript-native 探测失败文案补可行动安装引导（workspace 有 typescript 包时提示装 typescript-language-server）；researcher 子代理工具白名单 web_search/web_fetch → webSearch/webFetch（与注册名一致，子代理恢复 web 工具）；记忆库存量污染清理（MEMORY.md 清空 + facts 删 32 条，防线核实有效）；撤销 askUserQuestion 误报；706 用例全绿；
+- 第十一轮整改（2026-08-10，集成 pi-automode 自动护栏）：第 24 个扩展 `automode`（源码移植 + pico 化：配置路径 PICO_HOME/.pico、默认关闭、状态行 AM●、/automode 命令）；tool_call 拦截管线（deny/ask → 确定性硬拒绝 → 只读快路径 → 两阶段分类器 fail-closed）；加固分类器异常 fail-closed 与 bash 组合命令拆段匹配；723 用例全绿；
 
 ### 5.2 已知局限（客观记录）
 
