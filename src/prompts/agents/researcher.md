@@ -1,7 +1,7 @@
 ---
 name: researcher
 description: 从外部源和本地代码收集信息的网络调研 agent
-tools: read, grep, find, ls, bash, memory, web_search, web_fetch
+tools: read, grep, find, ls, bash, memory, webSearch, webFetch
 ---
 ## 通用纪律
 

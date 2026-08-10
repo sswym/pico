@@ -4,9 +4,9 @@
  * Uses config.ts to discover and route servers. Each server is spawned lazily
  * when first needed. Supports multiple concurrent servers per file type.
  */
-import { readFileSync, promises as fsPromises } from "node:fs";
+import { readFileSync, existsSync, promises as fsPromises } from "node:fs";
 import { spawn } from "node:child_process";
-import { join, extname } from "node:path";
+import { dirname, join, extname } from "node:path";
 import type { LspServerConfig, LspConfig } from "./config.ts";
 import { loadConfig, getPrimaryServerForFile, detectServers, resolveCommand, hasRootMarkers } from "./config.ts";
 import { LspClient, locationToDisplay, lspPositionToDisplay, LspError, COMMAND_NOT_FOUND } from "./client.ts";
@@ -105,6 +105,23 @@ export function friendlyLspInitError(serverName: string, message: string): strin
 const unsupportedProbeCache = new Map<string, string | null>();
 
 /**
+ * Locate a project-local `typescript` package (up to 4 levels up), used to
+ * decide whether the JS-tsc probe verdict should carry an actionable
+ * typescript-language-server install hint. Returns the package dir or null.
+ */
+export function findLocalTypescriptDir(cwd: string): string | null {
+  let dir = cwd;
+  for (let depth = 0; depth < 4; depth++) {
+    const pkg = join(dir, "node_modules", "typescript");
+    if (existsSync(join(pkg, "lib", "tsserver.js"))) return pkg;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+/**
  * Async probe (2.5.11): the old spawnSync blocked the whole event loop for
  * up to 2s on the session-start path, freezing the UI on every launch.
  */
@@ -152,9 +169,22 @@ async function getUnsupportedServerCommandReason(serverName: string, command: st
     child.on("close", () => {
       clearTimeout(timer);
       const output = `${stdout}\n${stderr}`;
-      finish(output.includes("--lsp")
-        ? null
-        : `Command "${command}" does not advertise TypeScript native LSP support (--lsp).`);
+      if (output.includes("--lsp")) {
+        finish(null);
+        return;
+      }
+      // The classic JS tsc (5.9/6.x) has no --lsp flag — the native LSP
+      // server is unavailable. When the workspace already ships a
+      // `typescript` package, surface an actionable bridge install hint
+      // instead of a dead-end probe verdict (typescript-language-server is
+      // the LSP↔tsserver shim that works with any JS TypeScript).
+      const tsInstalled = findLocalTypescriptDir(cwd) !== null;
+      finish(
+        tsInstalled
+          ? `Command "${command}" does not advertise TypeScript native LSP support (--lsp). ` +
+              `The installed tsc is the classic JavaScript compiler. Install "typescript-language-server" to enable TS diagnostics (bun add -d typescript-language-server).`
+          : `Command "${command}" does not advertise TypeScript native LSP support (--lsp).`,
+      );
     });
   });
 

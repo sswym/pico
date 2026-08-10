@@ -38,6 +38,7 @@ import {
   createLspManager,
   ensureNamedServer,
   ensureServer,
+  findLocalTypescriptDir,
   loadConfig,
   setIdleTimeout,
   syncDocument,
@@ -330,6 +331,42 @@ describe("LspManager runtime state", () => {
       );
       expect(await __getUnsupportedServerCommandReasonForTests("typescript-native", nativeTsc, dir)).toBeNull();
       expect(await __getUnsupportedServerCommandReasonForTests("typescript-language-server", oldTsc, dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("typescript-native probe carries install hint when workspace ships typescript", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pico-lsp-hint-"));
+    const oldTsc = join(dir, "old-tsc");
+    const nodeModulesTs = join(dir, "node_modules", "typescript", "lib");
+
+    try {
+      writeFileSync(oldTsc, "#!/bin/sh\necho 'Version 5.9.0'\n", "utf8");
+      chmodSync(oldTsc, 0o755);
+      mkdirSync(nodeModulesTs, { recursive: true });
+      writeFileSync(join(nodeModulesTs, "tsserver.js"), "// fake tsserver\n", "utf8");
+
+      const reason = await __getUnsupportedServerCommandReasonForTests("typescript-native", oldTsc, dir);
+      expect(reason).not.toBeNull();
+      expect(reason).toContain("typescript-language-server");
+      expect(reason).toContain("bun add -d typescript-language-server");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("findLocalTypescriptDir resolves up to 4 levels of node_modules", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pico-lsp-find-"));
+    try {
+      expect(findLocalTypescriptDir(dir)).toBeNull();
+      const pkg = join(dir, "a", "b", "node_modules", "typescript");
+      mkdirSync(join(pkg, "lib"), { recursive: true });
+      writeFileSync(join(pkg, "lib", "tsserver.js"), "// fake\n", "utf8");
+      expect(findLocalTypescriptDir(join(dir, "a", "b", "src", "deep"))).toBe(pkg);
+      expect(findLocalTypescriptDir(join(dir, "a", "b"))).toBe(pkg);
+      // Beyond 4 levels → null (5 dirs up hits the depth cap)
+      expect(findLocalTypescriptDir(join(dir, "a", "b", "src", "deep", "x", "y"))).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

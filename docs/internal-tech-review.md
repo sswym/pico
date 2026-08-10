@@ -600,11 +600,39 @@ flowchart TD
 
 **文档**：AGENTS.md 配置小节补 `httpIdleTimeoutMs`；§5.2 新增 L24/L25。
 
+### 4.12 第十轮整改（2026-08-10，第三轮全链路实测修复，2 中 / 数据清理，附回归测试）
+
+依据第三轮全链路实测报告（9 组真实需求 + 故障注入 + 记忆取证）：
+
+**中：TS 项目 LSP 探测失败无可行动引导（P-2）**
+- 实测：编辑 TS 文件后 toolResult 报 `Command "…/tsc" does not advertise TypeScript native LSP support (--lsp)` 并 60s backoff，TS 文件全程无诊断；workspace 已装 `typescript` 包但未装 `typescript-language-server`（LSP↔tsserver 桥接）。已核实 tsserver 私有协议与 LspClient（标准 LSP）不兼容，直接回退 tsserver 不可行。
+- 修复：`manager.ts` 新增 `findLocalTypescriptDir()`（向上 4 级探测 workspace typescript 包）；`getUnsupportedServerCommandReason` 探测失败时若检测到 typescript 包存在，文案追加可行动安装引导（`Install "typescript-language-server" to enable TS diagnostics (bun add -d typescript-language-server)`）。
+- 回归测试 3 条（lsp.test.ts，含 hint 触发/不触发与目录解析边界）。端到端验证：编辑 `src/util.ts` 后 toolResult 显示安装引导文案。
+
+**中：researcher 子代理无 web 工具（P-4）**
+- 实测：researcher 子代理报告"工具集里没有 webSearch/webFetch，实际用 curl 抓取"（单任务 11.5 分钟，含 60s bash 超时）。
+- 根因：`researcher.md` frontmatter `tools:` 白名单写 `web_search, web_fetch`（下划线），而 web 扩展注册名为 `webSearch`/`webFetch`（驼峰）；上游 `setActiveToolsByName` 对未知工具名**静默忽略**（仅按注册名匹配）→ 子代理 web 工具整体缺失。
+- 修复：`researcher.md` 白名单改为 `webSearch, webFetch`（与注册名一致）；重新生成 embedded-assets（源码模式亦优先读 embedded 资产）。
+- 端到端验证：子代理 `--tools` 白名单为 `webSearch,webFetch`，实测调用 `webSearch` + 4 次 `webFetch` 完成调研并产出文档（不再 curl）。
+
+**数据清理：记忆库存量污染（P-1）**
+- 实测（前轮）：MEMORY.md 与 memory.db 被跨项目任务草稿（`Task: 工作目录 /tmp/opencode/agent-test2…`）、原始 `[CHAIN ERROR…]` 报错文本、用户需求全文（`Session:` 前缀）污染并注入所有会话；本轮实测模型在无关会话中引用并花 token 判断相关性。
+- 现状核实：第八轮写入端防线（`isTaskDirective` 拒绝 + INSIGHT_PATTERNS 收紧）有效——清理前当日会话 0 条新污染写入；残留为修复前存量。
+- 清理：MEMORY.md 4 条全污染清空；memory.db 删除 32 条污染 facts（`Task:`/`Session:` 前缀、CHAIN ERROR、中文任务草稿），保留 13 条真实知识（project/tool_quirk/user_pref/insight）。FTS 经触发器自动同步。
+- 端到端验证：清理后新会话 0 条新污染，MEMORY.md 保持空。
+
+**误报撤销：askUserQuestion 多问题弹窗（前轮 P-3）**
+- 前轮报告"两问弹窗只返回第一问答案、模型自行默认第二问"为取证截断误报：完整 toolResult 实为两问答案齐全（复测亦完整返回两问）。非缺陷，撤销。
+
+**文档记录（不修）**：subagent toolResult `details.messages` 携带子代理完整会话（实测单次 142KB/229KB，会话 JSONL 存储膨胀）——渲染器依赖 messages 做工具轨迹展示与最终输出提取，截断会破坏功能；模型上下文仅收 content 摘要（1.6KB），无功能影响。已记 §5.2 L26。
+
+**测试基线**：704 → 706 全绿（`bun run verify`）。
+
 ## 5. 当前版本现状与已知局限
 
 ### 5.1 现状
 
-- 功能面完整：22 扩展、647 用例全绿、`bun run verify`（tsc + 全量测试）通过；
+- 功能面完整：23 扩展、706 用例全绿、`bun run verify`（tsc + 全量测试）通过；
 - 第三轮 UX 整改（2026-08-05，依据 `docs/ux-walkthrough-review.md`）：离线 `/help` 与无模型/推理 400/崩溃恢复引导（guidance 扩展）、config.yml 双轨冲突检测、`<inline:N>` 启动噪音消除（InlineExtension hidden）、LSP 缺失命令警告去重与可执行建议、生成阶段动态反馈、计划模式挂起 todo 面板、CLI 品牌统一、MCP 状态可读化、logo 首启文案与真实会话、`/memory status` 类别分布、rtk 启用提示；全部附回归测试；
 - 安全默认值：项目 hooks/MCP 默认关、非交互项目代理默认拒、LSP 写动作默认阻断、计划自动批准默认关；
 - 工具错误语义对齐上游：失败一律 throw（agent loop 仅以异常判定 isError）；第四轮整改（2026-08-05，依据深度技术分析报告）修复 4 高 / 29 中 / 37 低，覆盖 LSP 写透传短路、worktree 冲突与分支保留、子代理退出码、vision SSRF、MCP 并行连接与进程组、事件订阅生命周期、异步化 gate、ANSI 终端注入等；
@@ -613,6 +641,7 @@ flowchart TD
 - 第七轮整改（2026-08-07，依据 TUI 全链路交互测试报告）：失败回合不再静默——`turn_end` 检测 `stopReason:"error"` 时 `ui.notify` 输出"任务失败：<友好原因>"并在 footer 置 `!failed` 标记（下次 turn 清除）；`friendlyErrorMessage` 将上游开发者格式错误（工具 schema 校验 JSON dump、provider HTTP 信封）压缩为可读文案（错误渲染与错误通知共用）；memory 工具结果渲染剥离 `tfidf_vector` 等内部字段（模型仍收完整 payload）；窄屏 footer 左侧按优先级丢弃尾段（git/context）而非硬截断；config.yml 与 settings.json 的 `defaultProvider`/`defaultModel` 冲突检测（`/doctor` 报告 + 启动一次 warning）；默认模型缺 `requiresReasoningContentOnAssistantMessages` 时启动警告一次；探查命令容错提示词；660 用例全绿；
 - 第八轮整改（2026-08-08，依据全链路实测报告）：记忆提取补"请为…新增…"指令模式 + "注意"模式收紧为句首/带冒号 + `note_add` 拒绝任务指令与错误占位符（事实与 MEMORY.md 双路径防污染）；新增 `signals` 扩展（第 23 个）：外部 SIGINT 运行中取消/空闲退出、SIGTERM 优雅关闭（`ctx.abort()`/`ctx.shutdown()`）；非交互 plan 拒绝保持写锁（throw 语义）；config.yml safety 键一次性自动迁移（幂等、跳过 env/settings 已 pin 键，SAFETY_KEYS 补 enableProjectLsp）；取消不再渲染"任务失败"；subagent 工具 `list: true` 发现机制（错误文案同步更新）；LSP 初始化失败进 /doctor（lsp_status 事件 + LSP 段）；`-p` 空提示词 exit 2 守卫；
 - 第九轮整改（2026-08-08，依据第二轮全链路实测报告）：修复第八轮 `-p` 守卫与子代理 spawn 参数冲突（源码模式子代理必崩，高）——守卫抽为 `print-guard.ts` 支持"提示词在后置位置参数"；失败通知从 turn_end 延迟到 agent_settled（重试循环只通知一次）；`friendlyErrorMessage` 兼容无 `Error:` 前缀的状态信封（502 JSON 不再裸上屏）；`httpIdleTimeoutMs` 校验 + /doctor `Request timeout:` 段（超时可配置，实测 60s 生效）；plan 提示词补"先规划后动手"首条规则；LSP 无 TS 项目启动文案折叠为可行动提示；704 用例全绿；
+- 第十轮整改（2026-08-10，依据第三轮全链路实测报告）：LSP typescript-native 探测失败文案补可行动安装引导（workspace 有 typescript 包时提示装 typescript-language-server）；researcher 子代理工具白名单 web_search/web_fetch → webSearch/webFetch（与注册名一致，子代理恢复 web 工具）；记忆库存量污染清理（MEMORY.md 清空 + facts 删 32 条，防线核实有效）；撤销 askUserQuestion 误报；706 用例全绿；
 
 ### 5.2 已知局限（客观记录）
 
@@ -640,6 +669,7 @@ flowchart TD
 | L23 | **未知斜杠命令无本地拦截钩子**：上游 onSubmit 对未注册的 `/xxx` 无"未知命令"分支，直接作为普通消息发送 | 每条误输消耗一次 LLM 往返 | 已缓解：context 事件注入引导（一句话回答 + /help 指引、禁猜测、同命令只注入一次），pico 层无完全本地拦截能力 |
 | L24 | **模型请求等待期间无超时倒计时/进度提示**：挂起时仅 `thinking Ns` 计时器；超时值 `settings.httpIdleTimeoutMs` 默认 300s（0=禁用），pico 已校验 + /doctor 展示，但等待期 UX 与倒计时受上游 TUI 约束 | 长等待期用户无感知 | 受上游约束；已文档化配置键 |
 | L25 | **全新 PICO_HOME 首启主题加载时序**：TUI 初始化先于 retro-theme 的 session_start 主题文件同步，首启报一次 `Failed to load theme "claude-code-dark"` 并回退 dark，次启恢复正常 | 首启一次噪音告警 | 已知；可在首启路径预写主题文件消除 |
+| L26 | **subagent toolResult `details.messages` 携带子代理完整会话**（实测单次 142KB/229KB）：主会话 JSONL 每次 subagent 调用 +150~250KB 存储膨胀 | 会话文件膨胀（磁盘/重放成本）；模型上下文仅收 content 摘要，无功能影响 | 渲染器依赖 messages 做工具轨迹展示与最终输出提取，截断会破坏功能；待改轻量 details 结构（如预聚合 DisplayItem）后落地 |
 
 ### 5.3 待优化项与迭代规划（建议排序）
 
