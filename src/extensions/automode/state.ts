@@ -15,12 +15,9 @@ export function statusLine(
   state: AutoModeState,
 ): string {
   const enabled = state.enabledOverride ?? config.enabled;
-  const circle = enabled ? "●" : "○";
-  const allowed = state.checkedActions - state.blockedActions;
-  const classifier = state.classifierAllowed > 0 || state.classifierDenied > 0
-    ? ` ca:${state.classifierAllowed} cd:${state.classifierDenied}`
-    : "";
-  return `AM${circle} a:${allowed} d:${state.blockedActions}${classifier}`;
+  // 可读格式：⏵⏵ auto mode on/off。动作计数（allowed/denied/classifier）
+  // 保留在 /automode status 的 statusText 中查看。
+  return enabled ? "⏵⏵ auto mode on" : "⏵⏵ auto mode off";
 }
 
 export function statusText(

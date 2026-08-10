@@ -641,7 +641,7 @@ flowchart TD
 **pico 化适配**：
 - 配置路径：`~/.pi/agent/automode.json` → `${picoAgentHome()}/automode.json`；`.pi/automode.local.json` / `.pi/automode.json` → `.pico/automode.local.json` / `.pico/automode.json`（共享项目配置仍只能贡献 permissions，不能关闭护栏）；`PI_AUTOMODE_SETTINGS_JSON` → `PICO_AUTOMODE_SETTINGS_JSON`
 - **默认关闭**（`enabled: false`，与 pico 安全默认值一致）：原版默认启用会让无配置用户每个副作用工具调用都过分类器（模型调用/延迟/意外阻断）；显式开启后完整生效
-- UI：状态行 `AM● a:0 d:0`（setStatus "automode"）；`/automode` + `/auto-mode` 命令（status/on/off/reload/reset/defaults/config/denials/model）
+- UI：状态行 `⏵⏵ auto mode on/off`（setStatus "automode"，可读格式；动作计数在 `/automode status` 查看）；`/automode` + `/auto-mode` 命令（status/on/off/reload/reset/defaults/config/denials/model）
 - 上游契约核实：`tool_call` handler 返回 `{ block: true, reason }` 阻断（与 plan 门禁同机制，0.83 上游支持）；`ctx.modelRegistry`/`ui.confirm(opts.signal)`/`pi.appendEntry`/`complete/completeSimple`(pi-ai/compat) 全部可用
 
 **对原版的两处加固**：
@@ -692,7 +692,7 @@ flowchart TD
 - 第八轮整改（2026-08-08，依据全链路实测报告）：记忆提取补"请为…新增…"指令模式 + "注意"模式收紧为句首/带冒号 + `note_add` 拒绝任务指令与错误占位符（事实与 MEMORY.md 双路径防污染）；新增 `signals` 扩展（第 23 个）：外部 SIGINT 运行中取消/空闲退出、SIGTERM 优雅关闭（`ctx.abort()`/`ctx.shutdown()`）；非交互 plan 拒绝保持写锁（throw 语义）；config.yml safety 键一次性自动迁移（幂等、跳过 env/settings 已 pin 键，SAFETY_KEYS 补 enableProjectLsp）；取消不再渲染"任务失败"；subagent 工具 `list: true` 发现机制（错误文案同步更新）；LSP 初始化失败进 /doctor（lsp_status 事件 + LSP 段）；`-p` 空提示词 exit 2 守卫；
 - 第九轮整改（2026-08-08，依据第二轮全链路实测报告）：修复第八轮 `-p` 守卫与子代理 spawn 参数冲突（源码模式子代理必崩，高）——守卫抽为 `print-guard.ts` 支持"提示词在后置位置参数"；失败通知从 turn_end 延迟到 agent_settled（重试循环只通知一次）；`friendlyErrorMessage` 兼容无 `Error:` 前缀的状态信封（502 JSON 不再裸上屏）；`httpIdleTimeoutMs` 校验 + /doctor `Request timeout:` 段（超时可配置，实测 60s 生效）；plan 提示词补"先规划后动手"首条规则；LSP 无 TS 项目启动文案折叠为可行动提示；704 用例全绿；
 - 第十轮整改（2026-08-10，依据第三轮全链路实测报告）：LSP typescript-native 探测失败文案补可行动安装引导（workspace 有 typescript 包时提示装 typescript-language-server）；researcher 子代理工具白名单 web_search/web_fetch → webSearch/webFetch（与注册名一致，子代理恢复 web 工具）；记忆库存量污染清理（MEMORY.md 清空 + facts 删 32 条，防线核实有效）；撤销 askUserQuestion 误报；706 用例全绿；
-- 第十一轮整改（2026-08-10，集成 pi-automode 自动护栏）：第 24 个扩展 `automode`（源码移植 + pico 化：配置路径 PICO_HOME/.pico、默认关闭、状态行 AM●、/automode 命令）；tool_call 拦截管线（deny/ask → 确定性硬拒绝 → 只读快路径 → 两阶段分类器 fail-closed）；加固分类器异常 fail-closed 与 bash 组合命令拆段匹配；723 用例全绿；
+- 第十一轮整改（2026-08-10，集成 pi-automode 自动护栏）：第 24 个扩展 `automode`（源码移植 + pico 化：配置路径 PICO_HOME/.pico、默认关闭、状态行 ⏵⏵ auto mode on/off、/automode 命令）；tool_call 拦截管线（deny/ask → 确定性硬拒绝 → 只读快路径 → 两阶段分类器 fail-closed）；加固分类器异常 fail-closed 与 bash 组合命令拆段匹配；723 用例全绿；
 - 第十二轮整改（2026-08-10，集成 pi-undo-redo 沙箱回滚）：第 25 个扩展 `undo-redo`（源码移植 + pico 化：缓存 ${PICO_HOME}/agent/cache/undo-redo、create*Tool 覆盖内置工具沙箱化、/undo /redo /diff-stack 命令 + undo_redo 工具 + ctrl+shift+z/y 编辑器快捷键）；快照按会话叶节点保存恢复，/tree 导航联动；733 用例全绿；
 
 ### 5.2 已知局限（客观记录）

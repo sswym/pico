@@ -17,6 +17,7 @@ import {
 import { deterministicHardDeny } from "../src/extensions/automode/hard-deny.ts";
 import { matchesToolPattern, parseToolPattern } from "../src/extensions/automode/permissions.ts";
 import { isSafetyControlPath } from "../src/extensions/automode/paths.ts";
+import { statusLine } from "../src/extensions/automode/state.ts";
 import type { EffectiveConfig } from "../src/extensions/automode/types.ts";
 
 // ── fakes ────────────────────────────────────────────────────────────────
@@ -260,6 +261,19 @@ describe("automode tool_call pipeline", () => {
 });
 
 // ── safety-control paths ─────────────────────────────────────────────────
+
+describe("automode status line", () => {
+  test("renders readable on/off text instead of compact counters", () => {
+    const cfg = baseConfig();
+    cfg.enabled = false;
+    expect(statusLine(cfg, { enabledOverride: undefined, checkedActions: 5, blockedActions: 2, classifierAllowed: 1, classifierDenied: 0, recentDenials: [] })).toBe("⏵⏵ auto mode off");
+    cfg.enabled = true;
+    expect(statusLine(cfg, { enabledOverride: undefined, checkedActions: 5, blockedActions: 2, classifierAllowed: 1, classifierDenied: 0, recentDenials: [] })).toBe("⏵⏵ auto mode on");
+    // session override flips the line
+    cfg.enabled = true;
+    expect(statusLine(cfg, { enabledOverride: false, checkedActions: 0, blockedActions: 0, classifierAllowed: 0, classifierDenied: 0, recentDenials: [] })).toBe("⏵⏵ auto mode off");
+  });
+});
 
 describe("automode safety control paths", () => {
   test("pico automode config files are protected", () => {
