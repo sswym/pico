@@ -8,7 +8,8 @@
  * All tests redirect PICO_HOME to a temp dir so the real cache is untouched.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getCacheRoot } from "../src/extensions/undo-redo/cache.ts";
@@ -110,6 +111,32 @@ describe("undo-redo sandbox", () => {
     let total = 0;
     for (const entry of stats.values()) total += entry.size;
     expect(total).toBeGreaterThanOrEqual(5);
+  });
+
+  test("prepareSandbox skips .codegraph daemon socket instead of crashing", async () => {
+    // A live codegraph index dir contains a Unix socket (daemon.sock);
+    // fs.cp would throw "cannot copy a socket file" and break session start.
+    const socketDir = join(projDir, ".codegraph");
+    mkdirSync(socketDir, { recursive: true });
+    const sockPath = join(socketDir, "daemon.sock");
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(sockPath, resolve);
+    });
+    try {
+      const sandboxRoot = join(testHome, "sandbox");
+      const state = new SandboxState(projDir, sandboxRoot, () => {});
+      await state.initialize();
+      expect(existsSync(join(sandboxRoot, ".codegraph"))).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      try {
+        unlinkSync(sockPath);
+      } catch {
+        // socket already removed by close
+      }
+    }
   });
 });
 

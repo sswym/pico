@@ -25,6 +25,7 @@ const DEFAULT_IGNORES = [
 	"target/",
 	"out/",
 	".cache/",
+	".codegraph/",
 ];
 const META_FILENAME = ".undo-redo-meta.json";
 
