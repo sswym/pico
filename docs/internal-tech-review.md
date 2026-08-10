@@ -40,7 +40,7 @@ flowchart TD
     U[用户终端] --> BIN[bin/pico.ts]
     BIN --> BOOT[bin/env-bootstrap.ts<br/>副作用: 目录/环境水合, 必须先于上游导入]
     BOOT --> MAIN[pi main<br/>agent loop / tool runtime / session / TUI]
-    MAIN --> REG[ExtensionRegistry<br/>24 个扩展工厂, 按序注册]
+    MAIN --> REG[ExtensionRegistry<br/>25 个扩展工厂, 按序注册]
     REG --> E1[prompt 层<br/>vibe / cache-optimizer / language]
     REG --> E2[ui 层<br/>retro-theme / input-history / logo]
     REG --> E3[tools 层<br/>todo / memory / subagent / skill / vision / ask / init / plan / web / lsp / rtk]
@@ -64,7 +64,7 @@ bin/pico.ts
 
 ### 1.4 扩展注册顺序与依赖约束
 
-注册顺序：`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → skill → vision → ask → init → automode → plan → web → lsp → rtk → hooks → mcp → observability → signals → doctor → help`（**24 个**）。
+注册顺序：`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → skill → vision → ask → init → automode → plan → undo-redo → web → lsp → rtk → hooks → mcp → observability → signals → doctor → help`（**25 个**）。
 
 `ExtensionRegistry.validate()` 强制：名称唯一、`dependsOn` 只能引用已注册扩展（目前仅 logo → retro-theme）。`before_agent_start` 等事件处理器按注册顺序链式合并返回值，因此 **cache-optimizer 先于 memory 改写 systemPrompt**，动态回忆块不会被静态化到缓存前缀。
 
@@ -654,6 +654,30 @@ flowchart TD
 
 **测试基线**：706 → 723 全绿（+17 automode）。
 
+### 4.14 第十二轮整改（2026-08-10，集成 pi-undo-redo 沙箱回滚扩展，733 用例全绿）
+
+将 `@justram/pi-undo-redo` v0.2.0 移植为 pico 第 25 个内置扩展 `src/extensions/undo-redo/`（9 模块，MIT 许可）。功能：**带缓冲的 undo/redo**——工具调用在沙箱工作副本执行，按会话对话叶节点保存文件快照，undo/redo 或 `/tree` 导航时恢复真实工作区。
+
+**机制**（源码级移植 + pico 化）：
+- **工具覆盖**：`registerTool` 注册同名 `read/edit/write/find/ls/grep/bash` 覆盖内置（0.83 上游 `_refreshToolRegistry` 中 custom 工具覆盖 builtin，`getAllRegisteredTools` first-wins 无竞争者）；包装 `execute` 延迟到运行时沙箱工具集（`buildDeferredTool` 模式）
+- **沙箱**：`${PICO_HOME}/agent/cache/undo-redo/<sessionId>/`（blobs 内容寻址快照 / leaves 每叶清单 / sandbox 工作副本）；`prepareSandbox` 同步真实项目（honor .gitignore）；写操作沙箱+真实双写，路径重写回显（`rewriteResultPaths`）
+- **恢复**：`session_tree`（0.83 事后事件，原版用 0.51 的 session_tree）与 `session_before_switch/fork` 重新初始化；`/undo`、`/redo`、`/diff-stack`、`/undo-redo-clear-cache` 命令 + `undo_redo` LLM 工具（undo/redo/list_diffs/diff，不触发 UI 导航保持 KV 缓存）
+- **编辑器**：`ctx.ui.setEditorComponent` 注入 UndoRedoEditor（`ctrl+shift+z/y` undo/redo，keybindings 可配 `treeUndo/treeRedo`）
+
+**API 差异适配**（@mariozechner 0.51.2 → @earendil-works 0.83.0）：
+- `create*Tool` 工厂**两版本同签名**（`createReadTool(cwd)` 等，AgentTool extends Tool 含顶层 name）——tools.ts 近乎原样移植
+- `@sinclair/typebox` → pi-ai 的 `Type`（typebox 1.3.7 fork）；`StringEnum` → `Type.Union(Type.Literal(...))`
+- 事件：`session_switch/fork/tree` → `session_before_switch/fork` + `session_tree`（0.83 分事前可取消/事后）；类型 `Session*Event` 改名
+- `pi.events.emit`（EventBus 通用 channel）、`sendMessage({triggerTurn:false})`、`sessionManager.getLeafId/branch/resetLeaf`、`ctx.ui.setEditorComponent`、`ExtensionCommandContext.waitForIdle/navigateTree` 全部 0.83 可用
+- `noUncheckedIndexedAccess`/`noImplicitOverride` 适配（diff parts 索引、CustomEditor.handleInput override）
+- 缓存路径 `~/.pi/agent/cache` → `${picoAgentHome()}/cache`
+
+**回归测试**：`tests/undo-redo.test.ts` 10 条（PICO_HOME 隔离：路径映射 round trip、缓存 root 与 blob 读写、沙箱同步、tracker save/restore 快照恢复含真实+沙箱双写、无快照叶不误动）。端到端验证（TUI）：write 沙箱化（真实+沙箱双写）、两叶快照、`/undo` 恢复 first-version、`/redo` 恢复 second-version。
+
+**已知局限**（继承原版 + 实测）：headless `-p` 模式不触发 session_start 扩展事件 → 沙箱不初始化（TUI/交互模式正常，记录为上游 -p 模式扩展事件限制）；仅跟踪 cwd 下经 pi 工具/沙箱 bash 的修改（外部修改不检测、恢复可能覆盖）；cwd 会话内需稳定。
+
+**测试基线**：723 → 733 全绿（+10 undo-redo）。
+
 ## 5. 当前版本现状与已知局限
 
 ### 5.1 现状
@@ -669,6 +693,7 @@ flowchart TD
 - 第九轮整改（2026-08-08，依据第二轮全链路实测报告）：修复第八轮 `-p` 守卫与子代理 spawn 参数冲突（源码模式子代理必崩，高）——守卫抽为 `print-guard.ts` 支持"提示词在后置位置参数"；失败通知从 turn_end 延迟到 agent_settled（重试循环只通知一次）；`friendlyErrorMessage` 兼容无 `Error:` 前缀的状态信封（502 JSON 不再裸上屏）；`httpIdleTimeoutMs` 校验 + /doctor `Request timeout:` 段（超时可配置，实测 60s 生效）；plan 提示词补"先规划后动手"首条规则；LSP 无 TS 项目启动文案折叠为可行动提示；704 用例全绿；
 - 第十轮整改（2026-08-10，依据第三轮全链路实测报告）：LSP typescript-native 探测失败文案补可行动安装引导（workspace 有 typescript 包时提示装 typescript-language-server）；researcher 子代理工具白名单 web_search/web_fetch → webSearch/webFetch（与注册名一致，子代理恢复 web 工具）；记忆库存量污染清理（MEMORY.md 清空 + facts 删 32 条，防线核实有效）；撤销 askUserQuestion 误报；706 用例全绿；
 - 第十一轮整改（2026-08-10，集成 pi-automode 自动护栏）：第 24 个扩展 `automode`（源码移植 + pico 化：配置路径 PICO_HOME/.pico、默认关闭、状态行 AM●、/automode 命令）；tool_call 拦截管线（deny/ask → 确定性硬拒绝 → 只读快路径 → 两阶段分类器 fail-closed）；加固分类器异常 fail-closed 与 bash 组合命令拆段匹配；723 用例全绿；
+- 第十二轮整改（2026-08-10，集成 pi-undo-redo 沙箱回滚）：第 25 个扩展 `undo-redo`（源码移植 + pico 化：缓存 ${PICO_HOME}/agent/cache/undo-redo、create*Tool 覆盖内置工具沙箱化、/undo /redo /diff-stack 命令 + undo_redo 工具 + ctrl+shift+z/y 编辑器快捷键）；快照按会话叶节点保存恢复，/tree 导航联动；733 用例全绿；
 
 ### 5.2 已知局限（客观记录）
 

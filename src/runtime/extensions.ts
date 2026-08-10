@@ -20,6 +20,7 @@ import { signalsExtension } from "../extensions/signals.ts";
 import skillExtension from "../extensions/skill/index.ts";
 import subagentExtension from "../extensions/subagent/index.ts";
 import { todoExtension } from "../extensions/todo/index.ts";
+import undoRedoExtension from "../extensions/undo-redo/index.ts";
 import { vibeExtension } from "../extensions/vibe.ts";
 import { visionExtension } from "../extensions/vision/index.ts";
 import { webExtension } from "../extensions/web/index.ts";
@@ -130,6 +131,12 @@ export const defaultExtensions = [
     safety: { touchesFilesystem: true, usesNetwork: true },
   },
   { name: "plan", factory: planExtension, phase: "tools" },
+  {
+    name: "undo-redo",
+    factory: undoRedoExtension,
+    phase: "tools",
+    safety: { touchesFilesystem: true, spawnsProcess: true },
+  },
   { name: "web", factory: webExtension, phase: "tools", safety: { usesNetwork: true } },
   {
     name: "lsp",

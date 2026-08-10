@@ -24,6 +24,7 @@
     "@earendil-works/pi-ai": "^0.84.0",
     "@earendil-works/pi-coding-agent": "^0.84.0",
     "@earendil-works/pi-tui": "^0.84.0",
+    "diff": "^9.0.0",
     "ignore": "^7.0.5",
     "node-html-parser": "^9.0.0"
   }
