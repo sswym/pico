@@ -74,6 +74,7 @@ export const languageExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           return;
         }
 
+        const settings = readSettings();
         if (isSettingsDamaged()) {
           // Overwriting here would replace the unreadable settings.json with a
           // language-only object, permanently losing env/safety/API keys.
@@ -84,7 +85,6 @@ export const languageExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           return;
         }
 
-        const settings = readSettings();
         settings.language = value;
         writeSettings(settings);
         // Keep the cache in sync so the next agent turn sees the new language

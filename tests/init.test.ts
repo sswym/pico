@@ -115,3 +115,68 @@ test("/init handler sends audit instructions when AGENTS.md exists", async () =>
 
   rmSync(tmpDir, { recursive: true, force: true });
 });
+
+test("/init UI path: declined confirmation cancels the audit without sending a message", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "pico-init-test-"));
+  writeFileSync(join(tmpDir, "AGENTS.md"), "# Existing AGENTS.md\n\nSome content");
+  const notices: string[] = [];
+  const { fakePi, getHandler, getLastMessage } = createFakePi();
+  await initExtension(fakePi);
+  const ctx = {
+    cwd: tmpDir,
+    hasUI: true,
+    ui: {
+      confirm: async () => false,
+      notify: (msg: string) => notices.push(msg),
+    },
+  };
+  await getHandler()("", ctx);
+  expect(getLastMessage()).toBeNull();
+  expect(notices.some((n) => n.includes("已取消"))).toBe(true);
+  rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test("/init UI path: declining confirm rejects and still cancels cleanly", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "pico-init-test-"));
+  writeFileSync(join(tmpDir, "AGENTS.md"), "# Existing AGENTS.md\n\nSome content");
+  const notices: string[] = [];
+  const { fakePi, getHandler, getLastMessage } = createFakePi();
+  await initExtension(fakePi);
+  const ctx = {
+    cwd: tmpDir,
+    hasUI: true,
+    ui: {
+      confirm: async () => {
+        throw new Error("ui exploded");
+      },
+      notify: (msg: string) => notices.push(msg),
+    },
+  };
+  await getHandler()("", ctx);
+  expect(getLastMessage()).toBeNull();
+  expect(notices.some((n) => n.includes("已取消"))).toBe(true);
+  rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test("/init UI path: approved confirmation proceeds with the audit prompt", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "pico-init-test-"));
+  writeFileSync(join(tmpDir, "AGENTS.md"), "# Existing AGENTS.md\n\nSome content");
+  let confirmed = false;
+  const { fakePi, getHandler, getLastMessage } = createFakePi();
+  await initExtension(fakePi);
+  const ctx = {
+    cwd: tmpDir,
+    hasUI: true,
+    ui: {
+      confirm: async () => {
+        confirmed = true;
+        return true;
+      },
+      notify: () => {},
+    },
+  };
+  await getHandler()("", ctx);
+  expect(confirmed).toBe(true);
+  expect(getLastMessage()).toMatch(/审计|AGENTS\.md 已存在/);
+  rmSync(tmpDir, { recursive: true, force: true });
+});

@@ -14,6 +14,7 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getCacheRoot } from "../src/extensions/undo-redo/cache.ts";
+import { UndoRedoEditor } from "../src/extensions/undo-redo/editor.ts";
 import {
   isWithinRoot,
   mapToRealPath,
@@ -205,5 +206,84 @@ describe("undo-redo snapshot tracker", () => {
     await tracker.saveLeaf("leaf-1");
     await tracker.restoreLeaf("leaf-1", [sandboxRoot, projDir]);
     expect(readFileSync(file, "utf8")).toBe("keep me");
+  });
+});
+
+// ── UndoRedoEditor (Ctrl+Shift+Z / Ctrl+Shift+Y shortcuts) ────────────────
+
+function makeFakeTui() {
+  return { requestRender: () => {}, terminal: { rows: 24 } } as any;
+}
+
+const stubTheme = {
+  borderColor: (text: string) => text,
+  selectList: {
+    selected: (text: string) => text,
+    normal: (text: string) => text,
+    dim: (text: string) => text,
+    border: (text: string) => text,
+    highlight: (text: string) => text,
+  },
+} as any;
+
+function makeKeybindings(config: Record<string, unknown> = {}) {
+  return {
+    matches: () => false,
+    getEffectiveConfig: () => ({ treeUndo: "ctrl+shift+z", treeRedo: "ctrl+shift+y", ...config }),
+  } as any;
+}
+
+describe("UndoRedoEditor keybindings", () => {
+  // Kitty-protocol CSI-u sequences: ctrl+shift+<key> = <codepoint>;6u
+  const CTRL_SHIFT_Z = "\x1b[122;6u";
+  const CTRL_SHIFT_Y = "\x1b[121;6u";
+  const CTRL_SHIFT_X = "\x1b[120;6u";
+
+  test("ctrl+shift+z submits /undo and ctrl+shift+y submits /redo", () => {
+    const submitted: string[] = [];
+    const editor = new UndoRedoEditor(makeFakeTui(), stubTheme, makeKeybindings());
+    editor.onSubmit = (text) => submitted.push(text);
+
+    editor.handleInput(CTRL_SHIFT_Z);
+    editor.handleInput(CTRL_SHIFT_Y);
+    editor.handleInput(CTRL_SHIFT_Z);
+
+    expect(submitted).toEqual(["/undo", "/redo", "/undo"]);
+  });
+
+  test("custom treeUndo/treeRedo keybindings override the defaults", () => {
+    const submitted: string[] = [];
+    const editor = new UndoRedoEditor(
+      makeFakeTui(),
+      stubTheme,
+      makeKeybindings({ treeUndo: "ctrl+shift+x", treeRedo: "alt+shift+y" }),
+    );
+    editor.onSubmit = (text) => submitted.push(text);
+
+    editor.handleInput(CTRL_SHIFT_X);
+    editor.handleInput(CTRL_SHIFT_Z);
+    expect(submitted).toEqual(["/undo"]);
+  });
+
+  test("single-key string binding is accepted (normalizeKeys array branch)", () => {
+    const submitted: string[] = [];
+    const editor = new UndoRedoEditor(
+      makeFakeTui(),
+      stubTheme,
+      makeKeybindings({ treeUndo: "ctrl+shift+z", treeRedo: "ctrl+shift+y" }),
+    );
+    editor.onSubmit = (text) => submitted.push(text);
+    editor.handleInput(CTRL_SHIFT_Z);
+    expect(submitted).toEqual(["/undo"]);
+  });
+
+  test("non-shortcut input falls through to the upstream editor", () => {
+    const submitted: string[] = [];
+    const editor = new UndoRedoEditor(makeFakeTui(), stubTheme, makeKeybindings());
+    editor.onSubmit = (text) => submitted.push(text);
+
+    editor.handleInput("a");
+    editor.handleInput(CTRL_SHIFT_X);
+    expect(submitted).toHaveLength(0);
   });
 });
