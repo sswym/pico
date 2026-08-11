@@ -8,9 +8,10 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { runSubagentRequest, type SubagentRequest, type SubagentRunContext } from "./orchestrator.ts";
-import { renderSubagentCall, renderSubagentResult } from "./renderer.ts";
+import { runSubagentRequest, waitForSubagentJobs, type SubagentRequest, type SubagentRunContext } from "./orchestrator.ts";
+import { renderSubagentCall, renderSubagentResult, renderSubagentWaitCall } from "./renderer.ts";
 import { cleanupSpillDirs } from "./output.ts";
+import { cancelRunningJobs } from "./jobs.ts";
 import { loadSubagentConfig, drainSubagentConfigErrors } from "./config.ts";
 
 const TaskItem = Type.Object({
@@ -55,13 +56,30 @@ const SubagentParams = Type.Object({
 	sharedContext: Type.Optional(
 		Type.String({ description: "Shared background prepended to every task in parallel (tasks) mode" }),
 	),
+	async: Type.Optional(
+		Type.Boolean({
+			description:
+				'Launch as a background job (single mode only): returns a job id immediately. Collect the result later with the subagent_wait tool (jobs: [id]). The job outlives the current turn and is canceled at session shutdown.',
+		}),
+	),
+	resumeFrom: Type.Optional(
+		Type.String({
+			description:
+				'Path to a saved subagent session file (reported by a previous failed/aborted run) to continue it instead of starting fresh. Single mode only.',
+		}),
+	),
 });
 
 export default function (pi: ExtensionAPI) {
 	// Spilled subagent output files must not accumulate across a long
 	// session — but they must survive until the session ends (2.4.7).
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (_event, ctx) => {
 		cleanupSpillDirs();
+		// Async jobs launched by this session are canceled (child process
+		// groups killed) so no orphan pico processes outlive the session.
+		const manager = (ctx as { sessionManager?: { getSessionId?: () => unknown } })?.sessionManager;
+		const id = manager?.getSessionId?.();
+		cancelRunningJobs(typeof id === "string" && id.length > 0 ? id : undefined);
 	});
 	// 2.2.2: surface subagent.json parse errors in the TUI (console.warn
 	// only reached stderr, so overrides silently didn't apply).
@@ -94,6 +112,8 @@ export default function (pi: ExtensionAPI) {
 			"- Trivial edits, single-line fixes, or simple Q&A",
 			"",
 			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} and {outputs.name} placeholders).",
+			"Single mode also supports async: true — the subagent runs in the background and this tool returns a job id immediately; collect the result later with the subagent_wait tool. Use async for work that should proceed while you keep working.",
+			"To continue a previous failed/aborted run, pass resumeFrom: \"<session file path>\" (the path is reported by the failed run) in single mode.",
 			"To enumerate available agents (built-in + user/project overrides), call this tool with list: true — it returns names, sources and descriptions without running anything.",
 			"Agent frontmatter supports: model, tools, thinking, maxExecutionTimeMs (default 30 min if unset), maxTokens, fallbackModels, systemPromptMode, inheritProjectContext, inheritSkills, acceptance.",
 			"User-level overrides may live in ~/.pico/agent/agents/<name>.md (same name = replaces built-in) or ~/.pico/subagent.json (partial field overrides).",
@@ -114,6 +134,38 @@ export default function (pi: ExtensionAPI) {
 
 		renderCall(args, theme, _context) {
 			return renderSubagentCall(args, theme);
+		},
+
+		renderResult(result, { expanded }, theme, context) {
+			return renderSubagentResult(result, expanded, theme, context);
+		},
+	});
+	pi.registerTool({
+		name: "subagent_wait",
+		label: "Subagent Wait",
+		description: [
+			"Collect results of async subagent jobs launched with subagent(async: true).",
+			"Pass the job ids returned at launch (jobs array); each job's final output is returned once it settles.",
+			"Jobs run in the background of the same process, so call this tool after doing other work — the wait blocks until the jobs finish, up to timeoutMs (default 5 min).",
+			"Failed/aborted jobs are reported with their stop reason; unknown ids are flagged.",
+		].join(" "),
+		parameters: Type.Object({
+			jobs: Type.Array(Type.String(), { description: "Job ids returned by subagent(async: true) launches" }),
+			timeoutMs: Type.Optional(
+				Type.Number({ description: "Max milliseconds to wait. Default 300000 (5 min). Jobs still running when it fires stay running — call again to keep waiting." }),
+			),
+		}),
+
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			return await waitForSubagentJobs(
+				params as { jobs: string[]; timeoutMs?: number },
+				signal,
+				ctx as SubagentRunContext,
+			);
+		},
+
+		renderCall(args, theme, _context) {
+			return renderSubagentWaitCall(args, theme);
 		},
 
 		renderResult(result, { expanded }, theme, context) {

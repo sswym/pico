@@ -37,6 +37,16 @@ export interface SessionsConfig {
 	enabled?: boolean;
 }
 
+export interface PermissionsConfig {
+	/** Tool names denied to every subagent child regardless of agent
+	 *  frontmatter (e.g. ["bash"]). Applies to explicit agent tools lists;
+	 *  for unrestricted agents the child is restricted to the known tool set
+	 *  minus the denied names. */
+	denyTools?: string[];
+	/** Agent names that may never be spawned (inverted allowlist). */
+	denyAgents?: string[];
+}
+
 export interface SubagentConfig {
 	agents?: Record<string, AgentOverride>;
 	defaults?: Partial<AgentOverride>;
@@ -46,6 +56,12 @@ export interface SubagentConfig {
 	spawns?: string[];
 	parallel?: ParallelConfig;
 	sessions?: SessionsConfig;
+	/** Global cap on in-flight subagent children across the whole session
+	 *  (includes async jobs). 0/unset = unlimited. */
+	globalConcurrencyLimit?: number;
+	/** Max child spawns per session; 0/unset = unlimited. */
+	maxSubagentSpawnsPerSession?: number;
+	permissions?: PermissionsConfig;
 }
 
 /** Coerce a config value to a positive integer; invalid values are dropped
@@ -67,6 +83,22 @@ export function resolveSpawnWhitelist(config: SubagentConfig): string[] | undefi
 	if (!Array.isArray(spawns)) return undefined;
 	const names = spawns.map((s) => s.trim()).filter(Boolean);
 	return names.length > 0 ? names : undefined;
+}
+
+/** Tool deny-list; undefined = nothing denied. */
+export function resolveDenyTools(config: SubagentConfig): string[] | undefined {
+	const tools = config.permissions?.denyTools;
+	if (!Array.isArray(tools)) return undefined;
+	const names = tools.map((t) => t.trim()).filter(Boolean);
+	return names.length > 0 ? names : undefined;
+}
+
+/** Agent deny-set; undefined = nothing denied. */
+export function resolveDenyAgents(config: SubagentConfig): Set<string> | undefined {
+	const agents = config.permissions?.denyAgents;
+	if (!Array.isArray(agents)) return undefined;
+	const names = agents.map((a) => a.trim()).filter(Boolean);
+	return names.length > 0 ? new Set(names) : undefined;
 }
 
 const warnedPaths = new Set<string>();

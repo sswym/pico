@@ -1,3 +1,39 @@
+/**
+ * Global cap on in-flight subagent children across the whole session (unlike
+ * mapWithConcurrencyLimit, which scopes to one call). Release exactly once.
+ */
+let activeChildSlots = 0;
+const slotWaiters: Array<() => void> = [];
+
+export function acquireChildSlot(limit: number | undefined): Promise<() => void> {
+	if (!limit || limit <= 0) return Promise.resolve(() => {});
+	return new Promise((resolve) => {
+		let released = false;
+		const release = () => {
+			if (released) return;
+			released = true;
+			activeChildSlots--;
+			const next = slotWaiters.shift();
+			if (next) {
+				activeChildSlots++;
+				next();
+			}
+		};
+		if (activeChildSlots < limit) {
+			activeChildSlots++;
+			resolve(release);
+		} else {
+			slotWaiters.push(() => resolve(release));
+		}
+	});
+}
+
+/** Test-only: reset global slot accounting. */
+export function __resetChildSlotsForTests(): void {
+	activeChildSlots = 0;
+	slotWaiters.length = 0;
+}
+
 export async function mapWithConcurrencyLimit<TIn, TOut>(
 	items: TIn[],
 	concurrency: number,

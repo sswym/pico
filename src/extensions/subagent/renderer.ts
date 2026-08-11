@@ -145,7 +145,20 @@ export function renderSubagentCall(args: any, theme: any) {
 		theme.fg("toolTitle", theme.bold("subagent ")) +
 		theme.fg("accent", agentName) +
 		theme.fg("muted", ` [${scope}]`);
+	if (args.async === true) text += theme.fg("warning", " ↻ async");
 	text += `\n  ${theme.fg("dim", preview)}`;
+	return new Text(text, 0, 0);
+}
+
+export function renderSubagentWaitCall(args: any, theme: any) {
+	const jobs = Array.isArray(args.jobs) ? args.jobs : [];
+	let text =
+		theme.fg("toolTitle", theme.bold("subagent_wait ")) +
+		theme.fg("accent", `${jobs.length} job${jobs.length === 1 ? "" : "s"}`);
+	for (const id of jobs.slice(0, 3)) {
+		text += `\n  ${theme.fg("dim", sanitizeTerminalText(String(id)))}`;
+	}
+	if (jobs.length > 3) text += `\n  ${theme.fg("muted", `${ELLIPSIS} +${jobs.length - 3} more`)}`;
 	return new Text(text, 0, 0);
 }
 

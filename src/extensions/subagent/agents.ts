@@ -48,6 +48,36 @@ export interface AgentConfig {
 	maxRequests?: number;
 }
 
+/**
+ * Tools a subagent child can use when its frontmatter declares no allowlist
+ * (the child runs `pico --mode json` with the default tool set). Only used to
+ * compute the denyTools complement — the set is deliberately maintained by
+ * hand: omitting a tool here excludes it from the child (safe direction), and
+ * the names below are confirmed against pi-coding-agent's core tools plus the
+ * tools registered by pico extensions.
+ */
+export const KNOWN_CHILD_TOOLS = [
+	"bash", "read", "write", "edit", "grep", "find", "ls",
+	"memory", "webSearch", "webFetch", "web_search_exa", "skill",
+	"askUserQuestion", "todoWrite", "subagent", "undo_redo", "lsp", "visionAnalyze",
+];
+
+/**
+ * Apply the config-level tool deny-list to an agent. Explicit allowlists are
+ * filtered; unrestricted agents become restricted to KNOWN_CHILD_TOOLS minus
+ * the denied names (a child with no tools frontmatter otherwise inherits the
+ * full default tool set, which the deny-list could not constrain).
+ */
+export function applyDenyTools(agent: AgentConfig, denied: string[]): AgentConfig {
+	if (denied.length === 0) return agent;
+	if (agent.tools) {
+		const filtered = agent.tools.filter((t) => !denied.includes(t));
+		return { ...agent, tools: filtered };
+	}
+	const allowed = KNOWN_CHILD_TOOLS.filter((t) => !denied.includes(t));
+	return { ...agent, tools: allowed };
+}
+
 export interface AgentDiscoveryResult {
 	agents: AgentConfig[];
 	projectAgentsDir: string | null;

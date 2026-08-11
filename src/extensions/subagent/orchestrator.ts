@@ -4,13 +4,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import { type AgentConfig, type AgentScope, applyDenyTools, discoverAgents } from "./agents.ts";
 import { allowUnattendedProjectAgents } from "../policy.ts";
 import { buildChainTask, findUnresolvedChainReferences } from "./chain.ts";
-import { mapWithConcurrencyLimit } from "./concurrency.ts";
-import { loadSubagentConfig, positiveInt, resolveSpawnWhitelist } from "./config.ts";
+import { acquireChildSlot, mapWithConcurrencyLimit } from "./concurrency.ts";
+import { loadSubagentConfig, positiveInt, resolveDenyAgents, resolveDenyTools, resolveSpawnWhitelist } from "./config.ts";
 import { runWithFallbackModels } from "./fallback.ts";
 import { runGateAfterSuccess } from "./gates.ts";
+import { cancelRunningJobs, createJobId, failJob, getJob, registerJob, settleJob, waitForJobs } from "./jobs.ts";
 import { spillLargeFileOnlyOutput } from "./output.ts";
 import { validateOutputSchema } from "./schema.ts";
 import { picoSubagentSessionDir } from "../paths.ts";
@@ -26,6 +27,7 @@ import {
 	createUnknownAgentResult,
 	runJsonProcess,
 	subagentChildEnv,
+	type SpawnedProcessLike,
 } from "./process.ts";
 import {
 	getFinalOutput,
@@ -83,7 +85,20 @@ export interface SubagentRequest {
 	isolation?: "none" | "worktree";
 	/** Shared background prepended to every parallel task (tasks mode). */
 	sharedContext?: string;
+	/** Launch as a background job (single mode only): returns a job id
+	 *  immediately; collect the result later via the subagent_wait tool. */
+	async?: boolean;
+	/** Path to a saved subagent session file (from a previous failed run) to
+	 *  continue instead of starting fresh. Single mode only. */
+	resumeFrom?: string;
 }
+
+/** Child-process spawn signature, mirroring RunJsonProcessOptions.spawn. */
+export type ChildSpawnFn = (
+	command: string,
+	args: string[],
+	options: { cwd: string; shell: false; stdio: ["ignore", "pipe", "pipe"]; detached: true },
+) => SpawnedProcessLike;
 
 export interface SubagentRunContext {
 	cwd: string;
@@ -92,6 +107,8 @@ export interface SubagentRunContext {
 		confirm(title: string, message: string): Promise<boolean>;
 	};
 	sessionManager?: unknown;
+	/** Test seam: override the child process spawn (default: real spawn). */
+	spawnProcess?: ChildSpawnFn;
 }
 
 /**
@@ -125,6 +142,34 @@ interface AgentRunSupport {
 	/** Parent dir for per-run session files; undefined disables session
 	 *  persistence (--no-session). */
 	persistSessionDir?: string;
+	/** Session key for spawn accounting and async job registration. */
+	sessionKey: string;
+	/** Global cap on in-flight children (subagent.json). */
+	globalConcurrencyLimit?: number;
+	/** Per-session spawn cap (subagent.json); exceeded runs fail fast. */
+	maxSpawnsPerSession?: number;
+	/** Test seam: override the child spawn. */
+	spawnProcess?: ChildSpawnFn;
+}
+
+/** Per-session child spawn counter (subagent.json maxSubagentSpawnsPerSession). */
+const sessionSpawnCounts = new Map<string, number>();
+
+function bumpSessionSpawnCount(sessionKey: string): number {
+	const count = (sessionSpawnCounts.get(sessionKey) ?? 0) + 1;
+	sessionSpawnCounts.set(sessionKey, count);
+	return count;
+}
+
+/** Test-only: reset per-session spawn accounting. */
+export function __resetSessionSpawnCountsForTests(): void {
+	sessionSpawnCounts.clear();
+}
+
+function getSessionKey(ctx: SubagentRunContext): string {
+	const manager = ctx.sessionManager as { getSessionId?: () => unknown } | undefined;
+	const id = manager?.getSessionId?.();
+	return typeof id === "string" && id.length > 0 ? id : "default";
 }
 
 async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
@@ -185,11 +230,38 @@ async function runSingleAgent(
 	support: AgentRunSupport,
 ): Promise<SingleResult> {
 	const { agentName, task, cwd, step } = request;
-	const { defaultCwd, agents, signal, onUpdate, makeDetails, forkSessionPath, persistSessionDir } = support;
+	const {
+		defaultCwd,
+		agents,
+		signal,
+		onUpdate,
+		makeDetails,
+		forkSessionPath,
+		persistSessionDir,
+		sessionKey,
+		globalConcurrencyLimit,
+		maxSpawnsPerSession,
+		spawnProcess,
+	} = support;
 	const agent = agents.find((a) => a.name === agentName);
 
 	if (!agent) {
 		return createUnknownAgentResult(agentName, task, agents, step);
+	}
+
+	if (maxSpawnsPerSession && bumpSessionSpawnCount(sessionKey) > maxSpawnsPerSession) {
+		return {
+			agent: agentName,
+			agentSource: "user",
+			task,
+			exitCode: 1,
+			messages: [],
+			stderr: "",
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+			stopReason: "error",
+			errorMessage: `Max subagent spawns per session (${maxSpawnsPerSession}) exceeded`,
+			step,
+		};
 	}
 
 	let tmpPromptDir: string | null = null;
@@ -231,22 +303,30 @@ async function runSingleAgent(
 		const args = buildAgentProcessArgs(agent, task, forkSessionPath, tmpPromptPath ?? undefined, sessionFile);
 		const invocation = getPiInvocation(args);
 		// 2.6.3: stderr accumulates unboundedly and floods failed-result messages.
-		const processResult = await runJsonProcess({
-			command: invocation.command,
-			args: invocation.args,
-			cwd: cwd ?? defaultCwd,
-			result: currentResult,
-			signal,
-			timeoutMs: agent.maxExecutionTimeMs ?? DEFAULT_AGENT_TIMEOUT_MS,
-			budgetCheck: (() => {
-				const maxRequests = agent.maxRequests;
-				return maxRequests ? () => currentResult.usage.turns >= maxRequests : undefined;
-			})(),
-			// Tag the child with PICO_SUBAGENT_DEPTH so nesting is bounded
-			// (bin/pico.ts refuses to start past MAX_SUBAGENT_DEPTH).
-			spawn: (command, args, options) => spawn(command, args, { ...options, env: subagentChildEnv() }),
-			onMessage: emitUpdate,
-		});
+		// The global slot (subagent.json globalConcurrencyLimit) bounds in-flight
+		// children across the whole session; held only for the child run.
+		const releaseSlot = await acquireChildSlot(globalConcurrencyLimit);
+		let processResult: Awaited<ReturnType<typeof runJsonProcess>>;
+		try {
+			processResult = await runJsonProcess({
+				command: invocation.command,
+				args: invocation.args,
+				cwd: cwd ?? defaultCwd,
+				result: currentResult,
+				signal,
+				timeoutMs: agent.maxExecutionTimeMs ?? DEFAULT_AGENT_TIMEOUT_MS,
+				budgetCheck: (() => {
+					const maxRequests = agent.maxRequests;
+					return maxRequests ? () => currentResult.usage.turns >= maxRequests : undefined;
+				})(),
+				// Tag the child with PICO_SUBAGENT_DEPTH so nesting is bounded
+				// (bin/pico.ts refuses to start past MAX_SUBAGENT_DEPTH).
+				spawn: spawnProcess ?? ((command, args, options) => spawn(command, args, { ...options, env: subagentChildEnv() })),
+				onMessage: emitUpdate,
+			});
+		} finally {
+			releaseSlot();
+		}
 
 		applyProcessExit(currentResult, processResult.exitCode, processResult.timedOut, agent.maxExecutionTimeMs, agent.maxRequests);
 		if (processResult.wasAborted) {
@@ -335,6 +415,120 @@ async function runWithFallback(
 	});
 }
 
+interface AsyncLaunchExtras {
+	persistSessionDir?: string;
+	globalConcurrencyLimit?: number;
+	maxSpawnsPerSession?: number;
+	sessionKey: string;
+}
+
+async function launchAsyncSingleJob(
+	params: { agent: string; task: string; cwd?: string; resumeFrom?: string },
+	ctx: SubagentRunContext,
+	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	agents: AgentConfig[],
+	extras: AsyncLaunchExtras,
+): Promise<SubagentToolResult> {
+	const jobId = createJobId();
+	const controller = new AbortController();
+	// The job outlives the parent turn: only the session-shutdown cancel
+	// (cancelRunningJobs) aborts it, never the parent's per-turn signal.
+	registerJob(extras.sessionKey, jobId, params.agent, params.task, () => controller.abort());
+
+	const resultPromise = runWithFallback(
+		{ agentName: params.agent, task: params.task, cwd: params.cwd },
+		{
+			defaultCwd: ctx.cwd,
+			agents,
+			signal: controller.signal,
+			onUpdate: undefined,
+			makeDetails,
+			forkSessionPath: params.resumeFrom,
+			persistSessionDir: extras.persistSessionDir,
+			sessionKey: extras.sessionKey,
+			globalConcurrencyLimit: extras.globalConcurrencyLimit,
+			maxSpawnsPerSession: extras.maxSpawnsPerSession,
+			spawnProcess: ctx.spawnProcess,
+		},
+	);
+	resultPromise.then(
+		(result) => {
+			settleJob(extras.sessionKey, jobId, result);
+			publishExtensionEvent("subagent_completed", { task: params.task, result: getResultOutput(result) });
+		},
+		(err) => {
+			failJob(extras.sessionKey, jobId, err instanceof Error ? err.message : String(err));
+		},
+	);
+
+	return {
+		content: [
+			{
+				type: "text",
+				text:
+					`Launched async subagent job ${jobId} (agent ${params.agent}).\n` +
+					`The subagent runs in the background. Use the subagent_wait tool with jobs: ["${jobId}"] to collect its result.`,
+			},
+		],
+		details: makeDetails([]),
+	};
+}
+
+/**
+ * Collect results of async subagent jobs (the subagent_wait tool). Waits
+ * until every listed job settles, up to timeoutMs, honoring the turn signal.
+ */
+export async function waitForSubagentJobs(
+	params: { jobs: string[]; timeoutMs?: number },
+	signal: AbortSignal | undefined,
+	ctx: SubagentRunContext,
+): Promise<SubagentToolResult> {
+	const sessionKey = getSessionKey(ctx);
+	const outcome = await waitForJobs(sessionKey, params.jobs, { timeoutMs: params.timeoutMs, signal });
+
+	const results: SingleResult[] = [];
+	const lines: string[] = [];
+	for (const id of params.jobs) {
+		const job = getJob(sessionKey, id);
+		if (!job) {
+			lines.push(`### Job ${id} — unknown (not launched in this session)`);
+			continue;
+		}
+		if (job.errorMessage) {
+			lines.push(`### Job ${id} [${job.agent}] — failed: ${job.errorMessage}`);
+			continue;
+		}
+		if (!job.result) {
+			lines.push(`### Job ${id} [${job.agent}] — still running`);
+			continue;
+		}
+		results.push(job.result);
+		const r = job.result;
+		const status = isFailedResult(r)
+			? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}`
+			: "completed";
+		lines.push(`### Job ${id} [${r.agent}] ${status}\n\n${truncateOutput(getResultOutput(r), PER_TASK_OUTPUT_CAP)}`);
+	}
+
+	let statusLine = "";
+	if (outcome.timedOut) {
+		statusLine = `\n\n_Wait timed out after ${params.timeoutMs ?? "—"}ms: ${outcome.pending.length} job(s) still running. Call subagent_wait again to keep waiting._`;
+	} else if (outcome.aborted) {
+		statusLine = `\n\n_Wait aborted: ${outcome.pending.length} job(s) still running in the background._`;
+	}
+
+	const text = lines.length > 0 ? lines.join("\n\n---\n\n") + statusLine : "(no jobs)";
+	return {
+		content: [{ type: "text", text }],
+		details: {
+			mode: results.length === 1 ? "single" : "parallel",
+			agentScope: "user",
+			projectAgentsDir: null,
+			results,
+		},
+	};
+}
+
 export async function runSubagentRequest(
 	params: SubagentRequest,
 	signal: AbortSignal | undefined,
@@ -360,11 +554,17 @@ export async function runSubagentRequest(
 	}
 
 	// Instance-level tuning from ~/.pico/subagent.json (2.7.x): parallel caps,
-	// spawn allowlist, and session persistence can all be configured there.
+	// spawn allowlist, session persistence, global concurrency, per-session
+	// spawn cap, and tool/agent deny rules can all be configured there.
 	const subagentConfig = loadSubagentConfig();
 	const maxParallelTasks = positiveInt(subagentConfig.parallel?.maxTasks) ?? MAX_PARALLEL_TASKS;
 	const maxConcurrency = positiveInt(subagentConfig.parallel?.concurrency) ?? MAX_CONCURRENCY;
 	const spawnWhitelist = resolveSpawnWhitelist(subagentConfig);
+	const denyTools = resolveDenyTools(subagentConfig);
+	const denyAgents = resolveDenyAgents(subagentConfig);
+	const globalConcurrencyLimit = positiveInt(subagentConfig.globalConcurrencyLimit);
+	const maxSpawnsPerSession = positiveInt(subagentConfig.maxSubagentSpawnsPerSession);
+	const sessionKey = getSessionKey(ctx);
 	const persistSessionDir =
 		subagentConfig.sessions?.enabled === false ? undefined : picoSubagentSessionDir();
 	if (persistSessionDir) {
@@ -374,6 +574,10 @@ export async function runSubagentRequest(
 			/* non-fatal: fall back to --no-session semantics */
 		}
 	}
+
+	// P2 permissions.denyTools: enforced here so it applies to every mode and
+	// to nested subagent processes (they inherit the same config).
+	const effectiveAgents = denyTools ? agents.map((a) => applyDenyTools(a, denyTools)) : agents;
 
 	const hasChain = (params.chain?.length ?? 0) > 0;
 	const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -402,6 +606,20 @@ export async function runSubagentRequest(
 		};
 	}
 
+	// async and resumeFrom are single-mode-only knobs; silently ignoring them
+	// in parallel/chain calls would surprise the caller.
+	if ((params.async === true || params.resumeFrom) && (hasChain || hasTasks)) {
+		return {
+			content: [
+				{
+					type: "text",
+					text: "Invalid parameters: async and resumeFrom are only supported in single mode (agent + task).",
+				},
+			],
+			details: makeDetails(hasChain ? "chain" : "parallel")([]),
+		};
+	}
+
 	// 2.7.1: spawn allowlist — refuse agents not listed in subagent.json's
 	// `spawns` before any confirmation or execution. Nested subagent
 	// processes inherit the same config, so the allowlist holds recursively.
@@ -417,6 +635,27 @@ export async function runSubagentRequest(
 					{
 						type: "text",
 						text: `Canceled: agent(s) not in the spawn allowlist (subagent.json "spawns"): ${blocked.join(", ")}. Allowed: ${spawnWhitelist.join(", ")}.`,
+					},
+				],
+				details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
+			};
+		}
+	}
+
+	// P2 permissions.denyAgents: inverted allowlist, always enforced. Applies
+	// to every mode; nested subagent processes inherit the same config.
+	if (denyAgents && denyAgents.size > 0) {
+		const requestedAgentNames = new Set<string>();
+		if (params.chain) for (const step of params.chain) requestedAgentNames.add(step.agent);
+		if (params.tasks) for (const t of params.tasks) requestedAgentNames.add(t.agent);
+		if (params.agent) requestedAgentNames.add(params.agent);
+		const denied = Array.from(requestedAgentNames).filter((name) => denyAgents.has(name));
+		if (denied.length > 0) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Canceled: agent(s) denied by subagent.json permissions.denyAgents: ${denied.join(", ")}.`,
 					},
 				],
 				details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
@@ -503,8 +742,8 @@ export async function runSubagentRequest(
 			}
 
 			const stepAgents = step.model
-				? agents.map((a) => (a.name === step.agent ? { ...a, model: step.model } : a))
-				: agents;
+				? effectiveAgents.map((a) => (a.name === step.agent ? { ...a, model: step.model } : a))
+				: effectiveAgents;
 
 			let stepForkPath: string | undefined;
 			let stepForkFallback: string | undefined;
@@ -536,6 +775,10 @@ export async function runSubagentRequest(
 					makeDetails: makeDetails("chain"),
 					forkSessionPath: stepForkPath,
 					persistSessionDir,
+					sessionKey,
+					globalConcurrencyLimit,
+					maxSpawnsPerSession,
+					spawnProcess: ctx.spawnProcess,
 				},
 			);
 
@@ -556,7 +799,7 @@ export async function runSubagentRequest(
 			if (isError) {
 				const errorMsg = getResultOutput(result);
 				const resumeHint = result.sessionFile
-					? `\n\nSession saved for continuation: ${result.sessionFile} (run "pico --session <path>" to continue)`
+					? `\n\nSession saved for continuation: ${result.sessionFile} (continue with subagent(resumeFrom: "${result.sessionFile}") or "pico --session <path>")`
 					: "";
 				// Throw instead of returning an isError flag: the agent loop only
 				// derives isError from thrown exceptions, so a returned flag is
@@ -667,7 +910,7 @@ export async function runSubagentRequest(
 						{ agentName: t.agent, task: buildTaskPrompt(t.task), cwd: taskCwd },
 						{
 							defaultCwd: ctx.cwd,
-							agents,
+							agents: effectiveAgents,
 							signal: parallelSignal,
 							onUpdate: (partial) => {
 							if (partial.details?.results[0]) {
@@ -678,6 +921,10 @@ export async function runSubagentRequest(
 							makeDetails: makeDetails("parallel"),
 							forkSessionPath: forkPath,
 							persistSessionDir,
+							sessionKey,
+							globalConcurrencyLimit,
+							maxSpawnsPerSession,
+							spawnProcess: ctx.spawnProcess,
 						},
 					);
 					if (forkFallbackNote) result.contextFallback = forkFallbackNote;
@@ -730,9 +977,38 @@ export async function runSubagentRequest(
 	}
 
 	if (params.agent && params.task) {
+		if (params.resumeFrom && !fs.existsSync(params.resumeFrom)) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Invalid resumeFrom path: ${params.resumeFrom} — file does not exist. Pass the session file path reported by a failed run.`,
+					},
+				],
+				details: makeDetails("single")([]),
+			};
+		}
+
+		// Async launch (P0): spawn immediately and return a job id; the child
+		// finishes in the background and the result is collected later via the
+		// subagent_wait tool.
+		if (params.async === true) {
+			return await launchAsyncSingleJob(
+				{ agent: params.agent, task: params.task, cwd: params.cwd, resumeFrom: params.resumeFrom },
+				ctx,
+				makeDetails("single"),
+				effectiveAgents,
+				{ persistSessionDir, globalConcurrencyLimit, maxSpawnsPerSession, sessionKey },
+			);
+		}
+
 		let forkPath: string | undefined;
 		let forkFallbackNote: string | undefined;
-		if (params.context === "fork") {
+		if (params.resumeFrom) {
+			// Resume: reuse the saved session file instead of creating a fresh
+			// per-run one, so the child continues where the failed run stopped.
+			forkPath = params.resumeFrom;
+		} else if (params.context === "fork") {
 			forkPath = tryForkSession(ctx.sessionManager);
 			if (!forkPath) forkFallbackNote = "context=fork requested but session forking unavailable; using fresh context";
 		}
@@ -740,18 +1016,22 @@ export async function runSubagentRequest(
 			{ agentName: params.agent, task: params.task, cwd: params.cwd },
 			{
 				defaultCwd: ctx.cwd,
-				agents,
+				agents: effectiveAgents,
 				signal,
 				onUpdate,
 				makeDetails: makeDetails("single"),
 				forkSessionPath: forkPath,
 				persistSessionDir,
+				sessionKey,
+				globalConcurrencyLimit,
+				maxSpawnsPerSession,
+				spawnProcess: ctx.spawnProcess,
 			},
 		);
 		publishExtensionEvent("subagent_completed", { task: params.task, result: getResultOutput(result) });
 		if (forkFallbackNote) result.contextFallback = forkFallbackNote;
 		const resumeHint = result.sessionFile
-			? `\n\nSession saved for continuation: ${result.sessionFile} (run "pico --session <path>" to continue)`
+			? `\n\nSession saved for continuation: ${result.sessionFile} (continue with subagent(resumeFrom: "${result.sessionFile}") or "pico --session <path>")`
 			: "";
 		if (result.stopReason === "aborted") {
 			return {

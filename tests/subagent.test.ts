@@ -5,14 +5,16 @@
  * the right tool, and that `discoverAgents` finds the four bundled roles.
  */
 import { expect, test } from "bun:test";
+import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { describeSiblingResults, runSubagentRequest } from "../src/extensions/subagent/orchestrator.ts";
-import { discoverAgents } from "../src/extensions/subagent/agents.ts";
+import { describeSiblingResults, runSubagentRequest, waitForSubagentJobs, __resetSessionSpawnCountsForTests } from "../src/extensions/subagent/orchestrator.ts";
+import { applyDenyTools, discoverAgents, KNOWN_CHILD_TOOLS } from "../src/extensions/subagent/agents.ts";
 import { buildChainTask, findUnresolvedChainReferences } from "../src/extensions/subagent/chain.ts";
-import { mapWithConcurrencyLimit } from "../src/extensions/subagent/concurrency.ts";
+import { mapWithConcurrencyLimit, acquireChildSlot, __resetChildSlotsForTests } from "../src/extensions/subagent/concurrency.ts";
+import { applyOverrides, resolveDenyAgents, resolveDenyTools } from "../src/extensions/subagent/config.ts";
 import { isProviderFailure, runWithFallbackModels } from "../src/extensions/subagent/fallback.ts";
 import {
   buildRepairTask,
@@ -23,6 +25,7 @@ import {
   type GateResult,
 } from "../src/extensions/subagent/gates.ts";
 import subagentExtension from "../src/extensions/subagent/index.ts";
+import { __resetJobsForTests, cancelRunningJobs, createJobId, failJob, getJob, registerJob, settleJob, waitForJobs } from "../src/extensions/subagent/jobs.ts";
 import { spillLargeFileOnlyOutput } from "../src/extensions/subagent/output.ts";
 import {
   createParallelPlaceholders,
@@ -42,6 +45,7 @@ import {
   formatUsageStats,
   renderSubagentCall,
   renderSubagentResult,
+  renderSubagentWaitCall,
 } from "../src/extensions/subagent/renderer.ts";
 import { applyJsonModeLine } from "../src/extensions/subagent/runner.ts";
 import {
@@ -53,7 +57,6 @@ import {
   type SingleResult,
 } from "../src/extensions/subagent/results.ts";
 import { tryForkSession } from "../src/extensions/subagent/session.ts";
-import { applyOverrides } from "../src/extensions/subagent/config.ts";
 import {
   cleanupWorktrees,
   createWorktree,
@@ -1937,4 +1940,385 @@ test("buildAgentProcessArgs output passes the -p prompt guard (subagent spawn re
   const args = buildAgentProcessArgs(agent, "Task: do work", "/tmp/session.json", "/tmp/prompt.md", undefined);
   // The child is spawned as `pico ...args`; the -p guard must accept it.
   expect(missingPrintPrompt(args)).toBe(false);
+});
+
+// ── P0: async jobs (jobs.ts + async launch + subagent_wait) ─────────────────
+
+function makeSingleResult(overrides: Record<string, unknown> = {}): SingleResult {
+  return {
+    agent: "worker",
+    agentSource: "user",
+    task: "t",
+    exitCode: 0,
+    messages: [fauxAssistantMessage([fauxText("out")], { stopReason: "stop" })],
+    stderr: "",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+    ...overrides,
+  };
+}
+
+async function tickUntil(cond: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) throw new Error("tickUntil timeout");
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+function withSubagentHome(fn: (home: string) => Promise<void>): Promise<void> {
+  const home = mkdtempSync(join(tmpdir(), "pico-subagent-tests-"));
+  const savedHome = process.env.PICO_HOME;
+  const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PICO_HOME = home;
+  process.env.PI_CODING_AGENT_DIR = join(home, "agent");
+  return fn(home).finally(() => {
+    if (savedHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = savedHome;
+    if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+    rmSync(home, { recursive: true, force: true });
+  });
+}
+
+const plainCtx = (spawnProcess: (command: string, args: string[]) => FakeProcess) => ({
+  cwd: process.cwd(),
+  hasUI: false,
+  ui: { confirm: async () => true },
+  sessionManager: undefined,
+  spawnProcess,
+});
+
+test("jobs: waitForJobs resolves immediately when jobs are already settled", async () => {
+  try {
+    registerJob("default", "subagent-job-1", "worker", "t", () => {});
+    settleJob("default", "subagent-job-1", makeSingleResult());
+    const outcome = await waitForJobs("default", ["subagent-job-1"]);
+    expect(outcome.settled.map((j) => j.id)).toEqual(["subagent-job-1"]);
+    expect(outcome.pending).toEqual([]);
+    expect(outcome.timedOut).toBe(false);
+  } finally {
+    __resetJobsForTests();
+  }
+});
+
+test("jobs: waitForJobs waits for a later settle and reports unknown ids", async () => {
+  try {
+    registerJob("default", "subagent-job-1", "worker", "t", () => {});
+    const waiter = waitForJobs("default", ["subagent-job-1", "nope-1"]);
+    setTimeout(() => settleJob("default", "subagent-job-1", makeSingleResult()), 10);
+    const outcome = await waiter;
+    expect(outcome.pending).toEqual([]);
+    expect(outcome.settled[0]?.id).toBe("subagent-job-1");
+    expect(outcome.unknown).toEqual(["nope-1"]);
+  } finally {
+    __resetJobsForTests();
+  }
+});
+
+test("jobs: waitForJobs times out with pending ids when no settle arrives", async () => {
+  try {
+    registerJob("default", "subagent-job-1", "worker", "t", () => {});
+    const outcome = await waitForJobs("default", ["subagent-job-1"], { timeoutMs: 10 });
+    expect(outcome.timedOut).toBe(true);
+    expect(outcome.pending).toEqual(["subagent-job-1"]);
+    expect(outcome.settled).toEqual([]);
+  } finally {
+    __resetJobsForTests();
+  }
+});
+
+test("jobs: waitForJobs aborts on the signal and reports pending ids", async () => {
+  try {
+    registerJob("default", "subagent-job-1", "worker", "t", () => {});
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 10);
+    const outcome = await waitForJobs("default", ["subagent-job-1"], { signal: controller.signal });
+    expect(outcome.aborted).toBe(true);
+    expect(outcome.pending).toEqual(["subagent-job-1"]);
+  } finally {
+    __resetJobsForTests();
+  }
+});
+
+test("jobs: cancelRunningJobs aborts running jobs and settles them with an error", async () => {
+  try {
+    let canceled = 0;
+    registerJob("default", "subagent-job-1", "worker", "t", () => { canceled++; });
+    const ids = cancelRunningJobs("default");
+    expect(ids).toEqual(["subagent-job-1"]);
+    expect(canceled).toBe(1);
+    const job = getJob("default", "subagent-job-1");
+    expect(job?.status).toBe("settled");
+    expect(job?.errorMessage).toContain("session shutdown");
+  } finally {
+    __resetJobsForTests();
+  }
+});
+
+test("P0: async launch returns a job id immediately and the job settles in the background", async () => {
+  await withSubagentHome(async () => {
+    const procs: FakeProcess[] = [];
+    const ctx = plainCtx(() => {
+      const p = new FakeProcess();
+      procs.push(p);
+      return p;
+    });
+    try {
+      const res = await runSubagentRequest({ agent: "worker", task: "background work", async: true }, undefined, undefined, ctx);
+      const text = res.content.find((p) => p.type === "text")?.text ?? "";
+      const match = /subagent-job-(\d+)/.exec(text);
+      expect(match).not.toBeNull();
+      const jobId = `subagent-job-${match![1]}`;
+      expect(text).toContain("subagent_wait");
+
+      const job = getJob("default", jobId);
+      expect(job?.status).toBe("running");
+
+      await tickUntil(() => procs.length === 1);
+      procs[0]!.stdoutData('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"async done"}],"usage":{"input":1,"output":2}}}\n');
+      procs[0]!.close(0);
+
+      const outcome = await waitForJobs("default", [jobId]);
+      expect(outcome.pending).toEqual([]);
+      const settled = getJob("default", jobId);
+      expect(settled?.status).toBe("settled");
+      expect(settled?.result?.usage.turns).toBe(1);
+    } finally {
+      for (const p of procs) if (!p.killed) p.close(0);
+      __resetJobsForTests();
+      __resetChildSlotsForTests();
+      __resetSessionSpawnCountsForTests();
+    }
+  });
+});
+
+test("P0: subagent_wait reports settled and unknown jobs", async () => {
+  try {
+    registerJob("default", "subagent-job-1", "worker", "t1", () => {});
+    settleJob("default", "subagent-job-1", makeSingleResult({ task: "t1" }));
+    const res = await waitForSubagentJobs(
+      { jobs: ["subagent-job-1", "subagent-job-99"] },
+      undefined,
+      { cwd: process.cwd(), hasUI: false, ui: { confirm: async () => true } },
+    );
+    const text = res.content.find((p) => p.type === "text")?.text ?? "";
+    expect(text).toContain("subagent-job-1 [worker] completed");
+    expect(text).toContain("subagent-job-99 — unknown");
+  } finally {
+    __resetJobsForTests();
+  }
+});
+
+test("P0: subagent_wait times out and aborts with pending jobs still running", async () => {
+  try {
+    registerJob("default", "subagent-job-1", "worker", "t", () => {});
+    const timedOut = await waitForSubagentJobs(
+      { jobs: ["subagent-job-1"], timeoutMs: 10 },
+      undefined,
+      { cwd: process.cwd(), hasUI: false, ui: { confirm: async () => true } },
+    );
+    const timeoutText = timedOut.content.find((p) => p.type === "text")?.text ?? "";
+    expect(timeoutText).toContain("still running");
+    expect(timeoutText).toContain("timed out");
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 10);
+    const aborted = await waitForSubagentJobs(
+      { jobs: ["subagent-job-1"] },
+      controller.signal,
+      { cwd: process.cwd(), hasUI: false, ui: { confirm: async () => true } },
+    );
+    const abortText = aborted.content.find((p) => p.type === "text")?.text ?? "";
+    expect(abortText).toContain("Wait aborted");
+  } finally {
+    __resetJobsForTests();
+  }
+});
+
+test("P0: subagent_wait renders a single settled job as a single-mode result", async () => {
+  try {
+    registerJob("default", "subagent-job-1", "worker", "t", () => {});
+    settleJob("default", "subagent-job-1", makeSingleResult());
+    const res = await waitForSubagentJobs(
+      { jobs: ["subagent-job-1"] },
+      undefined,
+      { cwd: process.cwd(), hasUI: false, ui: { confirm: async () => true } },
+    );
+    expect(res.details.mode).toBe("single");
+    expect(res.details.results.length).toBe(1);
+  } finally {
+    __resetJobsForTests();
+  }
+});
+
+// ── P1: resumeFrom (resume a saved session) ─────────────────────────────────
+
+test("P1: resumeFrom passes the saved session file to the child", async () => {
+  await withSubagentHome(async (home) => {
+    const sessionFile = join(home, "saved-session.jsonl");
+    writeFileSync(sessionFile, "{}");
+    const procs: FakeProcess[] = [];
+    const captured: string[][] = [];
+    const ctx = plainCtx((_command: string, args: string[]) => {
+      captured.push(args);
+      const p = new FakeProcess();
+      procs.push(p);
+      return p;
+    });
+    try {
+      const run = runSubagentRequest({ agent: "worker", task: "continue", resumeFrom: sessionFile }, undefined, undefined, ctx);
+      await tickUntil(() => procs.length === 1);
+      const args = captured[0]!;
+      expect(args).toContain("--session");
+      const idx = args.indexOf("--session");
+      expect(args[idx + 1]).toBe(sessionFile);
+      procs[0]!.close(0);
+      await run;
+    } finally {
+      for (const p of procs) if (!p.killed) p.close(0);
+      __resetJobsForTests();
+      __resetChildSlotsForTests();
+      __resetSessionSpawnCountsForTests();
+    }
+  });
+});
+
+// ── P2: permissions + session caps ──────────────────────────────────────────
+
+test("P2: applyDenyTools filters explicit lists and restricts unrestricted agents", () => {
+  const base = { description: "d", systemPrompt: "", source: "user" as const, filePath: "/x" };
+  const explicit = applyDenyTools({ name: "a", tools: ["bash", "read"], ...base }, ["bash"]);
+  expect(explicit.tools).toEqual(["read"]);
+  const unrestricted = applyDenyTools({ name: "a", ...base }, ["bash"]);
+  expect(unrestricted.tools).toEqual(KNOWN_CHILD_TOOLS.filter((t) => t !== "bash"));
+  const noop = applyDenyTools({ name: "a", ...base }, []);
+  expect(noop.tools).toBeUndefined();
+});
+
+test("P2: resolveDenyTools / resolveDenyAgents parse config permissions", () => {
+  expect(resolveDenyTools({ permissions: { denyTools: ["bash", " write "] } })).toEqual(["bash", "write"]);
+  expect(resolveDenyTools({ permissions: {} })).toBeUndefined();
+  expect(resolveDenyAgents({ permissions: { denyAgents: ["worker"] } })).toEqual(new Set(["worker"]));
+  expect(resolveDenyAgents({})).toBeUndefined();
+});
+
+test("P2: acquireChildSlot enforces the global cap and hands slots to waiters", async () => {
+  try {
+    const noop = await acquireChildSlot(undefined);
+    expect(typeof noop).toBe("function");
+    noop();
+
+    const release1 = await acquireChildSlot(1);
+    let secondAcquired = false;
+    const second = acquireChildSlot(1).then((release) => {
+      secondAcquired = true;
+      return release;
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(secondAcquired).toBe(false);
+    release1();
+    const release2 = await second;
+    expect(secondAcquired).toBe(true);
+    release2();
+  } finally {
+    __resetChildSlotsForTests();
+  }
+});
+
+test("P2: denyTools strips denied tools from the child spawn args", async () => {
+  await withSubagentHome(async (home) => {
+    writeFileSync(join(home, "subagent.json"), JSON.stringify({ permissions: { denyTools: ["bash"] } }));
+    const procs: FakeProcess[] = [];
+    const captured: string[][] = [];
+    const ctx = plainCtx((_command: string, args: string[]) => {
+      captured.push(args);
+      const p = new FakeProcess();
+      procs.push(p);
+      return p;
+    });
+    try {
+      const run = runSubagentRequest({ agent: "worker", task: "x" }, undefined, undefined, ctx);
+      await tickUntil(() => procs.length === 1);
+      const args = captured[0]!;
+      const toolsIdx = args.indexOf("--tools");
+      expect(toolsIdx).not.toBe(-1);
+      const tools = args[toolsIdx + 1]!.split(",");
+      expect(tools).not.toContain("bash");
+      expect(tools).toContain("read");
+      procs[0]!.close(0);
+      await run;
+    } finally {
+      for (const p of procs) if (!p.killed) p.close(0);
+      __resetChildSlotsForTests();
+      __resetSessionSpawnCountsForTests();
+    }
+  });
+});
+
+test("P2: maxSubagentSpawnsPerSession refuses extra spawns in a session", async () => {
+  await withSubagentHome(async (home) => {
+    writeFileSync(join(home, "subagent.json"), JSON.stringify({ maxSubagentSpawnsPerSession: 1 }));
+    const procs: FakeProcess[] = [];
+    const ctx = plainCtx(() => {
+      const p = new FakeProcess();
+      procs.push(p);
+      return p;
+    });
+    try {
+      const first = runSubagentRequest({ agent: "worker", task: "one" }, undefined, undefined, ctx);
+      await tickUntil(() => procs.length === 1);
+      procs[0]!.close(0);
+      await first;
+      expect(procs.length).toBe(1);
+
+      await expect(
+        runSubagentRequest({ agent: "worker", task: "two" }, undefined, undefined, ctx),
+      ).rejects.toThrow(/Max subagent spawns per session \(1\) exceeded/);
+      expect(procs.length).toBe(1);
+    } finally {
+      for (const p of procs) if (!p.killed) p.close(0);
+      __resetChildSlotsForTests();
+      __resetSessionSpawnCountsForTests();
+    }
+  });
+});
+
+test("P2: globalConcurrencyLimit bounds in-flight children across async jobs", async () => {
+  await withSubagentHome(async (home) => {
+    writeFileSync(join(home, "subagent.json"), JSON.stringify({ globalConcurrencyLimit: 1 }));
+    const procs: FakeProcess[] = [];
+    const ctx = plainCtx(() => {
+      const p = new FakeProcess();
+      procs.push(p);
+      return p;
+    });
+    const launch = async (task: string) => {
+      const res = await runSubagentRequest({ agent: "worker", task, async: true }, undefined, undefined, ctx);
+      const text = res.content.find((p) => p.type === "text")?.text ?? "";
+      const match = /subagent-job-(\d+)/.exec(text);
+      expect(match).not.toBeNull();
+      return `subagent-job-${match![1]}`;
+    };
+    try {
+      const job1 = await launch("one");
+      await tickUntil(() => procs.length === 1);
+      const job2 = await launch("two");
+      // second job's child must NOT spawn while job1 holds the only slot
+      await new Promise((r) => setTimeout(r, 10));
+      expect(procs.length).toBe(1);
+
+      procs[0]!.close(0);
+      await waitForJobs("default", [job1]);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(procs.length).toBe(2);
+
+      procs[1]!.close(0);
+      await waitForJobs("default", [job2]);
+    } finally {
+      for (const p of procs) if (!p.killed) p.close(0);
+      __resetJobsForTests();
+      __resetChildSlotsForTests();
+      __resetSessionSpawnCountsForTests();
+    }
+  });
 });

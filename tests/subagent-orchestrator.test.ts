@@ -415,3 +415,61 @@ test("renderer: parallel result renders running placeholders", async () => {
   expect(rendered).toContain("1/2 done, 1 running");
   expect(rendered).toContain("(running…)");
 });
+
+// ── P0/P1/P2: pre-spawn branch enforcement ──────────────────────────────────
+
+test("single: async and resumeFrom are rejected in parallel/chain modes", async () => {
+  const par = await runSubagentRequest(
+    { tasks: [{ agent: "worker", task: "a" }], async: true },
+    undefined,
+    undefined,
+    makeCtx(process.cwd()),
+  );
+  expect(makeText(par)).toContain("async and resumeFrom are only supported in single mode");
+
+  const chain = await runSubagentRequest(
+    { chain: [{ agent: "worker", task: "a" }], resumeFrom: "/x" },
+    undefined,
+    undefined,
+    makeCtx(process.cwd()),
+  );
+  expect(makeText(chain)).toContain("async and resumeFrom are only supported in single mode");
+});
+
+test("single: resumeFrom with a nonexistent path is refused before spawn", async () => {
+  const result = await runSubagentRequest(
+    { agent: "worker", task: "x", resumeFrom: "/no/such/session.jsonl" },
+    undefined,
+    undefined,
+    makeCtx(process.cwd()),
+  );
+  expect(makeText(result)).toContain("Invalid resumeFrom path");
+});
+
+test("single: permissions.denyAgents refuses denied agents before spawn", async () => {
+  writeSubagentConfig({ permissions: { denyAgents: ["worker"] } });
+  const result = await runSubagentRequest(
+    { agent: "worker", task: "x" },
+    undefined,
+    undefined,
+    makeCtx(process.cwd()),
+  );
+  const text = makeText(result);
+  expect(text).toContain("denied by subagent.json permissions.denyAgents");
+  expect(text).toContain("worker");
+});
+
+test("renderer: renderSubagentWaitCall lists jobs", async () => {
+  const { renderSubagentWaitCall } = await import("../src/extensions/subagent/renderer.ts");
+  const two = renderText(renderSubagentWaitCall({ jobs: ["subagent-job-1", "subagent-job-2"] }, plainTheme));
+  expect(two).toContain("2 jobs");
+  expect(two).toContain("subagent-job-1");
+  const one = renderText(renderSubagentWaitCall({ jobs: ["subagent-job-1"] }, plainTheme));
+  expect(one).toContain("1 job");
+});
+
+test("renderer: renderSubagentCall marks async launches", async () => {
+  const { renderSubagentCall } = await import("../src/extensions/subagent/renderer.ts");
+  const rendered = renderText(renderSubagentCall({ agent: "worker", task: "t", async: true }, plainTheme));
+  expect(rendered).toContain("async");
+});
