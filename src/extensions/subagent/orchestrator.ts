@@ -12,6 +12,15 @@ import { loadSubagentConfig, positiveInt, resolveDenyAgents, resolveDenyTools, r
 import { runWithFallbackModels } from "./fallback.ts";
 import { runGateAfterSuccess } from "./gates.ts";
 import { cancelRunningJobs, createJobId, failJob, getJob, registerJob, settleJob, waitForJobs } from "./jobs.ts";
+import {
+	SUBAGENT_CHANNEL_DIR_ENV,
+	SUBAGENT_CHILD_AGENT_ENV,
+	SUBAGENT_CHILD_INDEX_ENV,
+	SUBAGENT_ORCHESTRATOR_SESSION_ID_ENV,
+	SUBAGENT_RUN_ID_ENV,
+	createChannelDir,
+	createRunId,
+} from "./supervisor-channel.ts";
 import { spillLargeFileOnlyOutput } from "./output.ts";
 import { validateOutputSchema } from "./schema.ts";
 import { picoSubagentSessionDir } from "../paths.ts";
@@ -302,6 +311,13 @@ async function runSingleAgent(
 
 		const args = buildAgentProcessArgs(agent, task, forkSessionPath, tmpPromptPath ?? undefined, sessionFile);
 		const invocation = getPiInvocation(args);
+
+		// Supervisor channel（intercom）：每个 run 一个通道目录，身份经环境
+		// 变量传给子进程；子进程内 contact_supervisor 据此写请求/轮询回复，
+		// 父侧轮询器（supervisor-channel.ts）扫描同一根目录。
+		const runId = createRunId();
+		const channelDir = createChannelDir(runId, agent.name, step ?? 0);
+
 		// 2.6.3: stderr accumulates unboundedly and floods failed-result messages.
 		// The global slot (subagent.json globalConcurrencyLimit) bounds in-flight
 		// children across the whole session; held only for the child run.
@@ -321,7 +337,16 @@ async function runSingleAgent(
 				})(),
 				// Tag the child with PICO_SUBAGENT_DEPTH so nesting is bounded
 				// (bin/pico.ts refuses to start past MAX_SUBAGENT_DEPTH).
-				spawn: spawnProcess ?? ((command, args, options) => spawn(command, args, { ...options, env: subagentChildEnv() })),
+				spawn: spawnProcess ?? ((command, args, options) => spawn(command, args, {
+					...options,
+					env: subagentChildEnv({
+						[SUBAGENT_CHANNEL_DIR_ENV]: channelDir,
+						[SUBAGENT_RUN_ID_ENV]: runId,
+						[SUBAGENT_CHILD_AGENT_ENV]: agent.name,
+						[SUBAGENT_CHILD_INDEX_ENV]: String(step ?? 0),
+						[SUBAGENT_ORCHESTRATOR_SESSION_ID_ENV]: sessionKey,
+					}),
+				})),
 				onMessage: emitUpdate,
 			});
 		} finally {

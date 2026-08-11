@@ -12,6 +12,7 @@ import { runSubagentRequest, waitForSubagentJobs, type SubagentRequest, type Sub
 import { renderSubagentCall, renderSubagentResult, renderSubagentWaitCall } from "./renderer.ts";
 import { cleanupSpillDirs } from "./output.ts";
 import { cancelRunningJobs } from "./jobs.ts";
+import { createSupervisorChannel, registerChildSupervisorTool } from "./supervisor-channel.ts";
 import { loadSubagentConfig, drainSubagentConfigErrors } from "./config.ts";
 
 const TaskItem = Type.Object({
@@ -71,6 +72,11 @@ const SubagentParams = Type.Object({
 });
 
 export default function (pi: ExtensionAPI) {
+	// Supervisor channel（intercom）：子代理进程同样运行本扩展，由环境变量
+	// 身份门控注册 contact_supervisor；父侧轮询器随会话启停。
+	const supervisorChannel = createSupervisorChannel(pi);
+	registerChildSupervisorTool(pi);
+
 	// Spilled subagent output files must not accumulate across a long
 	// session — but they must survive until the session ends (2.4.7).
 	pi.on("session_shutdown", (_event, ctx) => {
@@ -80,6 +86,7 @@ export default function (pi: ExtensionAPI) {
 		const manager = (ctx as { sessionManager?: { getSessionId?: () => unknown } })?.sessionManager;
 		const id = manager?.getSessionId?.();
 		cancelRunningJobs(typeof id === "string" && id.length > 0 ? id : undefined);
+		supervisorChannel.dispose();
 	});
 	// 2.2.2: surface subagent.json parse errors in the TUI (console.warn
 	// only reached stderr, so overrides silently didn't apply).
@@ -92,6 +99,9 @@ export default function (pi: ExtensionAPI) {
 				// non-TUI mode may drop notify
 			}
 		}
+		const manager = (ctx as { sessionManager?: { getSessionId?: () => unknown } })?.sessionManager;
+		const sessionId = manager?.getSessionId?.();
+		supervisorChannel.start(typeof sessionId === "string" && sessionId.length > 0 ? sessionId : "default");
 	});
 	pi.registerTool({
 		name: "subagent",

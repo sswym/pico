@@ -53,11 +53,12 @@ const STDOUT_PARTIAL_CAP_BYTES = 1024 * 1024;
 export const SUBAGENT_DEPTH_ENV = "PICO_SUBAGENT_DEPTH";
 export const MAX_SUBAGENT_DEPTH = 3;
 
-/** Environment for a subagent child: inherit parent env + bumped depth. */
-export function subagentChildEnv(): Record<string, string> {
+/** Environment for a subagent child: inherit parent env + bumped depth and
+ *  any caller-provided overrides (e.g. supervisor channel identity). */
+export function subagentChildEnv(extra?: Record<string, string>): Record<string, string> {
 	const raw = Number.parseInt(process.env[SUBAGENT_DEPTH_ENV] ?? "0", 10);
 	const depth = Number.isFinite(raw) && raw >= 0 ? raw : 0;
-	return { ...process.env, [SUBAGENT_DEPTH_ENV]: String(depth + 1) };
+	return { ...process.env, [SUBAGENT_DEPTH_ENV]: String(depth + 1), ...extra };
 }
 
 function appendStderr(result: SingleResult, chunk: string): void {
@@ -154,7 +155,14 @@ export function buildAgentProcessArgs(
 		args.push("--no-session");
 	}
 	if (agent.model) args.push("--model", agent.model);
-	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+	// The supervisor channel tool must survive frontmatter tools allowlists —
+	// a restricted agent would otherwise be unable to ask the parent for a
+	// decision (intercom). Low-risk tool (writes only under the temp channel).
+	if (agent.tools && agent.tools.length > 0 && !agent.tools.includes("contact_supervisor")) {
+		args.push("--tools", [...agent.tools, "contact_supervisor"].join(","));
+	} else if (agent.tools && agent.tools.length > 0) {
+		args.push("--tools", agent.tools.join(","));
+	}
 	if (agent.maxTokens) args.push("--max-tokens", String(agent.maxTokens));
 	if (agent.thinking) args.push("--thinking", agent.thinking);
 	// Frontmatter switches: inheritProjectContext=false strips AGENTS.md/CLAUDE.md

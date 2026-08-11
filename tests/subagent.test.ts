@@ -462,7 +462,7 @@ test("process helpers build process args and apply timeout exits", () => {
     "--model",
     "model-a",
     "--tools",
-    "read,grep",
+    "read,grep,contact_supervisor",
     "--max-tokens",
     "1024",
     "--thinking",
@@ -2317,6 +2317,41 @@ test("P2: globalConcurrencyLimit bounds in-flight children across async jobs", a
     } finally {
       for (const p of procs) if (!p.killed) p.close(0);
       __resetJobsForTests();
+      __resetChildSlotsForTests();
+      __resetSessionSpawnCountsForTests();
+    }
+  });
+});
+
+// ── intercom: supervisor channel wiring ─────────────────────────────────────
+
+test("intercom: spawning a subagent creates its supervisor channel dir", async () => {
+  const { clearChannelRoot } = await import("../src/extensions/subagent/supervisor-channel.ts");
+  const os = await import("node:os");
+  const { existsSync, readdirSync } = await import("node:fs");
+  await withSubagentHome(async () => {
+    const procs: FakeProcess[] = [];
+    const ctx = plainCtx(() => {
+      const p = new FakeProcess();
+      procs.push(p);
+      return p;
+    });
+    try {
+      // 本文件其他 spawn 测试也会创建通道目录；清空后本次 run 恰好新增 1 个。
+      clearChannelRoot();
+      const run = runSubagentRequest({ agent: "worker", task: "x" }, undefined, undefined, ctx);
+      await tickUntil(() => procs.length === 1);
+      const root = join(os.tmpdir(), "pico-supervisor-channels");
+      const dirs = readdirSync(root);
+      expect(dirs.length).toBe(1);
+      const channelDir = join(root, dirs[0]!);
+      expect(existsSync(join(channelDir, "requests"))).toBe(true);
+      expect(existsSync(join(channelDir, "replies"))).toBe(true);
+      procs[0]!.close(0);
+      await run;
+    } finally {
+      for (const p of procs) if (!p.killed) p.close(0);
+      clearChannelRoot();
       __resetChildSlotsForTests();
       __resetSessionSpawnCountsForTests();
     }
