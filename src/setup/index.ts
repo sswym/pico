@@ -24,6 +24,8 @@ interface ProviderChoice {
   label: string;
   envName?: string;
   defaultModel: string;
+  /** Marked "recommended" in the provider menu so first-time users have a default. */
+  recommended?: boolean;
 }
 
 interface CustomProviderConfig {
@@ -79,8 +81,16 @@ interface SetupSectionMeta {
 
 const SETUP_SECTIONS: SetupSection[] = ["model", "tools", "safety", "ui", "memory", "lsp", "hooks", "mcp", "integrations", "env"];
 
+/**
+ * Sections a first-time user needs before they can start chatting. Everything
+ * else is advanced and gated behind a single yes/no prompt in the interactive
+ * flow, so `pico setup` stays a 2-step experience for beginners.
+ */
+const QUICK_SECTIONS: SetupSection[] = ["model", "ui"];
+const ADVANCED_SECTIONS: SetupSection[] = ["tools", "safety", "memory", "lsp", "hooks", "mcp", "integrations", "env"];
+
 const KNOWN_PROVIDERS: ProviderChoice[] = [
-  { id: "anthropic", label: "Anthropic", envName: "ANTHROPIC_API_KEY", defaultModel: "claude-opus-4-8" },
+  { id: "anthropic", label: "Anthropic", envName: "ANTHROPIC_API_KEY", defaultModel: "claude-opus-4-8", recommended: true },
   { id: "openai", label: "OpenAI", envName: "OPENAI_API_KEY", defaultModel: "gpt-5.5" },
   { id: "google", label: "Google Gemini", envName: "GEMINI_API_KEY", defaultModel: "gemini-3.1-pro-preview" },
   { id: "openrouter", label: "OpenRouter", envName: "OPENROUTER_API_KEY", defaultModel: "moonshotai/kimi-k2.6" },
@@ -104,6 +114,51 @@ const ENV_KEYS_MANAGED_BY_SETUP = [
 
 const MEMORY_BACKENDS = ["builtin", "holographic"] as const;
 const HOOK_EVENTS = ["PreToolUse", "PostToolUse", "PreSessionEnd", "PostUserMessage"] as const;
+
+/**
+ * Menu labels that explain each raw id in one line. A first-time user should
+ * not have to know what "holographic" or "PreToolUse" mean to make a choice.
+ */
+const MEMORY_BACKEND_LABELS: Record<SetupLanguage, [string, string]> = {
+  en: [
+    "builtin (local SQLite; stable)",
+    "holographic (experimental semantic retrieval; demo stage)",
+  ],
+  zh: [
+    "builtin（本地 SQLite；稳定）",
+    "holographic（实验性语义检索；demo 阶段）",
+  ],
+};
+
+const HOOK_EVENT_LABELS: Record<SetupLanguage, string[]> = {
+  en: [
+    "PreToolUse (before a tool runs; can block)",
+    "PostToolUse (after a tool runs)",
+    "PreSessionEnd (before the session closes)",
+    "PostUserMessage (after you send a message)",
+  ],
+  zh: [
+    "PreToolUse（工具调用前执行；可阻断）",
+    "PostToolUse（工具调用后执行）",
+    "PreSessionEnd（会话结束前执行）",
+    "PostUserMessage（收到你的消息后执行）",
+  ],
+};
+
+const API_COMPAT_LABELS: Record<SetupLanguage, string[]> = {
+  en: [
+    "openai-completions (OpenAI-compatible /chat/completions)",
+    "openai-responses (OpenAI Responses API)",
+    "anthropic-messages (Anthropic Messages API)",
+    "google-generative-ai (Google Gemini API)",
+  ],
+  zh: [
+    "openai-completions（OpenAI 兼容的 /chat/completions 接口）",
+    "openai-responses（OpenAI Responses 接口）",
+    "anthropic-messages（Anthropic Messages 接口）",
+    "google-generative-ai（Google Gemini 接口）",
+  ],
+};
 
 const SAFETY_DEFAULTS = {
   allowUnattendedPlanApproval: false,
@@ -178,15 +233,17 @@ const SETUP_SECTION_META: SetupSectionMeta[] = [
 const TEXT = {
   en: {
     setupTitle: "pico setup",
+    introFirstLine: "This wizard configures what pico needs to start: pick a model provider and paste an API key.",
+    introAdvancedHint: "Advanced options (search, safety, memory, LSP, hooks, MCP, integrations, env) can be skipped and configured later with `pico setup`.",
+    advancedSetupQuestion: "Continue to advanced options (tools / safety / memory / LSP / hooks / MCP / integrations / env)?",
     languageQuestion: "Choose setup language",
     languageChoices: ["中文", "English"],
     menuHint: "Use Up/Down or j/k, Enter to select, Esc to keep current",
-    home: "home",
     settings: "settings",
     modelHeader: "Model & Provider",
     providerQuestion: "Default provider",
-    customProvider: "Custom OpenAI-compatible provider",
-    skipModel: "Skip model configuration",
+    customProvider: "Custom provider (local models, e.g. Ollama)",
+    skipModel: "Skip for now (configure later)",
     defaultModel: "Default model",
     providerId: "Provider id",
     baseUrl: "Base URL",
@@ -194,28 +251,28 @@ const TEXT = {
     modelId: "Model id",
     apiCompatibility: "API compatibility",
     toolsHeader: "Tools",
-    webSearchProvider: "Web search provider",
+    webSearchProvider: "Web search provider (used when the agent searches the web)",
     searchChoices: [
       "Hybrid/auto (Exa plus Tavily when key is configured)",
       "Exa only",
       "Tavily only",
     ],
-    configureVision: "Configure auxiliary vision model?",
+    configureVision: "Configure auxiliary vision model? (for image understanding; optional)",
     visionProvider: "Vision provider",
     visionModel: "Vision model",
     safetyHeader: "Safety",
-    projectHooks: "Enable project .pico/hooks.json shell hooks?",
-    projectMcp: "Enable project .pico/mcp-servers.json MCP servers?",
-    lspFormat: "Allow LSP format-on-write after edits?",
-    unattendedPlan: "Allow non-interactive plan approvals?",
+    projectHooks: "Enable project .pico/hooks.json shell hooks? (per-project automation; most users can leave off)",
+    projectMcp: "Enable project .pico/mcp-servers.json MCP servers? (extra tools defined by a project; optional)",
+    lspFormat: "Allow LSP format-on-write after edits? (auto-formats files; can be enabled later)",
+    unattendedPlan: "Allow non-interactive plan approvals? (automation only; keep off for normal use)",
     uiHeader: "UI",
     responseLanguage: "Response language",
     memoryHeader: "Memory",
     memoryBackend: "Memory backend",
-    memoryDeny: "Memory deny patterns (comma-separated regex fragments)",
+    memoryDeny: "Memory deny patterns (comma-separated regex fragments, e.g. password,secret-.*; empty = no restriction)",
     lspHeader: "LSP",
     lspFormatOnWrite: "User LSP formatOnWrite?",
-    lspIdleTimeout: "User LSP idle timeout in milliseconds",
+    lspIdleTimeout: "User LSP idle timeout in milliseconds (600000 = 10 minutes; empty keeps the default)",
     lspConfig: "LSP config",
     hooksHeader: "Hooks",
     hookConfig: "User hooks config",
@@ -250,6 +307,9 @@ const TEXT = {
     leaveSkip: "leave empty to skip",
     invalidYesNo: "Please enter y or n.",
     nonInteractiveError: "error: pico setup needs an interactive terminal. Use --non-interactive for defaults.",
+    testConnection: "Test the connection with this API key?",
+    connectionOk: "Connection OK — the provider accepted this API key.",
+    connectionFailed: "Connection failed: ",
     complete: "pico setup complete",
     models: "models",
     defaultModelSummary: "default model",
@@ -261,19 +321,21 @@ const TEXT = {
     mcpConfigSummary: "MCP config",
     integrationsSummary: "integrations",
     customProviders: "custom providers",
-    nextStep: "Run pico to start, or use /doctor inside pico to inspect the active settings.",
+    nextStep: "Run `pico` to start chatting. Re-run `pico setup` anytime to change these settings, or use /doctor to inspect the active settings.",
   },
   zh: {
     setupTitle: "pico 设置",
+    introFirstLine: "本向导会帮你完成 pico 的必需配置：选择一个模型提供商并填入 API key，之后就能开始对话。",
+    introAdvancedHint: "高级选项（工具、安全、记忆、LSP、Hooks、MCP、集成、环境变量）均可跳过，之后随时运行 `pico setup` 补充。",
+    advancedSetupQuestion: "是否继续配置高级选项？（工具 / 安全 / 记忆 / LSP / Hooks / MCP / 集成 / 环境变量）",
     languageQuestion: "选择设置界面语言",
     languageChoices: ["中文", "English"],
     menuHint: "使用上下方向键或 j/k 移动，Enter 选择，Esc 保留当前项",
-    home: "数据目录",
     settings: "设置文件",
     modelHeader: "模型与提供商",
     providerQuestion: "默认提供商",
-    customProvider: "自定义 OpenAI 兼容提供商",
-    skipModel: "跳过模型配置",
+    customProvider: "自定义提供商（本地模型，如 Ollama）",
+    skipModel: "暂时跳过（之后可随时配置）",
     defaultModel: "默认模型",
     providerId: "提供商 ID",
     baseUrl: "Base URL",
@@ -281,28 +343,28 @@ const TEXT = {
     modelId: "模型 ID",
     apiCompatibility: "API 兼容类型",
     toolsHeader: "工具",
-    webSearchProvider: "网页搜索提供商",
+    webSearchProvider: "网页搜索提供商（agent 搜索网页时使用）",
     searchChoices: [
       "混合/自动（配置 Tavily key 时同时使用 Exa 和 Tavily）",
       "仅 Exa",
       "仅 Tavily",
     ],
-    configureVision: "配置辅助视觉模型？",
+    configureVision: "配置辅助视觉模型？（用于分析截图与图片；可选）",
     visionProvider: "视觉模型提供商",
     visionModel: "视觉模型",
     safetyHeader: "安全开关",
-    projectHooks: "启用项目 .pico/hooks.json shell hooks？",
-    projectMcp: "启用项目 .pico/mcp-servers.json MCP 服务器？",
-    lspFormat: "允许 LSP 在写入后自动格式化？",
-    unattendedPlan: "允许非交互模式自动批准计划？",
+    projectHooks: "启用项目 .pico/hooks.json shell hooks？（项目级自动化命令；大多数用户可保持关闭）",
+    projectMcp: "启用项目 .pico/mcp-servers.json MCP 服务器？（项目定义的额外工具；可选）",
+    lspFormat: "允许 LSP 在写入后自动格式化？（自动整理代码格式；可稍后开启）",
+    unattendedPlan: "允许非交互模式自动批准计划？（仅自动化场景需要；日常使用保持关闭）",
     uiHeader: "界面",
     responseLanguage: "agent 回复语言",
     memoryHeader: "记忆",
     memoryBackend: "记忆 backend",
-    memoryDeny: "记忆拒写模式（逗号分隔的正则片段）",
+    memoryDeny: "记忆拒写模式（逗号分隔的正则片段，例：password,secret-.*；留空表示不限制）",
     lspHeader: "LSP",
     lspFormatOnWrite: "用户级 LSP formatOnWrite？",
-    lspIdleTimeout: "用户级 LSP 空闲超时（毫秒）",
+    lspIdleTimeout: "用户级 LSP 空闲超时（毫秒；600000 = 10 分钟，留空使用默认）",
     lspConfig: "LSP 配置文件",
     hooksHeader: "Hooks",
     hookConfig: "用户级 hooks 配置文件",
@@ -337,6 +399,9 @@ const TEXT = {
     leaveSkip: "留空跳过",
     invalidYesNo: "请输入 y 或 n。",
     nonInteractiveError: "error: pico setup 需要交互式终端。可使用 --non-interactive 写入默认配置。",
+    testConnection: "用这个 API key 测试连接？",
+    connectionOk: "连接成功——提供商已接受该 API key。",
+    connectionFailed: "连接失败：",
     complete: "pico 设置完成",
     models: "模型配置",
     defaultModelSummary: "默认模型",
@@ -348,7 +413,7 @@ const TEXT = {
     mcpConfigSummary: "MCP 配置",
     integrationsSummary: "集成",
     customProviders: "自定义提供商",
-    nextStep: "运行 pico 启动；也可以在 pico 内使用 /doctor 检查当前设置。",
+    nextStep: "运行 `pico` 开始对话。之后随时运行 `pico setup` 修改配置，或使用 /doctor 检查当前设置。",
   },
 } satisfies Record<SetupLanguage, Record<string, string | string[]>>;
 
@@ -389,7 +454,9 @@ export function setupUsage(): string {
   return [
     "Usage: pico setup [model|tools|safety|ui|memory|lsp|hooks|mcp|integrations|env] [--non-interactive] [--reset] [--quick] [--reconfigure]",
     "",
-    "Interactive setup wizard for pico.",
+    "Interactive setup wizard for pico. A plain `pico setup` walks the quick",
+    "flow (model + UI) first; advanced sections follow when you accept the",
+    "prompt. Use `pico setup <section>` to configure a single section.",
     "",
     "Sections:",
     "  model   Configure default provider/model, API key env, or a custom provider",
@@ -410,6 +477,27 @@ export function setupUsage(): string {
     "  --reconfigure      Force every section to run again",
     "  -h, --help         Show this help",
   ].join("\n");
+}
+
+export interface SetupSectionPlan {
+  quick: SetupSection[];
+  advanced: SetupSection[];
+}
+
+/**
+ * Decides which sections an interactive `pico setup` run offers.
+ *
+ * - `pico setup <section>` → exactly that section.
+ * - Otherwise the quick flow (model + ui) runs first; the advanced sections
+ *   are offered only after the user accepts the gate prompt, which is asked
+ *   once the quick flow has given a first-time user context.
+ */
+export function planSetupSections(
+  options: Pick<SetupCliOptions, "quick" | "reconfigure">,
+  section: SetupSection | undefined,
+): SetupSectionPlan {
+  if (section) return { quick: [section], advanced: [] };
+  return { quick: [...QUICK_SECTIONS], advanced: [...ADVANCED_SECTIONS] };
 }
 
 export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
@@ -460,20 +548,16 @@ export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
     language = await chooseSetupLanguage(io);
     io.output.write("\x1b[2J\x1b[H");
     const prompt = new ReadlinePrompter(io, language);
-    const selectedSections = options.section
-      ? [getSectionMeta(options.section)]
-      : SETUP_SECTION_META;
+    const text = TEXT[language];
 
     printSetupIntro(io, language);
 
-    for (const meta of selectedSections) {
-      if (!meta) continue;
-      const settings = readJson(picoSettingsPath());
-      if (!options.reconfigure && options.quick && meta.isConfigured(settings)) {
-        printSectionSummary(io, meta, settings);
-        continue;
-      }
-      await runSection(meta.key, prompt, io);
+    const { quick, advanced } = planSetupSections(options, options.section);
+    // The gate comes after the quick flow so a first-time user has context
+    // ("basic config done") before being offered jargon-heavy sections.
+    await runSectionsWithQuickSkip(quick, prompt, io, options);
+    if (!options.section && (await prompt.yesNo(text.advancedSetupQuestion, options.reconfigure))) {
+      await runSectionsWithQuickSkip(advanced, prompt, io, options);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -677,6 +761,24 @@ async function runChoiceMenu(
   });
 }
 
+async function runSectionsWithQuickSkip(
+  keys: SetupSection[],
+  prompt: SetupPrompter,
+  io: SetupIo,
+  options: SetupCliOptions,
+): Promise<void> {
+  for (const key of keys) {
+    const meta = getSectionMeta(key);
+    if (!meta) continue;
+    const settings = readJson(picoSettingsPath());
+    if (!options.reconfigure && options.quick && meta.isConfigured(settings)) {
+      printSectionSummary(io, meta, settings);
+      continue;
+    }
+    await runSection(key, prompt, io);
+  }
+}
+
 export async function runSection(
   section: SetupSection,
   prompt: SetupPrompter,
@@ -702,8 +804,8 @@ function getSectionMeta(section: SetupSection): SetupSectionMeta | undefined {
 function printSetupIntro(io: SetupIo, language: SetupLanguage): void {
   const text = TEXT[language];
   printHeader(io, text.setupTitle);
-  writeLine(io, `${text.home}: ${picoHome()}`);
-  writeLine(io, `${text.settings}: ${picoSettingsPath()}`);
+  writeLine(io, text.introFirstLine);
+  writeLine(io, text.introAdvancedHint);
   writeLine(io, "");
 }
 
@@ -719,7 +821,7 @@ async function runModelSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> 
   printHeader(io, text.modelHeader);
   const settings = readJson(picoSettingsPath()) as Settings;
   const choices = [
-    ...KNOWN_PROVIDERS.map((p) => `${p.label} (${p.id})`),
+    ...KNOWN_PROVIDERS.map((p) => recommend(prompt.language, p.label, p.recommended ?? false)),
     text.customProvider,
     text.skipModel,
   ];
@@ -742,6 +844,11 @@ async function runModelSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> 
     const current = readSettingsEnv(settings)[provider.envName] ?? process.env[provider.envName];
     const value = await prompt.optionalSecret(`${provider.envName}`, typeof current === "string" && current.length > 0);
     if (value) setSettingsEnv(settings, provider.envName, value);
+    const effectiveKey = readSettingsEnv(settings)[provider.envName] ?? process.env[provider.envName];
+    if (typeof effectiveKey === "string" && effectiveKey.length > 0 && (await prompt.yesNo(text.testConnection, false))) {
+      const result = await testProviderConnection(provider.id, effectiveKey);
+      writeLine(io, result.ok ? text.connectionOk : `${text.connectionFailed}${result.detail}`);
+    }
   }
   writeJson(picoSettingsPath(), settings);
 }
@@ -770,7 +877,7 @@ async function chooseApi(prompt: SetupPrompter): Promise<CustomProviderConfig["a
     "anthropic-messages",
     "google-generative-ai",
   ];
-  return apis[await prompt.choice(TEXT[prompt.language].apiCompatibility, apis)]!;
+  return apis[await prompt.choice(TEXT[prompt.language].apiCompatibility, API_COMPAT_LABELS[prompt.language])]!;
 }
 
 async function runToolsSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
@@ -781,7 +888,7 @@ async function runToolsSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> 
 
   const searchIndex = await prompt.choice(
     text.webSearchProvider,
-    text.searchChoices,
+    text.searchChoices.map((choice, i) => (i === 0 ? recommend(prompt.language, choice, true) : choice)),
     env.PICO_SEARCH_PROVIDER === "exa" ? 1 : env.PICO_SEARCH_PROVIDER === "tavily" ? 2 : 0,
   );
   if (searchIndex === 0) delete env.PICO_SEARCH_PROVIDER;
@@ -846,7 +953,9 @@ async function runMemorySetup(prompt: SetupPrompter, io: SetupIo): Promise<void>
   const memory = objectSetting(settings.memory);
   const currentBackend = stringSetting(memory.backend) ?? "builtin";
   const backendIndex = Math.max(0, MEMORY_BACKENDS.indexOf(currentBackend as typeof MEMORY_BACKENDS[number]));
-  memory.backend = MEMORY_BACKENDS[await prompt.choice(text.memoryBackend, [...MEMORY_BACKENDS], backendIndex)]!;
+  const [builtinLabel, holographicLabel] = MEMORY_BACKEND_LABELS[prompt.language];
+  const backendChoices = [recommend(prompt.language, builtinLabel, true), holographicLabel];
+  memory.backend = MEMORY_BACKENDS[await prompt.choice(text.memoryBackend, backendChoices, backendIndex)]!;
   settings.memory = memory;
 
   const env = readSettingsEnv(settings);
@@ -883,7 +992,7 @@ async function runHooksSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> 
   const config = readJson(userHooksPath());
   const hooks = Array.isArray(config.hooks) ? config.hooks.filter((h): h is JsonObject => h && typeof h === "object" && !Array.isArray(h)) : [];
   if (await prompt.yesNo(text.createHook, false)) {
-    const event = HOOK_EVENTS[await prompt.choice(text.hookEvent, [...HOOK_EVENTS])]!;
+    const event = HOOK_EVENTS[await prompt.choice(text.hookEvent, HOOK_EVENT_LABELS[prompt.language])]!;
     const hook: JsonObject = {
       event,
       command: await prompt.text(text.hookCommand),
@@ -979,7 +1088,11 @@ async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo, shell: S
     } else {
       rtk.enabled = true;
     }
-    const modeIndex = await prompt.choice(text.rtkMode, text.rtkModeChoices, stringSetting(rtk.mode) === "instructionsOnly" ? 1 : 0);
+    const modeIndex = await prompt.choice(
+      text.rtkMode,
+      text.rtkModeChoices.map((choice, i) => (i === 0 ? recommend(prompt.language, choice, true) : choice)),
+      stringSetting(rtk.mode) === "instructionsOnly" ? 1 : 0,
+    );
     rtk.mode = modeIndex === 1 ? "instructionsOnly" : "spawnHook";
     rtk.command = stringSetting(rtk.command) ?? "rtk";
   } else {
@@ -1384,6 +1497,65 @@ export function splitArgs(value: string): string[] {
     args.push(m[1] ?? m[2] ?? m[3]!);
   }
   return args;
+}
+
+/** Appends the "(recommended)" marker used by choice menus. */
+function recommend(language: SetupLanguage, label: string, recommended: boolean): string {
+  return recommended ? (language === "zh" ? `${label}（推荐）` : `${label} (recommended)`) : label;
+}
+
+export interface ProviderModelsRequest {
+  url: string;
+  headers: Record<string, string>;
+}
+
+/** How to list models for each known provider — used to verify an API key. */
+const PROVIDER_MODELS_ENDPOINTS: Record<string, (apiKey: string) => ProviderModelsRequest> = {
+  anthropic: (apiKey) => ({
+    url: "https://api.anthropic.com/v1/models",
+    headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+  }),
+  openai: (apiKey) => ({
+    url: "https://api.openai.com/v1/models",
+    headers: { Authorization: `Bearer ${apiKey}` },
+  }),
+  google: (apiKey) => ({
+    url: `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
+    headers: {},
+  }),
+  openrouter: (apiKey) => ({
+    url: "https://openrouter.ai/api/v1/models",
+    headers: { Authorization: `Bearer ${apiKey}` },
+  }),
+};
+
+export function providerModelsRequest(providerId: string, apiKey: string): ProviderModelsRequest | undefined {
+  return PROVIDER_MODELS_ENDPOINTS[providerId]?.(apiKey);
+}
+
+/**
+ * Verifies an API key against the provider's models/list endpoint. Never
+ * throws — the wizard reports the failure inline and continues.
+ */
+export async function testProviderConnection(
+  providerId: string,
+  apiKey: string,
+  timeoutMs = 15_000,
+): Promise<{ ok: boolean; detail: string }> {
+  const request = providerModelsRequest(providerId, apiKey);
+  if (!request) return { ok: false, detail: `no models endpoint known for provider "${providerId}"` };
+  try {
+    const response = await fetch(request.url, {
+      method: "GET",
+      headers: request.headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (response.ok) return { ok: true, detail: `HTTP ${response.status}` };
+    const body = (await response.text()).slice(0, 200);
+    return { ok: false, detail: `HTTP ${response.status} ${body.trim()}` };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 function clampIndex(index: number, length: number): number {

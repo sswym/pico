@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildSetupSummary, configureCodeGraphMcp, configureRtkIntegration, parseSetupArgs, resetSetupConfig, runSection, runSetupCommand, splitArgs, writeCustomProvider, type SetupLanguage, type SetupPrompter, type SetupShell } from "../src/setup/index.ts";
+import { buildSetupSummary, configureCodeGraphMcp, configureRtkIntegration, parseSetupArgs, planSetupSections, providerModelsRequest, resetSetupConfig, runSection, runSetupCommand, splitArgs, testProviderConnection, writeCustomProvider, type SetupLanguage, type SetupPrompter, type SetupShell } from "../src/setup/index.ts";
 import { picoLspConfigPath, picoMcpConfigPath, picoModelsPath, picoSettingsPath } from "../src/extensions/paths.ts";
 
 const savedEnv = {
@@ -63,6 +63,23 @@ test("parseSetupArgs recognizes setup sections and flags", () => {
   expect(parseSetupArgs(["setup", "env"])?.section).toBe("env");
   expect(parseSetupArgs(["doctor"])).toBeUndefined();
   expect(parseSetupArgs(["setup", "unknown"])?.error).toContain("unknown setup argument");
+});
+
+test("planSetupSections splits quick from advanced sections", () => {
+  const plan = planSetupSections({ quick: false, reconfigure: false }, undefined);
+  expect(plan.quick).toEqual(["model", "ui"]);
+  expect(plan.advanced).toEqual(["tools", "safety", "memory", "lsp", "hooks", "mcp", "integrations", "env"]);
+  // Every section is covered exactly once.
+  expect([...plan.quick, ...plan.advanced].sort()).toEqual([
+    "env", "hooks", "integrations", "lsp", "mcp", "memory", "model", "safety", "tools", "ui",
+  ]);
+});
+
+test("planSetupSections honors an explicit section argument", () => {
+  expect(planSetupSections({ quick: false, reconfigure: false }, "tools")).toEqual({
+    quick: ["tools"],
+    advanced: [],
+  });
 });
 
 test("non-interactive setup writes safe defaults and imports configured env", async () => {
@@ -504,7 +521,11 @@ test("memory section stores the chosen backend and deny list", async () => {
     ({ settings, asked }) => {
       expect(settings().memory.backend).toBe("holographic");
       expect(settings().env.PICO_MEMORY_DENY).toBe("secret,token");
-      expect(asked.choice[0]!.choices).toEqual(["builtin", "holographic"]);
+      // Labels explain each backend; builtin carries the recommended marker.
+      expect(asked.choice[0]!.choices).toEqual([
+        "builtin (local SQLite; stable) (recommended)",
+        "holographic (experimental semantic retrieval; demo stage)",
+      ]);
     },
   );
 });
@@ -669,6 +690,81 @@ test("model section writes nothing when the skip entry is chosen", async () => {
     // Skipping must not create a settings file at all.
     expect(existsSync(picoSettingsPath())).toBe(false);
   });
+});
+
+test("providerModelsRequest builds the right endpoint per provider", () => {
+  const anthropic = providerModelsRequest("anthropic", "k")!;
+  expect(anthropic.url).toBe("https://api.anthropic.com/v1/models");
+  expect(anthropic.headers).toEqual({ "x-api-key": "k", "anthropic-version": "2023-06-01" });
+
+  const openai = providerModelsRequest("openai", "k")!;
+  expect(openai.url).toBe("https://api.openai.com/v1/models");
+  expect(openai.headers).toEqual({ Authorization: "Bearer k" });
+
+  const google = providerModelsRequest("google", "k")!;
+  expect(google.url).toBe("https://generativelanguage.googleapis.com/v1beta/models?key=k");
+  expect(google.headers).toEqual({});
+
+  const openrouter = providerModelsRequest("openrouter", "k")!;
+  expect(openrouter.url).toBe("https://openrouter.ai/api/v1/models");
+  expect(openrouter.headers).toEqual({ Authorization: "Bearer k" });
+
+  expect(providerModelsRequest("unknown", "k")).toBeUndefined();
+});
+
+test("testProviderConnection reports success on a 2xx response", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+  try {
+    const result = await testProviderConnection("openai", "good-key");
+    expect(result.ok).toBe(true);
+    expect(result.detail).toContain("200");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("testProviderConnection reports failure on a non-2xx response", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("invalid api key", { status: 401 })) as unknown as typeof fetch;
+  try {
+    const result = await testProviderConnection("openai", "bad-key");
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("401");
+    expect(result.detail).toContain("invalid api key");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("testProviderConnection reports network errors without throwing", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => { throw new Error("ECONNREFUSED"); }) as unknown as typeof fetch;
+  try {
+    const result = await testProviderConnection("openai", "k");
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("ECONNREFUSED");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("model section offers an optional connection test and prints the result", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+  try {
+    await withSection(
+      "model",
+      { choice: [0], text: ["claude-opus-4-8"], optionalSecret: ["sk-ant-test"], yesNo: [true] },
+      ({ settings, output, asked }) => {
+        expect(settings().env.ANTHROPIC_API_KEY).toBe("sk-ant-test");
+        expect(asked.yesNo[0]!.question).toBe("Test the connection with this API key?");
+        expect(output).toContain("Connection OK");
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("tools section stores the search provider and vision config", async () => {

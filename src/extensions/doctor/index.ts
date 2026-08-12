@@ -164,6 +164,24 @@ export function migrateConfigYmlSafetyKeys(): SafetyKey[] {
 }
 
 function startupConfigAdvisories(ctx: ExtensionContext): void {
+  if (!isSettingsDamaged()) {
+    const settings = readSettings();
+    if (typeof settings.defaultProvider !== "string" || settings.defaultProvider.length === 0) {
+      // Fresh install — no model configured yet. The conflict advisories all
+      // assume a model is set; nudge toward the wizard instead. Upstream
+      // falls back to the first available model silently, so without this a
+      // first-run user has no idea setup exists.
+      try {
+        if (ctx.hasUI) {
+          ctx.ui.notify(
+            "首次使用？运行 `pico setup` 配置默认模型与 API key 后即可开始对话。",
+            "info",
+          );
+        }
+      } catch {}
+      return;
+    }
+  }
   const safetyConflicts = detectConfigYmlSafetyConflicts();
   if (safetyConflicts.length > 0) {
     const migrated = migrateConfigYmlSafetyKeys();
