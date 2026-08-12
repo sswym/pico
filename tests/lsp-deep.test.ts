@@ -407,7 +407,11 @@ describe("lsp missing-command install dialog branches", () => {
   function configFor(command: string) {
     return {
       [command]: {
-        command,
+        // Absolute path under the fresh temp home: the binary can never exist
+        // on ANY machine (installed or not), so the spawn fails with ENOENT
+        // deterministically. The server key (and basename of the command) keep
+        // the install-hint registry lookup intact.
+        command: join(testHome, "no-such-bin", command),
         fileTypes: [".ts"],
         rootMarkers: [], // always match — forces a spawn attempt
       },
