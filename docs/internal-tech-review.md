@@ -64,7 +64,7 @@ bin/pico.ts
 
 ### 1.4 扩展注册顺序与依赖约束
 
-注册顺序：`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → skill → vision → ask → init → automode → plan → undo-redo → web → lsp → rtk → hooks → mcp → observability → signals → doctor → help`（**25 个**）。
+注册顺序：`vibe → auto-thinking → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → context-pruner → subagent → skill → vision → ask → init → automode → plan → undo-redo → web → lsp → rtk → hooks → mcp → observability → signals → doctor → help`（**27 个**）。
 
 `ExtensionRegistry.validate()` 强制：名称唯一、`dependsOn` 只能引用已注册扩展（目前仅 logo → retro-theme）。`before_agent_start` 等事件处理器按注册顺序链式合并返回值，因此 **cache-optimizer 先于 memory 改写 systemPrompt**，动态回忆块不会被静态化到缓存前缀。
 

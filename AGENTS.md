@@ -16,13 +16,13 @@ bun run update-deps               # 升级 @earendil-works/pi-* 到最新版，�
 
 无 lint、format 命令；类型检查通过 `bun run verify` 中的 `tsc --noEmit` 执行。
 
-**无 CI**：仓库没有 `.github/workflows`，`verify`（tsc + bun test）只在本地跑。改动后跑 `bun run verify` 是唯一门禁。
+**CI**：`.github/workflows/ci.yml` 在 push/PR 时跑 `bun install --frozen-lockfile` + `bun run verify`（build 作业依赖 verify 通过）。本地门禁同样只有一个：改动后跑 `bun run verify`。
 
 ## 运行时与工具链
 
 - **Bun**（非 Node.js）。tsconfig 中 `types: ["bun"]`，所有 import 可带 `.ts` 后缀
 - **构建**：`scripts/build.ts` + `bun build --compile`，产出独立二进制（~102MB）
-- **包管理**：`bun.lock`，`@earendil-works/*` 系列上游依赖（`pi-ai` / `pi-agent-core` / `pi-coding-agent` / `pi-tui` 4 包**版本锁步**在 `^0.83.0`，靠 `update-deps` 同步升级，不要单独锁某一包）
+- **包管理**：`bun.lock`，`@earendil-works/*` 系列上游依赖（`pi-ai` / `pi-agent-core` / `pi-coding-agent` / `pi-tui` 4 包**版本锁步**在 `^0.84.1`，靠 `update-deps` 同步升级，不要单独锁某一包）
 - **零 lint/formatter 配置** — 不引入 ESLint/Prettier/biome
 - **缩进**：默认 2 空格；`src/extensions/subagent/`、`lsp/executor.ts` 沿用 Tab。`.editorconfig` 已记录此分布，新文件跟随所在目录，不要为改缩进产生纯格式 diff
 
@@ -40,7 +40,7 @@ bun run update-deps               # 升级 @earendil-works/pi-* 到最新版，�
 
 ## 架构
 
-pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 25 个 ExtensionFactory 插件注入功能。
+pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 27 个 ExtensionFactory 插件注入功能。
 
 ### 入口链
 
@@ -54,7 +54,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 
 唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（**27 个扩展**）。每个带 `phase: "prompt" | "ui" | "tools" | "runtime" | "diagnostics"`、可选 `dependsOn` / `safety` 元数据；注册时校验**重名**与 **dependsOn 必须先于依赖者注册**。所有工厂以 `hidden: true` 注册，避免上游启动面板出现 `<inline:N>` 占位噪行。
 
-`vibe → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → subagent → skill → vision → ask → init → plan → web → lsp → rtk → hooks → mcp → doctor`
+`vibe → auto-thinking → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → context-pruner → subagent → skill → vision → ask → init → automode → plan → undo-redo → web → lsp → rtk → hooks → mcp → observability → signals → doctor → help`
 
 ### 双运行模式（源码 vs 编译二进制）
 
@@ -82,7 +82,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 ### 关键目录
 
 ```
-src/extensions/    — 25 个功能扩展（memory、subagent、lsp、plan、automode、undo-redo、signals 等）
+src/extensions/    — 27 个功能扩展（memory、subagent、lsp、plan、automode、undo-redo、signals 等）
 src/runtime/       — 启动链：参数构建、嵌入资源解包、setup 命令、扩展注册表
 src/setup/         — `pico setup` 向导
 src/prompts/       — 系统提示词模板（.md）

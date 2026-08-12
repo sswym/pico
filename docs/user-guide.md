@@ -4,6 +4,7 @@
 
 ## 目录
 
+0. [初始化与配置（`pico setup` 向导）](#0-初始化与配置pico-setup-向导)
 1. [长期记忆](#1-长期记忆memory-工具--memory-命令)
 2. [子代理](#2-子代理subagent-工具--工作流斜杠命令)
 3. [任务清单](#3-任务清单todowrite-工具--todo-命令)
@@ -14,12 +15,53 @@
 8. [权限与安全边界](#8-权限与安全边界)
 9. [钩子系统](#9-钩子系统)
 10. [Vibe 编码系统提示词](#10-vibe-编码系统提示词)
-11. [内置技能](#11-内置技能)
+11. [技能](#11-技能skill-扩展)
 12. [MCP 服务器集成](#12-mcp-服务器集成mcp__-工具)
 13. [LSP 代码智能](#13-lsp-代码智能lsp-工具)
 14. [项目结构](#14-项目结构)
 15. [测试](#15-测试)
 16. [路线图](#16-路线图)
+
+---
+
+## 0. 初始化与配置（`pico setup` 向导）
+
+首次使用建议运行 `pico setup`：交互式向导，分层快速流 + 推荐标记，全程按回车即可完成必需配置（模型 + 界面语言）；高级选项（工具/安全/记忆/LSP/钩子/MCP/集成/环境变量）可一次跳过，之后随时重跑补充。
+
+**子命令与参数**（`setup` 必须是第一个 CLI 参数）：
+
+| 用法 | 行为 |
+| --- | --- |
+| `pico setup` | 完整向导：语言选择 → 快速流（model → ui）→ 可选高级流（8 节） |
+| `pico setup <section>` | 只跑指定节（共 10 节：`model` `tools` `safety` `ui` `memory` `lsp` `hooks` `mcp` `integrations` `env`）；显式指定时关闭"已配置跳过门"，总是重跑 |
+| `pico setup --quick` | 已配置的节只打印摘要并跳过 |
+| `pico setup --reconfigure` | 所有节强制重跑，高级选项门槛默认"是" |
+| `pico setup --reset` | 删除向导管理的配置（settings.json 的 8 个键 + 12 个托管 env 键，及 lsp.json/hooks.json/mcp-servers.json）；不删 models.json 自定义提供商 |
+| `pico setup --non-interactive` | 非 TTY 路径：写安全默认值 + 导入既有环境变量，打印汇总后退出 |
+
+非 TTY 且未加 `--non-interactive` 时报错退出；settings.json/models.json 损坏时拒绝运行（防止覆盖丢失的 API key）。退出码：0 成功、1 参数/未知 section 错误、130 Ctrl+C 取消。
+
+**向导流程**：
+
+1. 语言选择（中文默认 / English）
+2. 清屏横幅 + 首启提示（"全程按回车即可使用推荐选项"；Ctrl+C 随时退出，已完成的步骤保留）
+3. 快速流：`model` → `ui`（每节结束打印 `✓ <标题> 已保存`）
+4. 高级选项门槛（yes/no，默认否）→ 依次跑 `tools` `safety` `memory` `lsp` `hooks` `mcp` `integrations` `env`
+5. 最终汇总：配置文件路径、默认模型 `provider/model`、env 键、记忆 backend、视觉模型、LSP/hooks/MCP 配置路径、集成状态
+
+**model 节**：4 个已知提供商（anthropic 标推荐 / openai / google / openrouter）+ 自定义提供商（本地模型如 Ollama，默认 `http://localhost:11434/v1`）+ 跳过。API key 掩码输入（`*` 回显、防终端历史）。自定义提供商写 `~/.pico/agent/models.json` 的 `providers.<id>`（baseUrl/api/apiKey/compat/models）。刚输入新 key 时默认询问**连接验证**：同步 `fetch` 各提供商 `/v1/models` 端点（15s 超时），失败提示但不中断。
+
+**各节写入文件**（JSON 2 空格缩进 + 0600 权限 + 原子 tmp+rename 写）：
+
+| 文件 | 节 |
+| --- | --- |
+| `~/.pico/agent/settings.json`（`$PICO_HOME` 可重定位） | model / tools / safety / ui / memory / integrations / env |
+| `~/.pico/agent/models.json` | 自定义提供商 |
+| `~/.pico/hooks.json` | hooks（事件 + 命令 + 可选 tool/blocking） |
+| `~/.pico/lsp.json` | lsp（formatOnWrite 默认 false、idleTimeoutMs 默认 600000） |
+| `~/.pico/mcp-servers.json` | mcp、integrations 的 CodeGraph MCP |
+
+不写 AGENTS.md、不初始化记忆库。integrations 节可选用 `curl | sh` 安装 codegraph/rtk CLI、对当前项目执行 `codegraph init` 建索引、注册 CodeGraph MCP。
 
 ---
 
@@ -187,6 +229,34 @@ subagent(chain=[
 
 **验收门（acceptance gate）**：配置 `acceptance` 的 agent 完成后，在主进程执行 `evidence` 命令校验；失败时若开启 `selfRepair` 会自动返工重试（`maxRepairAttempts` 次）。注意：criteria 与 evidence 按下标顺序配对。
 
+**异步执行（async）**：`subagent(agent=..., task=..., async: true)` 让作业在后台运行，工具立即返回 job id（`subagent-job-N`），用 `subagent_wait(jobs=[...], timeoutMs?)` 等待结果。超时或本回合被中断时作业继续在后台跑，可再次调用 `subagent_wait` 继续等（结果提示 "Call subagent_wait again to keep waiting"）；会话结束时（session_shutdown）未完成作业被取消。`async` / `resumeFrom` 仅支持单模式（agent + task），与 `tasks[]` / `chain[]` 组合会报错。
+
+**失败会话续跑（resumeFrom）**：运行失败/中断/超时时保留会话文件（`~/.pico/subagent-sessions/run-*/session.jsonl`，成功即删除），结果文本给出路径；两条续跑路径：
+
+1. `subagent(agent, task, resumeFrom: "<path>")` 工具参数；
+2. `pico --session <path> "继续任务"` CLI。
+
+`context: "fork"` 分支会话不受此机制管理；`sessions.enabled: false` 时不持久化。
+
+**Steering（父代理 → 运行中异步作业发指令）**：`subagent_steer(jobs=[...], message="...")` 向**当前会话的 running 异步作业**投递指令（≤64KB），子代理在下一回合（工具结果或回合开始）以 "**Steer from supervisor:** …" 消息收到并执行。同步模式运行中的子代理不在作业注册表，不可 steer。
+
+**监督通道（intercom 文件信箱）**：子代理与父代理是独立进程（stdin ignore、stdout 被 JSONL 协议占用），通信走文件系统——通道根 `$TMPDIR/pico-supervisor-channels/`（`PICO_SUPERVISOR_CHANNEL_ROOT` 可覆盖），每个 run 一个目录，含 `requests/` `replies/` `steer/` 子目录。子代理可用 `contact_supervisor(reason=need_decision|interview_request|progress_update, ...)` 向父代理发起阻塞问答 / 结构化访谈（回复自动 JSON 解析）/ 进度通报（默认 10 分钟超时，`PICO_SUPERVISOR_ASK_TIMEOUT_MS` 可调，消息 ≤64KB）；父代理用 `subagent_supervisor(action=reply|pending|status, ...)` 查看与回复（多条待回复须给 `replyTo`）。父侧每 500ms 轮询，新请求以 `triggerTurn` 唤醒父代理回合。受限 agent 的工具白名单会被强制追加 `contact_supervisor`，保证能 intercom。
+
+**扩展配置 `~/.pico/subagent.json`**（前文键之外）：
+
+```jsonc
+{
+  "globalConcurrencyLimit": 6,          // 全会话在途子代理上限（含 async 作业）；缺省/0 = 无限
+  "maxSubagentSpawnsPerSession": 50,    // 每会话 spawn 总数上限；缺省/0 = 无限；超限 fast-fail
+  "permissions": {
+    "denyTools": ["bash", "webFetch"],  // 拒绝工具（对显式 tools 列表过滤；无限制 agent 用内置工具集减拒绝项）
+    "denyAgents": ["worker"]            // 反向白名单：永远不可 spawn
+  }
+}
+```
+
+白名单/黑名单对嵌套子代理同样生效（子进程继承同一 `~/.pico/subagent.json`）。**递归护栏**：子代理每嵌套一层 `PICO_SUBAGENT_DEPTH` +1，启动时 ≥3 直接拒绝（父 → 子 → 孙 → 曾孙被拦），防止递归堆叠完整 pico 进程（每进程 ~100MB + 独立模型上下文）。该变量由系统自动维护，不要手动设置。
+
 ---
 
 ## 3. 任务清单（`todoWrite` 工具 + `/todo` 命令）
@@ -259,6 +329,52 @@ subagent(chain=[
 
 `auxiliary.vision.provider/model` 必须能被模型注册表解析到。使用自定义 provider、代理或本地视觉模型时，需要先在 `~/.pico/agent/models.json` 中注册该模型，并确保模型声明包含 `"input": ["text", "image"]`，否则会被视为不具备视觉能力。
 
+### 8.1 自动护栏（`automode` 扩展）
+
+**本质**：用"执行前分类器"（pre-execution LLM classifier）替代常规权限确认弹窗的自动模式护栏。**不是无脑自动批准**——每个副作用工具调用都要过审查链，只有只读内置工具（`read`/`grep`/`find`/`ls`）默认绕过；分类器不可用（无模型/无 API key）时 fail-closed 直接阻止。**无循环护栏、无动作预算**：防护是"单动作审查"而非迭代上限。
+
+**默认关闭**：写 `~/.pico/agent/automode.json` 或 `.pico/automode.json` 的 `autoMode.enabled: true` 全局/项目开启；会话级 `/automode on` 只对本会话生效（状态行显示 `⏵⏵ auto mode on/off`）。
+
+**命令**：`/automode [status|on|off|reload|reset|defaults|config|denials|model]`（别名 `/auto-mode`）。`status` 显示启用状态与分类器计数；`model` 查看/切换分类器模型（默认用当前会话模型），全局保存到 `~/.pico/agent/automode.json`；`denials` 显示最近拒绝记录（保留 12 条）。
+
+**审查顺序**（tool_call 阶段，首个 block 短路）：
+
+1. `permissions.deny` 规则（如 `bash(git push *)`；bash 复合命令按段匹配，任一段命中即拒）；
+2. `permissions.ask` 规则（有 UI 时 `ctx.ui.confirm` 询问；非交互直接 block）；
+3. 确定性硬拒绝（不 consult 模型）：写 shell profile（`~/.bashrc` 等）或 `.ssh/authorized_keys`、写安全控制文件（`.pico/automode*.json` 等）、TLS 弱化（`NODE_TLS_REJECT_UNAUTHORIZED=0`、`curl -k`、git/npm sslverify 关闭）、持久化/系统变更（crontab 非 `-l`、systemctl enable/disable、csrutil disable 等）、`rm -rf` 根/家/系统目录、chmod/chown 系统或 SSH 路径；
+4. 路径门控：`deniedPaths`（`~/$HOME/*` 通配）匹配即拒；`allowInsideWorkingDirectory: true` 时 CWD 内非 protected 路径的 write/edit 确定性放行（protectedPaths 含 .git/.pi/.bashrc/.ssh 等 43 项，仍强制回分类器）；
+5. 只读快速通道（`read`/`grep`/`find`/`ls` 直接放行，零模型调用；`classifyReadOnlyTools: true` 可关闭）；
+6. LLM 分类器：fast 阶段（只回 0/1，maxTokens 默认 512）→ 命中 1 进 detailed 阶段（严格 JSON，重试 ≤2 次），决策失败 fail-closed。输入含会话转录 + 项目指令，输出记决策日志。
+
+**配置**（`autoMode` 键）：`enabled`（默认 false）、`classifierModel`、`classifyReadOnlyTools`（默认 false）、`allowInsideWorkingDirectory`（默认 false）、`deniedPaths`、`fastClassifierMaxTokens`（默认 512）、`environment` / `allow` / `soft_deny` / `hard_deny` / `protectedPaths`（支持 `$defaults` 合并语义——省略即整体替换内置默认）、`log.enabled`。`permissions.deny` / `permissions.ask` 为工具模式列表。项目共享 `.pico/automode.json` **只贡献 `permissions.*`、不贡献 `autoMode`**——检入仓库的配置不能削弱分类器规则；ALLOW 规则只覆盖 soft_deny、永不过 hard_deny。环境变量 `PICO_AUTOMODE_SETTINGS_JSON` 可内联 JSON。
+
+**与 plan 模式的关系**：独立扩展，互不替代。automode 注册在 plan 之前（tool_call 按注册顺序遍历，第一个 block 短路）；automode 放行后 plan 仍可拦截，`ExitPlanMode` 的批准仍是 plan 扩展的用户确认，automode 不接管。
+
+### 8.2 沙箱回滚（`undo-redo` 扩展）
+
+**本质**：`read`/`edit`/`write`/`find`/`ls`/`grep`/`bash` 七种文件工具被同名覆盖，在**沙箱工作副本**上执行；每个会话对话叶节点保存文件快照，`/undo`、`/redo` 或会话树导航时把真实工作区恢复到对应快照。写操作仍实时同步到真实工作区（缓冲在沙箱侧做 diff 基线，不延迟落盘）。
+
+**机制**：
+
+- 沙箱位于 `~/.pico/agent/cache/undo-redo/<sessionId>/sandbox/`（`$PICO_HOME` 可重定位）；会话启动时把真实区外部改动同步进沙箱；
+- `.git` 不拷入沙箱，以 gitdir 重定向文件接入真实仓库（沙箱内 git 命令可用）；`.git` 条目从被跟踪清单排除；
+- 默认忽略：`.git/` `node_modules/` `dist/` `build/` `.next/` `.venv/` `target/` `out/` `.cache/` `.codegraph/`，叠加项目 `.gitignore`；
+- 快照按会话叶节点保存（turn_end 非工具调用轮 + 叶切换时），blob 内容寻址（sha256 去重）落盘 `cache/undo-redo/<sessionId>/`；
+- 恢复时机：`/undo` `/redo` 命令、`undo_redo` 工具、`/tree` 导航（session_tree 事件）、会话启动恢复；
+- bash 经共享 spawnHook 注册表（`src/extensions/bash-hooks.ts`）：先沙箱重定向（cwd + 命令文本 realRoot→sandboxRoot）再应用 rtk 等增强链；同名工具冲突是致命启动错误，bash 只能由 undo-redo 一家注册。
+
+**命令与工具**：
+
+| 名称 | 用法 |
+| --- | --- |
+| `/undo` / `/redo` | 按会话叶回退/重做文件快照（需交互模式，走 UI 树导航） |
+| `/diff-stack` | UI 列出所有叶相对 base 的 A/M/D 变更，选中查看完整 diff |
+| `/undo-redo-clear-cache` | 清空沙箱与快照缓存，重置撤销历史 |
+| `undo_redo(action=undo\|redo\|list_diffs\|diff, ...)` | LLM 工具：不触发 UI 导航、不动当前回合上下文，改动在下一个用户提示时生效 |
+| 快捷键 | `ctrl+shift+z` / `ctrl+shift+y`（/undo、/redo） |
+
+状态行显示 `Tracked: N files (size)`。无 settings/subagent.json 配置项；`$PICO_HOME` 决定缓存根。
+
 ---
 
 ## 9. 钩子系统
@@ -307,15 +423,17 @@ subagent(chain=[
 
 ---
 
-## 11. 内置技能
+## 11. 技能（`skill` 扩展）
 
-三个 `SKILL.md` 技能通过 `--skill <bundled-skills-dir>` 自动加载（`-ns`/`--no-skills` 关闭）：
+**无内置技能**——随包分发的 `SKILL.md` 已移除（`ed277d3`）。技能由 `skill` 扩展从三层发现，说明文字汇总进系统提示词，模型按需读取 `SKILL.md` 正文：
 
-- `verify` —— 运行 lint + 类型检查 + 测试，简洁报告失败项
-- `recap` —— 利用存储的项目记忆总结近期工作
-- `agents-init` —— 对已有 AGENTS.md 做增量编辑（比 `/init` 更轻量）
+| 层级 | 路径 | 说明 |
+| --- | --- | --- |
+| 用户级 | `~/.pico/agent/skills/` | 所有项目共享 |
+| 项目级 | `<cwd>/.pico/skills/` | 仓库可控，按当前工作目录加载 |
+| 显式注入 | `--skill <path>` | 可重复；接受目录或单个 `SKILL.md` 文件 |
 
-`~/.pico/agent/skills/` 中的用户技能按名称覆盖内置技能。
+同名冲突 **first-wins：user > project > `--skill` 路径**。`--no-skills`（`-ns`）关闭自动发现，但显式 `--skill` 路径仍会加载。
 
 ---
 
@@ -416,7 +534,12 @@ pico/
 │   ├── runtime/                        # 参数装配、扩展注册表、嵌入式资源解包、setup 短路
 │   ├── extensions/
 │   │   ├── ask/        # askUserQuestion 工具（schema、提示词、对话框分发）
+│   │   ├── auto-thinking/ # ultrathink 关键词 + /thinking 思考等级（§10.1）
+│   │   ├── automode/   # 自动护栏模式（§8.1）
 │   │   ├── cache-optimizer/  # 系统提示词缓存优化（稳定段前置、技能压缩、OpenAI 缓存键）
+│   │   ├── context-pruner/   # 重复整文件读取裁剪（§10.2）
+│   │   ├── doctor/     # /doctor 安全状态报告
+│   │   ├── help/       # /help 离线命令速查
 │   │   ├── hooks/      # 配置加载 + 运行器 + 事件连线
 │   │   ├── init/       # /init 提示词（AGENTS.md，绝不写 CLAUDE.md）
 │   │   ├── input-history/  # 持久化输入历史编辑器
@@ -425,21 +548,25 @@ pico/
 │   │   ├── lsp/        # LSP 代码智能（client/config/manager、只读 action、写透传诊断）
 │   │   ├── mcp/        # MCP 客户端（types, config, client, 扩展工厂）
 │   │   ├── memory/     # bun:sqlite + FTS5/TF-IDF 长期记忆，实体检索、scope 隔离、策展笔记
+│   │   ├── observability.ts # 元数据 JSONL 事件日志（$PICO_HOME/agent/events.jsonl）
 │   │   ├── plan/       # EnterPlanMode / ExitPlanMode + tool_call 拦截
 │   │   ├── retro-theme/ # TUI 复古主题 + Claude-like 页脚
 │   │   ├── rtk/        # rtk 命令代理
-│   │   ├── settings.ts / policy.ts / paths.ts  # 配置、安全策略、路径
+│   │   ├── signals.ts  # SIGINT/SIGTERM 处理（进程级仅注册一次）
+│   │   ├── skill/      # 技能发现与汇总（§11）
+│   │   ├── settings.ts / settings-schema.ts / policy.ts / paths.ts  # 配置、安全策略、路径
 │   │   ├── subagent/   # 子代理工具 adapter + orchestrator + runner/process/chain/parallel/gate/worktree
 │   │   ├── todo/       # todoWrite 工具 + /todo 命令 + 按会话存储 + 面板 widget
+│   │   ├── undo-redo/  # 沙箱回滚（§8.2：/undo /redo /diff-stack）
 │   │   ├── vision/     # visionAnalyze 工具 + 输入图像自动分析
 │   │   ├── web/        # webFetch + webSearch + LRU 缓存 + 私网防护
-│   │   ├── doctor/     # /doctor 安全状态报告
+│   │   ├── bash-hooks.ts # 共享 spawnHook 注册表（undo-redo 独家注册 bash，rtk 等注入增强）
 │   │   ├── events.ts   # 扩展间轻量事件总线
+│   │   ├── persistent-editor.ts # 共享编辑器基类（input-history / undo-redo 复用）
 │   │   ├── tool-render.ts / ui/   # 工具行渲染、UI 辅助
 │   │   └── vibe.ts     # 将 vibe-system.md 追加到系统提示词
 │   ├── prompts/        # 系统提示词模板（vibe、plan-mode、agents/ 等）
 │   ├── setup/index.ts  # 交互式 setup 向导
-│   ├── skills/{verify,recap,agents-init}/SKILL.md
 │   └── types/markdown.d.ts
 └── tests/              # 与 src/extensions/ 一一对应（bun:test，完全离线）
 ```
@@ -449,7 +576,7 @@ pico/
 ## 15. 测试
 
 ```bash
-bun run verify          # tsc --noEmit + 全量 bun test（385 用例 / 26 文件）
+bun run verify          # tsc --noEmit + 全量 bun test（1177 用例 / 49 文件）
 bun test tests/<feature>.test.ts
 ```
 
