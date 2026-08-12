@@ -58,7 +58,11 @@ export function ensurePackageShim(picoHome: string, upstreamPackageDir: string):
 
 	const shimPkg = {
 		...upstreamPkg,
-		piConfig: { ...((upstreamPkg.piConfig as object | undefined) ?? {}), name: "pico" },
+		// configDir 必须与编译模式 scripts/build.ts 生成的 package.json 一致
+		// （piConfig.configDir: ".pico"）。缺失时上游 CONFIG_DIR_NAME 回退
+		// ".pi"，源码模式的项目级配置（.pi/settings.json）与编译模式
+		// （.pico/settings.json）分裂，用户会困惑该建哪个文件。
+		piConfig: { ...((upstreamPkg.piConfig as object | undefined) ?? {}), name: "pico", configDir: ".pico" },
 	};
 
 	// Atomic write: tmp + rename so a concurrent process never reads a

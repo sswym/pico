@@ -265,8 +265,8 @@ test("configureCodeGraphMcp writes pico user MCP server", () => {
   try {
     configureCodeGraphMcp({ telemetry: "0" });
 
-    const config = readJson(picoMcpConfigPath());
-    expect(config.mcpServers.codegraph).toEqual({
+    const settings = readJson(picoSettingsPath());
+    expect(settings.mcpServers.mcpServers.codegraph).toEqual({
       command: "codegraph",
       args: ["serve", "--mcp"],
       env: { CODEGRAPH_TELEMETRY: "0" },
@@ -537,8 +537,8 @@ test("memory section defaults to the builtin backend", async () => {
 });
 
 test("lsp section stores formatOnWrite and a valid idle timeout", async () => {
-  await withSection("lsp", { yesNo: [true], text: ["30000"] }, ({ home }) => {
-    const config = readJson(picoLspConfigPath());
+  await withSection("lsp", { yesNo: [true], text: ["30000"] }, ({ settings, home }) => {
+    const config = settings().lsp;
     expect(config.formatOnWrite).toBe(true);
     expect(config.idleTimeoutMs).toBe(30000);
     expect(home).toBeTruthy();
@@ -546,16 +546,16 @@ test("lsp section stores formatOnWrite and a valid idle timeout", async () => {
 });
 
 test("lsp section ignores a non-numeric idle timeout", async () => {
-  await withSection("lsp", { yesNo: [false], text: ["not-a-number"] }, () => {
-    const config = readJson(picoLspConfigPath());
+  await withSection("lsp", { yesNo: [false], text: ["not-a-number"] }, ({ settings }) => {
+    const config = settings().lsp;
     expect(config.formatOnWrite).toBe(false);
     expect(config.idleTimeoutMs).toBeUndefined();
   });
 });
 
 test("lsp section rejects a non-positive idle timeout", async () => {
-  await withSection("lsp", { yesNo: [false], text: ["0"] }, () => {
-    expect(readJson(picoLspConfigPath()).idleTimeoutMs).toBeUndefined();
+  await withSection("lsp", { yesNo: [false], text: ["0"] }, ({ settings }) => {
+    expect(settings().lsp.idleTimeoutMs).toBeUndefined();
   });
 });
 
@@ -564,9 +564,9 @@ test("hooks section writes a hook and asks about blocking only for PreToolUse", 
     "hooks",
     // enableProjectHooks=true, createHook=true, blocking=false
     { yesNo: [true, true, false], choice: [0], text: ["echo hi"] },
-    ({ settings, home, asked }) => {
+    ({ settings, asked }) => {
       expect(settings().safety.enableProjectHooks).toBe(true);
-      const config = readJson(join(home, "hooks.json"));
+      const config = settings().hooks;
       expect(config.hooks).toHaveLength(1);
       expect(config.hooks[0]).toMatchObject({
         event: "PreToolUse",
@@ -584,8 +584,8 @@ test("hooks section skips the blocking prompt for non-PreToolUse events", async 
     "hooks",
     // choice 1 => PostToolUse, which has no blocking flag.
     { yesNo: [false, true], choice: [1], text: ["echo bye"] },
-    ({ home, asked }) => {
-      const config = readJson(join(home, "hooks.json"));
+    ({ settings, asked }) => {
+      const config = settings().hooks;
       expect(config.hooks[0]).toMatchObject({ event: "PostToolUse", command: "echo bye" });
       expect(config.hooks[0].blocking).toBeUndefined();
       expect(asked.yesNo).toHaveLength(2);
@@ -594,9 +594,9 @@ test("hooks section skips the blocking prompt for non-PreToolUse events", async 
 });
 
 test("hooks section writes an empty hook list when the user declines", async () => {
-  await withSection("hooks", { yesNo: [false, false] }, ({ home, settings }) => {
+  await withSection("hooks", { yesNo: [false, false] }, ({ settings }) => {
     expect(settings().safety.enableProjectHooks).toBe(false);
-    expect(readJson(join(home, "hooks.json")).hooks).toEqual([]);
+    expect(settings().hooks.hooks).toEqual([]);
   });
 });
 
@@ -606,7 +606,7 @@ test("mcp section writes a server and splits its args", async () => {
     { yesNo: [true, true], text: ["ctx7", "npx", "-y  @upstash/context7-mcp"] },
     ({ settings }) => {
       expect(settings().safety.enableProjectMcp).toBe(true);
-      const servers = readJson(picoMcpConfigPath()).mcpServers;
+      const servers = settings().mcpServers.mcpServers;
       expect(servers.ctx7).toEqual({
         command: "npx",
         args: ["-y", "@upstash/context7-mcp"],
@@ -619,8 +619,8 @@ test("mcp section omits args when none are given", async () => {
   await withSection(
     "mcp",
     { yesNo: [false, true], text: ["bare", "some-command", "   "] },
-    () => {
-      expect(readJson(picoMcpConfigPath()).mcpServers.bare).toEqual({ command: "some-command" });
+    ({ settings }) => {
+      expect(settings().mcpServers.mcpServers.bare).toEqual({ command: "some-command" });
     },
   );
 });
@@ -933,8 +933,8 @@ test("integrations section registers the codegraph MCP server with telemetry off
     "integrations",
     // enable, telemetryOff=true, mcp=true
     { yesNo: [true, true, true] },
-    () => {
-      const server = readJson(picoMcpConfigPath()).mcpServers.codegraph;
+    ({ settings }) => {
+      const server = settings().mcpServers.mcpServers.codegraph;
       expect(server).toMatchObject({ command: "codegraph", args: ["serve", "--mcp"] });
       expect(server.env.CODEGRAPH_TELEMETRY).toBe("0");
     },
@@ -949,8 +949,8 @@ test("integrations section leaves telemetry unset when the user keeps it on", as
     "integrations",
     // enable, telemetryOff=false, mcp=true
     { yesNo: [true, false, true] },
-    () => {
-      const server = readJson(picoMcpConfigPath()).mcpServers.codegraph;
+    ({ settings }) => {
+      const server = settings().mcpServers.mcpServers.codegraph;
       expect(server.env?.CODEGRAPH_TELEMETRY).toBeUndefined();
     },
     undefined,
@@ -964,8 +964,8 @@ test("integrations section skips MCP registration when declined", async () => {
     "integrations",
     // enable, telemetryOff=true, mcp=false
     { yesNo: [true, true, false] },
-    ({ home }) => {
-      expect(existsSync(join(home, "mcp-servers.json"))).toBe(false);
+    ({ settings }) => {
+      expect(settings().mcpServers).toBeUndefined();
     },
     undefined,
     shell,

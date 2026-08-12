@@ -1,12 +1,13 @@
 /**
- * Subagent configuration — agent overrides loaded from ~/.pico/subagent.json.
+ * Subagent configuration — agent overrides loaded from settings.json `subagent`
+ * namespace (preferred) or the legacy ~/.pico/subagent.json (fallback).
  *
  * Patterned after hooks/config.ts: missing file is not an error,
  * malformed JSON is logged once and skipped.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { picoHome } from "../paths.ts";
+import { picoSubagentConfigPath } from "../paths.ts";
+import { readSettings } from "../settings.ts";
 import type { AgentConfig } from "./agents.ts";
 
 export interface AgentOverride {
@@ -128,7 +129,15 @@ export function __resetWarnedPaths(): void {
 }
 
 export function loadSubagentConfig(): SubagentConfig {
-	const configPath = join(picoHome(), "subagent.json");
+	const settings = readSettings();
+	if (settings.subagent !== undefined) {
+		if (!settings.subagent || typeof settings.subagent !== "object" || Array.isArray(settings.subagent)) {
+			warnOnce("settings.json:subagent", new Error("expected an object"));
+			return {};
+		}
+		return settings.subagent as SubagentConfig;
+	}
+	const configPath = picoSubagentConfigPath();
 	if (!existsSync(configPath)) return {};
 	try {
 		const raw = JSON.parse(readFileSync(configPath, "utf8"));

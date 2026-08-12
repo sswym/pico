@@ -16,6 +16,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname, extname } from "node:path";
 import defaultServers from "./defaults.json" with { type: "json" };
 import { picoLspConfigPath } from "../paths.ts";
+import { readSettings } from "../settings.ts";
 import { allowProjectLsp } from "../policy.ts";
 
 // ── Config types ──────────────────────────────────────────────────────────
@@ -102,9 +103,13 @@ export function loadConfig(workspaceRoot: string): LspConfig {
   let idleTimeoutMs: number | undefined;
   let formatOnWrite: boolean | undefined;
 
-  // Merge user-level config
-  const userConfigPath = picoLspConfigPath();
-  const userConfig = parseJsonFile(userConfigPath);
+  // Merge user-level config: settings.json `lsp` 命名空间优先，否则回退旧
+  // ~/.pico/lsp.json（值与旧文件顶层对象逐字一致）。
+  const settings = readSettings();
+  const userConfig =
+    settings.lsp !== undefined && typeof settings.lsp === "object" && settings.lsp !== null
+      ? (settings.lsp as Record<string, unknown>)
+      : parseJsonFile(picoLspConfigPath());
   if (userConfig) {
     merged = { ...merged, ...parseServerMap(userConfig) };
     if (typeof userConfig["idleTimeoutMs"] === "number") {

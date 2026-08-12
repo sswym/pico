@@ -14,7 +14,7 @@ import { describeSiblingResults, runSubagentRequest, waitForSubagentJobs, __rese
 import { applyDenyTools, discoverAgents, KNOWN_CHILD_TOOLS } from "../src/extensions/subagent/agents.ts";
 import { buildChainTask, findUnresolvedChainReferences } from "../src/extensions/subagent/chain.ts";
 import { mapWithConcurrencyLimit, acquireChildSlot, __resetChildSlotsForTests } from "../src/extensions/subagent/concurrency.ts";
-import { applyOverrides, resolveDenyAgents, resolveDenyTools } from "../src/extensions/subagent/config.ts";
+import { applyOverrides, loadSubagentConfig, resolveDenyAgents, resolveDenyTools } from "../src/extensions/subagent/config.ts";
 import { isProviderFailure, runWithFallbackModels } from "../src/extensions/subagent/fallback.ts";
 import {
   buildRepairTask,
@@ -2388,4 +2388,37 @@ test("intercom: spawning a subagent creates its supervisor channel dir", async (
       __resetSessionSpawnCountsForTests();
     }
   });
+});
+
+test("loadSubagentConfig prefers the settings.json subagent namespace over the legacy file", () => {
+  const oldHome = process.env.PICO_HOME;
+  const home = mkdtempSync(join(tmpdir(), "pico-subagent-home-"));
+  process.env.PICO_HOME = home;
+  try {
+    mkdirSync(join(home, "agent"), { recursive: true });
+    writeFileSync(join(home, "subagent.json"), JSON.stringify({ defaults: { model: "legacy-model" } }));
+    writeFileSync(join(home, "agent", "settings.json"), JSON.stringify({
+      subagent: { defaults: { model: "ns-model" } },
+    }));
+    const config = loadSubagentConfig();
+    expect(config.defaults?.model).toBe("ns-model");
+  } finally {
+    if (oldHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("loadSubagentConfig falls back to the legacy file when the namespace is absent", () => {
+  const oldHome = process.env.PICO_HOME;
+  const home = mkdtempSync(join(tmpdir(), "pico-subagent-home-"));
+  process.env.PICO_HOME = home;
+  try {
+    writeFileSync(join(home, "subagent.json"), JSON.stringify({ defaults: { model: "legacy-model" } }));
+    expect(loadSubagentConfig().defaults?.model).toBe("legacy-model");
+  } finally {
+    if (oldHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  }
 });

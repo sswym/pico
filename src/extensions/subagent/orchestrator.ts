@@ -153,9 +153,9 @@ interface AgentRunSupport {
 	persistSessionDir?: string;
 	/** Session key for spawn accounting and async job registration. */
 	sessionKey: string;
-	/** Global cap on in-flight children (subagent.json). */
+	/** Global cap on in-flight children (settings "subagent"). */
 	globalConcurrencyLimit?: number;
-	/** Per-session spawn cap (subagent.json); exceeded runs fail fast. */
+	/** Per-session spawn cap (settings "subagent"); exceeded runs fail fast. */
 	maxSpawnsPerSession?: number;
 	/** Test seam: override the child spawn. */
 	spawnProcess?: ChildSpawnFn;
@@ -165,7 +165,7 @@ interface AgentRunSupport {
 	channelDir?: string;
 }
 
-/** Per-session child spawn counter (subagent.json maxSubagentSpawnsPerSession). */
+/** Per-session child spawn counter (settings "subagent".maxSubagentSpawnsPerSession). */
 const sessionSpawnCounts = new Map<string, number>();
 
 function bumpSessionSpawnCount(sessionKey: string): number {
@@ -324,7 +324,7 @@ async function runSingleAgent(
 		const channelDir = support.channelDir ?? createChannelDir(runId, agent.name, step ?? 0);
 
 		// 2.6.3: stderr accumulates unboundedly and floods failed-result messages.
-		// The global slot (subagent.json globalConcurrencyLimit) bounds in-flight
+		// The global slot (settings "subagent".globalConcurrencyLimit) bounds in-flight
 		// children across the whole session; held only for the child run.
 		const releaseSlot = await acquireChildSlot(globalConcurrencyLimit);
 		let processResult: Awaited<ReturnType<typeof runJsonProcess>>;
@@ -589,7 +589,7 @@ export async function runSubagentRequest(
 		};
 	}
 
-	// Instance-level tuning from ~/.pico/subagent.json (2.7.x): parallel caps,
+	// Instance-level tuning from settings.json "subagent" key (2.7.x): parallel caps,
 	// spawn allowlist, session persistence, global concurrency, per-session
 	// spawn cap, and tool/agent deny rules can all be configured there.
 	const subagentConfig = loadSubagentConfig();
@@ -656,7 +656,7 @@ export async function runSubagentRequest(
 		};
 	}
 
-	// 2.7.1: spawn allowlist — refuse agents not listed in subagent.json's
+	// 2.7.1: spawn allowlist — refuse agents not listed in settings "subagent".spawns
 	// `spawns` before any confirmation or execution. Nested subagent
 	// processes inherit the same config, so the allowlist holds recursively.
 	if (spawnWhitelist) {
@@ -670,7 +670,7 @@ export async function runSubagentRequest(
 				content: [
 					{
 						type: "text",
-						text: `Canceled: agent(s) not in the spawn allowlist (subagent.json "spawns"): ${blocked.join(", ")}. Allowed: ${spawnWhitelist.join(", ")}.`,
+						text: `Canceled: agent(s) not in the spawn allowlist (settings "subagent".spawns): ${blocked.join(", ")}. Allowed: ${spawnWhitelist.join(", ")}.`,
 					},
 				],
 				details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
@@ -691,7 +691,7 @@ export async function runSubagentRequest(
 				content: [
 					{
 						type: "text",
-						text: `Canceled: agent(s) denied by subagent.json permissions.denyAgents: ${denied.join(", ")}.`,
+						text: `Canceled: agent(s) denied by settings "subagent".permissions.denyAgents: ${denied.join(", ")}.`,
 					},
 				],
 				details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),

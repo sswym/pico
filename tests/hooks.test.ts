@@ -439,3 +439,23 @@ test("runHook spawns in the given cwd", async () => {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("loadHooks prefers the settings.json hooks namespace over the legacy file", () => {
+  writeHomeConfig({ hooks: [{ event: "PreToolUse", command: "echo legacy" }] });
+  const agentDir = join(homeRoot, "agent");
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(
+    join(agentDir, "settings.json"),
+    JSON.stringify({ hooks: { hooks: [{ event: "PreToolUse", command: "echo namespace" }] } }),
+  );
+  const hooks = loadHooks(workdir);
+  expect(hooks).toHaveLength(1);
+  expect(hooks[0]!.command).toBe("echo namespace");
+});
+
+test("loadHooks falls back to the legacy file when the settings namespace is absent", () => {
+  writeHomeConfig({ hooks: [{ event: "PreToolUse", command: "echo legacy" }] });
+  const hooks = loadHooks(workdir);
+  expect(hooks).toHaveLength(1);
+  expect(hooks[0]!.command).toBe("echo legacy");
+});

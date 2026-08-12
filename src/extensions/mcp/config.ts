@@ -13,6 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { McpConfig, McpServerConfig } from "./types.ts";
 import { picoMcpConfigPath } from "../paths.ts";
+import { readSettings } from "../settings.ts";
 import { allowProjectMcp } from "../policy.ts";
 
 const warnedInvalidServers = new Set<string>();
@@ -72,6 +73,23 @@ function validateServer(key: string, server: unknown): McpServerConfig | null {
 }
 
 /**
+ * 从已解析的 mcp 配置对象（含 mcpServers 键）提取服务器表。
+ * 兼容旧文件顶层与 settings.json `mcpServers` 命名空间（逐字一致）。
+ */
+function parseMcpConfigObject(raw: unknown, sourceName: string): Record<string, McpServerConfig> {
+  if (!raw || typeof raw !== "object" || !(raw as McpConfig).mcpServers) {
+    warnOnce(sourceName, `${sourceName} is missing "mcpServers"; ignored`);
+    return {};
+  }
+  const out: Record<string, McpServerConfig> = {};
+  for (const [key, server] of Object.entries((raw as McpConfig).mcpServers)) {
+    const validated = validateServer(key, server);
+    if (validated) out[key] = validated;
+  }
+  return out;
+}
+
+/**
  * Load the MCP server configuration by merging home and project configs.
  * Project config values override home config values for the same server key
  * only when PICO_ENABLE_PROJECT_MCP=1 is set.
@@ -82,17 +100,7 @@ export function loadMcpConfig(cwd: string): Record<string, McpServerConfig> {
     try {
       if (!existsSync(path)) return {};
       const raw = readFileSync(path, "utf-8");
-      const parsed: McpConfig = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object" || !parsed.mcpServers) {
-        warnOnce(sourceName, `${sourceName} is missing "mcpServers"; ignored`);
-        return {};
-      }
-      const out: Record<string, McpServerConfig> = {};
-      for (const [key, server] of Object.entries(parsed.mcpServers)) {
-        const validated = validateServer(key, server);
-        if (validated) out[key] = validated;
-      }
-      return out;
+      return parseMcpConfigObject(JSON.parse(raw), sourceName);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       warnOnce(sourceName, `${sourceName} could not be parsed (${msg}); ignored`);
@@ -100,7 +108,11 @@ export function loadMcpConfig(cwd: string): Record<string, McpServerConfig> {
     }
   };
 
-  const homeServers = merger(picoMcpConfigPath(), picoMcpConfigPath());
+  // 用户级：settings.json `mcpServers` 命名空间优先，否则回退旧 ~/.pico/mcp-servers.json。
+  const settings = readSettings();
+  const homeServers = settings.mcpServers !== undefined
+    ? parseMcpConfigObject(settings.mcpServers, "settings.json:mcpServers")
+    : merger(picoMcpConfigPath(), picoMcpConfigPath());
   const projectPath = join(cwd, ".pico", "mcp-servers.json");
   const projectServers = allowProjectMcp() ? merger(projectPath, projectPath) : {};
 

@@ -157,6 +157,12 @@ function makeFakePi() {
 }
 ```
 
+### 用户级配置收敛（2026-08）
+
+用户级 pico 配置统一存于 `~/.pico/agent/settings.json`（`$PICO_HOME` 可重定位）命名空间：`safety` / `auxiliary.vision` / `memory` / `integrations.rtk` / `hooks` / `mcpServers` / `lsp` / `subagent` / `automode` / `env`。旧独立文件（`~/.pico/hooks.json`、`~/.pico/mcp-servers.json`、`~/.pico/lsp.json`、`~/.pico/subagent.json`、`~/.pico/agent/automode.json`）在 `pico setup` 运行时自动迁入对应键（`src/extensions/config-migrate.ts`）；未迁移时各扩展加载器回退旧文件。**项目级配置保持分文件**（`.pico/hooks.json`、`.pico/mcp-servers.json`、`.pico/lsp.json`、`.pico/automode.json`、`.pico/agents/`，仓库可控 + 安全开关 gate）。
+
+修改用户级配置读取/写入时：先查 settings.json 命名空间（`readSettings()`），再回退旧文件；新写路径一律写 settings.json 命名空间。全量 `PICO_*` 环境变量与 settings 键的对应关系登记在 `src/extensions/envmap.ts`，`/doctor` 的 `Env ↔ settings:` 段展示生效值——新增 `PICO_*` 变量必须在此登记。
+
 ### 模型请求超时（settings.json `httpIdleTimeoutMs`）
 
 单次模型请求超时由上游读取同一份 `~/.pico/agent/settings.json` 的 `httpIdleTimeoutMs`（单位 ms；`0` = 禁用；也接受 `"disabled"` 或数值字符串），**默认 300000（5 分钟）**。上游挂起时表现为"等待 Ns 计时 + 超时后自动重试（最多 3 次，指数退避）"，最坏约 4×超时。pico 侧已做校验（非法值进 /doctor）并在 /doctor 的 `Request timeout:` 段展示生效值。示例：

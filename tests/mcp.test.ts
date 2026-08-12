@@ -502,3 +502,24 @@ test("loadMcpConfig validates server entries and keeps valid ones from a broken 
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("loadMcpConfig prefers the settings.json mcpServers namespace over the legacy file", () => {
+  pushEnv();
+  const home = mkdtempSync(join(tmpdir(), "pico-mcp-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pico-mcp-cwd-"));
+  process.env.PICO_HOME = home;
+  delete process.env.PICO_ENABLE_PROJECT_MCP;
+  try {
+    writeFileSync(join(home, "mcp-servers.json"), JSON.stringify({
+      mcpServers: { docs: { command: "legacy" } },
+    }));
+    mkdirSync(join(home, "agent"), { recursive: true });
+    writeFileSync(join(home, "agent", "settings.json"), JSON.stringify({
+      mcpServers: { mcpServers: { docs: { command: "namespace" } } },
+    }));
+    expect(loadMcpConfig(cwd)).toEqual({ docs: { command: "namespace" } });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

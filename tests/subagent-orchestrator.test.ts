@@ -455,7 +455,7 @@ test("single: permissions.denyAgents refuses denied agents before spawn", async 
     makeCtx(process.cwd()),
   );
   const text = makeText(result);
-  expect(text).toContain("denied by subagent.json permissions.denyAgents");
+  expect(text).toContain("denied by settings \"subagent\".permissions.denyAgents");
   expect(text).toContain("worker");
 });
 

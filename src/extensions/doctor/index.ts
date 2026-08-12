@@ -2,14 +2,17 @@
  * /doctor surfaces pico's local safety switches and capability boundaries.
  */
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
 import pkg from "../../../package.json" with { type: "json" };
 import {
   capabilitySummary,
   safetyStatuses,
 } from "../policy.ts";
+import { picoSettingsPath } from "../paths.ts";
+import { legacyUserConfigPaths } from "../config-migrate.ts";
 import { readSettings, readSettingsObject, writeSettings, isSettingsDamaged } from "../settings.ts";
 import { validateCurrentSettings } from "../settings-schema.ts";
-import { picoSettingsPath } from "../paths.ts";
+import { ENV_SETTING_MAPPINGS, envSettingEffectiveValue } from "../envmap.ts";
 import { subscribeSessionExtensionEvent, type LspStatusEvent } from "../events.ts";
 import {
   formatConfigYmlConflictLines,
@@ -101,12 +104,45 @@ export function buildDoctorReport(cwd: string): string {
     ...formatReasoningCompatLines(),
     ...formatMissingDefaultModelLines(),
     "",
+    "Config sources:",
+    ...configSourcesSummary(),
+    "",
+    "Env ↔ settings:",
+    ...envMappingSummary(),
+    "",
     "Request timeout:",
     ...requestTimeoutSummary(),
     "",
     "LSP:",
     ...lspLines,
   ].join("\n");
+}
+
+/** 用户级配置来源视图：命名空间（settings.json）激活与否、旧文件遗留。 */
+function configSourcesSummary(): string[] {
+  const settings = readSettings();
+  const lines: string[] = [];
+  for (const { key, path } of legacyUserConfigPaths()) {
+    const active = settings[key] !== undefined;
+    lines.push(`  ${key}: ${active ? "settings.json" : `legacy file (${path})`}`);
+  }
+  const leftover = legacyUserConfigPaths().filter(({ path }) => existsSync(path));
+  if (leftover.length > 0) {
+    lines.push(
+      `  leftover legacy files (run "pico setup" to migrate): ${leftover.map(({ key }) => key).join(", ")}`,
+    );
+  }
+  return lines;
+}
+
+/** env ↔ settings 映射视图：列出全部面向用户的 PICO_* 键与当前生效值。 */
+function envMappingSummary(): string[] {
+  const settings = readSettings();
+  return ENV_SETTING_MAPPINGS.filter((m) => !m.internal).map((m) => {
+    const effective = envSettingEffectiveValue(m, settings);
+    const settingsHint = m.settingsPath ? ` → settings ${m.settingsPath}` : "";
+    return `  ${m.env}=${effective} [${m.precedence}${settingsHint}] ${m.description}`;
+  });
 }
 
 /**

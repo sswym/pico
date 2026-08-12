@@ -90,7 +90,7 @@ export default function (pi: ExtensionAPI) {
 		cancelRunningJobs(typeof id === "string" && id.length > 0 ? id : undefined);
 		supervisorChannel.dispose();
 	});
-	// 2.2.2: surface subagent.json parse errors in the TUI (console.warn
+	// 2.2.2: surface settings "subagent" parse errors in the TUI (console.warn
 	// only reached stderr, so overrides silently didn't apply).
 	pi.on("session_start", (_event, ctx) => {
 		loadSubagentConfig();
@@ -128,7 +128,7 @@ export default function (pi: ExtensionAPI) {
 			"To continue a previous failed/aborted run, pass resumeFrom: \"<session file path>\" (the path is reported by the failed run) in single mode.",
 			"To enumerate available agents (built-in + user/project overrides), call this tool with list: true — it returns names, sources and descriptions without running anything.",
 			"Agent frontmatter supports: model, tools, thinking, maxExecutionTimeMs (default 30 min if unset), maxTokens, fallbackModels, systemPromptMode, inheritProjectContext, inheritSkills, acceptance.",
-			"User-level overrides may live in ~/.pico/agent/agents/<name>.md (same name = replaces built-in) or ~/.pico/subagent.json (partial field overrides).",
+			"User-level overrides may live in ~/.pico/agent/agents/<name>.md (same name = replaces built-in) or in settings.json under the \"subagent\" key (partial field overrides).",
 			'Project-local agents in .pico/agents are opt-in: set agentScope: "both" (or "project").',
 			"Project agents are repo-controlled; interactive sessions confirm before running them, and non-interactive runs refuse them unless PICO_ALLOW_UNATTENDED_PROJECT_AGENTS=1 is set.",
 			"Do NOT shell out to `ls` to discover agents - use the list: true mode of this tool instead.",

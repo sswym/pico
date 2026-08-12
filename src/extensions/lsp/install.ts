@@ -217,7 +217,7 @@ export function formatInstallHint(command: string): string {
     if (fallback) {
       return `Command "${command}" not found. Install it with:\n  ${fallback}`;
     }
-    return `Command "${command}" not found. Install it with your package manager, or disable the server in ~/.pico/lsp.json.`;
+    return `Command "${command}" not found. Install it with your package manager, or disable the server in settings.json (lsp key).`;
   }
   return `Command "${command}" not found. Install it with:\n  ${hint.command}`;
 }

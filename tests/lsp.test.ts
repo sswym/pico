@@ -1002,7 +1002,7 @@ test("formatInstallHint suggests a project-local tsc install", () => {
 
 test("formatInstallHint fallback points at lsp.json for unknown commands", () => {
   const hint = formatInstallHint("some-unknown-server");
-  expect(hint).toContain("~/.pico/lsp.json");
+  expect(hint).toContain("settings.json (lsp key)");
 });
 
 test("formatInstallHint keeps registry install commands for known servers", () => {
@@ -1517,5 +1517,29 @@ describe("friendlyLspInitError", () => {
   test("passes other init errors through unchanged", () => {
     const raw = "Request initialize failed with message: connection refused";
     expect(friendlyLspInitError("json-lsp", raw)).toBe(raw);
+  });
+});
+
+describe("LSP config settings namespace", () => {
+  test("loadConfig prefers the settings.json lsp namespace over the legacy file", () => {
+    const oldHome = process.env.PICO_HOME;
+    const home = mkdtempSync(join(tmpdir(), "pico-lsp-home-"));
+    const workspace = mkdtempSync(join(tmpdir(), "pico-lsp-ws-"));
+    process.env.PICO_HOME = home;
+    try {
+      mkdirSync(join(home, "agent"), { recursive: true });
+      writeFileSync(join(home, "lsp.json"), JSON.stringify({ formatOnWrite: true, idleTimeoutMs: 111 }));
+      writeFileSync(join(home, "agent", "settings.json"), JSON.stringify({
+        lsp: { formatOnWrite: false, idleTimeoutMs: 222 },
+      }));
+      const config = loadConfig(workspace);
+      expect(config.formatOnWrite).toBe(false);
+      expect(config.idleTimeoutMs).toBe(222);
+    } finally {
+      if (oldHome === undefined) delete process.env.PICO_HOME;
+      else process.env.PICO_HOME = oldHome;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });

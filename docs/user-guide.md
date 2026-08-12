@@ -36,7 +36,7 @@
 | `pico setup <section>` | 只跑指定节（共 10 节：`model` `tools` `safety` `ui` `memory` `lsp` `hooks` `mcp` `integrations` `env`）；显式指定时关闭"已配置跳过门"，总是重跑 |
 | `pico setup --quick` | 已配置的节只打印摘要并跳过 |
 | `pico setup --reconfigure` | 所有节强制重跑，高级选项门槛默认"是" |
-| `pico setup --reset` | 删除向导管理的配置（settings.json 的 8 个键 + 12 个托管 env 键，及 lsp.json/hooks.json/mcp-servers.json）；不删 models.json 自定义提供商 |
+| `pico setup --reset` | 删除向导管理的配置（settings.json 的 13 个键 + 12 个托管 env 键，及 lsp.json/hooks.json/mcp-servers.json/subagent.json/automode.json 遗留文件）；不删 models.json 自定义提供商 |
 | `pico setup --non-interactive` | 非 TTY 路径：写安全默认值 + 导入既有环境变量，打印汇总后退出 |
 
 非 TTY 且未加 `--non-interactive` 时报错退出；settings.json/models.json 损坏时拒绝运行（防止覆盖丢失的 API key）。退出码：0 成功、1 参数/未知 section 错误、130 Ctrl+C 取消。
@@ -55,11 +55,9 @@
 
 | 文件 | 节 |
 | --- | --- |
-| `~/.pico/agent/settings.json`（`$PICO_HOME` 可重定位） | model / tools / safety / ui / memory / integrations / env |
+| `~/.pico/agent/settings.json`（`$PICO_HOME` 可重定位） | model / tools / safety / ui / memory / integrations / env / hooks / lsp / mcpServers |
 | `~/.pico/agent/models.json` | 自定义提供商 |
-| `~/.pico/hooks.json` | hooks（事件 + 命令 + 可选 tool/blocking） |
-| `~/.pico/lsp.json` | lsp（formatOnWrite 默认 false、idleTimeoutMs 默认 600000） |
-| `~/.pico/mcp-servers.json` | mcp、integrations 的 CodeGraph MCP |
+| ~~`~/.pico/hooks.json`~~ 等 | 已并入 settings.json 命名空间：`hooks`（事件 + 命令 + 可选 tool/blocking）、`lsp`（formatOnWrite 默认 false、idleTimeoutMs 默认 600000）、`mcpServers`（mcp、integrations 的 CodeGraph MCP）。旧独立文件（`~/.pico/hooks.json`、`~/.pico/lsp.json`、`~/.pico/mcp-servers.json`、`~/.pico/subagent.json`、`~/.pico/agent/automode.json`）在 `pico setup` 运行时自动迁入 settings.json 对应键并删除；未迁移时读取侧自动回退旧文件，零破坏 |
 
 不写 AGENTS.md、不初始化记忆库。integrations 节可选用 `curl | sh` 安装 codegraph/rtk CLI、对当前项目执行 `codegraph init` 建索引、注册 CodeGraph MCP。
 
@@ -181,7 +179,7 @@
 // 单一
 subagent(agent="scout", task="...")
 
-// 并行——单批最多 8 个代理，并发上限 4（均可通过 subagent.json 调整）
+// 并行——单批最多 8 个代理，并发上限 4（均可通过 settings.json 的 subagent 键调整）
 subagent(tasks=[{agent: "scout", task: "..."}, {agent: "scout", task: "..."}])
 
 // 并行 + 共享背景——sharedContext 会前置拼入每个任务（2.7.2）
@@ -208,9 +206,9 @@ subagent(chain=[
 
 每个子代理在独立的 `pi` 进程中运行（`--mode json` 事件流），拥有自己的上下文窗口。Ctrl+C 会传播以终止子进程。
 
-**agent frontmatter 支持**：`model`、`tools`、`thinking`、`maxExecutionTimeMs`、`maxTokens`、`fallbackModels`、`systemPromptMode`（append/replace）、`inheritProjectContext`、`inheritSkills`、`outputMode`（file-only）、`acceptance`（验收门：`criteria`/`evidence`/`selfRepair`/`maxRepairAttempts`）、`output`（结构化输出 JSON Schema 子集：`type`/`required`/`properties`/`items`，最终输出需为符合 schema 的 JSON，否则该次运行标记 `schema_violation` 失败）、`maxRequests`（软请求预算：达到该轮次后终止并保留部分输出，`stopReason: "budget"`）。用户级覆盖：`~/.pico/agent/agents/<name>.md`（同名替换）或 `~/.pico/subagent.json`（部分字段覆盖）。
+**agent frontmatter 支持**：`model`、`tools`、`thinking`、`maxExecutionTimeMs`、`maxTokens`、`fallbackModels`、`systemPromptMode`（append/replace）、`inheritProjectContext`、`inheritSkills`、`outputMode`（file-only）、`acceptance`（验收门：`criteria`/`evidence`/`selfRepair`/`maxRepairAttempts`）、`output`（结构化输出 JSON Schema 子集：`type`/`required`/`properties`/`items`，最终输出需为符合 schema 的 JSON，否则该次运行标记 `schema_violation` 失败）、`maxRequests`（软请求预算：达到该轮次后终止并保留部分输出，`stopReason: "budget"`）。用户级覆盖：`~/.pico/agent/agents/<name>.md`（同名替换）或 settings.json 的 `subagent` 键（部分字段覆盖，旧 `~/.pico/subagent.json` 自动迁移）。
 
-**`~/.pico/subagent.json` 扩展配置**（除 `agents`/`defaults` 覆盖外）：
+**settings.json `subagent` 键扩展配置**（除 `agents`/`defaults` 覆盖外；旧 `~/.pico/subagent.json` 在 `pico setup` 时自动迁入）：
 
 ```jsonc
 {
@@ -242,7 +240,7 @@ subagent(chain=[
 
 **监督通道（intercom 文件信箱）**：子代理与父代理是独立进程（stdin ignore、stdout 被 JSONL 协议占用），通信走文件系统——通道根 `$TMPDIR/pico-supervisor-channels/`（`PICO_SUPERVISOR_CHANNEL_ROOT` 可覆盖），每个 run 一个目录，含 `requests/` `replies/` `steer/` 子目录。子代理可用 `contact_supervisor(reason=need_decision|interview_request|progress_update, ...)` 向父代理发起阻塞问答 / 结构化访谈（回复自动 JSON 解析）/ 进度通报（默认 10 分钟超时，`PICO_SUPERVISOR_ASK_TIMEOUT_MS` 可调，消息 ≤64KB）；父代理用 `subagent_supervisor(action=reply|pending|status, ...)` 查看与回复（多条待回复须给 `replyTo`）。父侧每 500ms 轮询，新请求以 `triggerTurn` 唤醒父代理回合。受限 agent 的工具白名单会被强制追加 `contact_supervisor`，保证能 intercom。
 
-**扩展配置 `~/.pico/subagent.json`**（前文键之外）：
+**settings.json `subagent` 键**（前文键之外）：
 
 ```jsonc
 {
@@ -255,7 +253,7 @@ subagent(chain=[
 }
 ```
 
-白名单/黑名单对嵌套子代理同样生效（子进程继承同一 `~/.pico/subagent.json`）。**递归护栏**：子代理每嵌套一层 `PICO_SUBAGENT_DEPTH` +1，启动时 ≥3 直接拒绝（父 → 子 → 孙 → 曾孙被拦），防止递归堆叠完整 pico 进程（每进程 ~100MB + 独立模型上下文）。该变量由系统自动维护，不要手动设置。
+白名单/黑名单对嵌套子代理同样生效（子进程继承同一 `subagent` 键）。**递归护栏**：子代理每嵌套一层 `PICO_SUBAGENT_DEPTH` +1，启动时 ≥3 直接拒绝（父 → 子 → 孙 → 曾孙被拦），防止递归堆叠完整 pico 进程（每进程 ~100MB + 独立模型上下文）。该变量由系统自动维护，不要手动设置。
 
 ---
 
@@ -299,7 +297,7 @@ subagent(chain=[
 - `lsp` 中的写入或高风险 action（`rename`、`rename_file`、`code_actions apply=true`、`request`）在 `tool_call` 阶段被阻断；只读 action（hover、definition、references、diagnostics、symbols、capabilities、status，以及未设置 `apply=true` 的 code_actions）与 `reload`（重启语言服务器，不写文件）可用。
 - 项目级 shell hooks、项目级 MCP 服务器、非交互计划自动批准、LSP 自动格式化写回、非交互项目代理：**默认全部关闭**，需显式开启。
 
-`/doctor` 可查看当前 cwd、settings 路径、能力边界、安全开关状态与来源。长期配置写入 `~/.pico/agent/settings.json` 的 `safety` 字段；临时覆盖使用环境变量，**环境变量优先于 settings**：
+`/doctor` 可查看当前 cwd、settings 路径、能力边界、安全开关状态与来源，并新增 **Config sources** 段（各用户级配置的生效来源：settings.json 命名空间或遗留文件）与 **Env ↔ settings** 段（全部面向用户的 PICO_* 键当前值、优先级与对应 settings 键）。长期配置写入 `~/.pico/agent/settings.json` 的 `safety` 字段；临时覆盖使用环境变量，**环境变量优先于 settings**：
 
 ```json
 {
@@ -333,9 +331,9 @@ subagent(chain=[
 
 **本质**：用"执行前分类器"（pre-execution LLM classifier）替代常规权限确认弹窗的自动模式护栏。**不是无脑自动批准**——每个副作用工具调用都要过审查链，只有只读内置工具（`read`/`grep`/`find`/`ls`）默认绕过；分类器不可用（无模型/无 API key）时 fail-closed 直接阻止。**无循环护栏、无动作预算**：防护是"单动作审查"而非迭代上限。
 
-**默认关闭**：写 `~/.pico/agent/automode.json` 或 `.pico/automode.json` 的 `autoMode.enabled: true` 全局/项目开启；会话级 `/automode on` 只对本会话生效（状态行显示 `⏵⏵ auto mode on/off`）。
+**默认关闭**：写 settings.json 的 `automode.autoMode.enabled: true`（用户级；旧 `~/.pico/agent/automode.json` 自动迁移）或 `.pico/automode.json`（项目级）开启；会话级 `/automode on` 只对本会话生效（状态行显示 `⏵⏵ auto mode on/off`）。
 
-**命令**：`/automode [status|on|off|reload|reset|defaults|config|denials|model]`（别名 `/auto-mode`）。`status` 显示启用状态与分类器计数；`model` 查看/切换分类器模型（默认用当前会话模型），全局保存到 `~/.pico/agent/automode.json`；`denials` 显示最近拒绝记录（保留 12 条）。
+**命令**：`/automode [status|on|off|reload|reset|defaults|config|denials|model]`（别名 `/auto-mode`）。`status` 显示启用状态与分类器计数；`model` 查看/切换分类器模型（默认用当前会话模型），全局保存到 settings.json 的 `automode` 键；`denials` 显示最近拒绝记录（保留 12 条）。
 
 **审查顺序**（tool_call 阶段，首个 block 短路）：
 
@@ -373,13 +371,13 @@ subagent(chain=[
 | `undo_redo(action=undo\|redo\|list_diffs\|diff, ...)` | LLM 工具：不触发 UI 导航、不动当前回合上下文，改动在下一个用户提示时生效 |
 | 快捷键 | `ctrl+shift+z` / `ctrl+shift+y`（/undo、/redo） |
 
-状态行显示 `Tracked: N files (size)`。无 settings/subagent.json 配置项；`$PICO_HOME` 决定缓存根。
+状态行显示 `Tracked: N files (size)`。无 settings/subagent 配置项；`$PICO_HOME` 决定缓存根。
 
 ---
 
 ## 9. 钩子系统
 
-基于文件的 Shell 钩子，支持 `PreToolUse` / `PostToolUse` / `PreSessionEnd` / `PostUserMessage` 事件。默认只加载用户级 `~/.pico/hooks.json`；项目级 `<仓库>/.pico/hooks.json` 会执行仓库提供的 shell 命令，需设置 `safety.enableProjectHooks=true` 或 `PICO_ENABLE_PROJECT_HOOKS=1` 才会加载。占位符：`$FILE`（工具参数）、`$TOOL`（工具名）、`$TURN`（轮次索引）。默认超时 30 秒（最大 120 秒）；`blocking: true` 的 PreToolUse 失败会中止工具调用。
+基于文件的 Shell 钩子，支持 `PreToolUse` / `PostToolUse` / `PreSessionEnd` / `PostUserMessage` 事件。默认只加载用户级 hooks（settings.json 的 `hooks` 键；旧 `~/.pico/hooks.json` 自动迁移）；项目级 `<仓库>/.pico/hooks.json` 会执行仓库提供的 shell 命令，需设置 `safety.enableProjectHooks=true` 或 `PICO_ENABLE_PROJECT_HOOKS=1` 才会加载。占位符：`$FILE`（工具参数）、`$TOOL`（工具名）、`$TURN`（轮次索引）。默认超时 30 秒（最大 120 秒）；`blocking: true` 的 PreToolUse 失败会中止工具调用。
 
 ```json
 {
@@ -457,7 +455,7 @@ subagent(chain=[
 
 | 层级 | 路径 | 说明 |
 |------|------|------|
-| 全局 | `~/.pico/mcp-servers.json` | 所有项目共享 |
+| 全局 | settings.json 的 `mcpServers` 键 | 所有项目共享（旧 `~/.pico/mcp-servers.json` 自动迁移） |
 | 项目 | `<cwd>/.pico/mcp-servers.json` | 设置 `safety.enableProjectMcp=true` 或 `PICO_ENABLE_PROJECT_MCP=1` 后覆盖同名 server |
 
 **工具命名规则**：`mcp__<服务器名>__<工具名>`，与权限系统的 `mcp__` 前缀匹配兼容。
@@ -515,7 +513,7 @@ lsp(action="symbols", file="src/index.ts")
 
 **45+ 语言支持**：TypeScript、JavaScript、Python、Rust、Go、Java、Kotlin、Scala、Haskell、OCaml、Elixir、Ruby、PHP、C#、Lua、Nix、Zig、Bash、YAML、TOML、SQL、Terraform、Docker、Prisma、GraphQL、Swift、Dart、CSS、HTML、JSON、Vue、Svelte、Astro、Tailwind、Deno、Biome、ESLint 等。
 
-**配置系统**：三层合并——内置 defaults.json → `~/.pico/lsp.json`（用户级）→ `.pico/lsp.json`（项目级）。支持 `fileTypes`、`rootMarkers`、`initOptions`、`settings` 配置。本地二进制解析优先检查 `node_modules/.bin/`、`.venv/bin/`、`vendor/bundle/bin/`。**项目级 `.pico/lsp.json` 是安全开关默认关闭的能力**：仓库内的配置（可含任意服务器 command）需设置 `safety.enableProjectLsp=true` 或 `PICO_ENABLE_PROJECT_LSP=1` 才会加载，与项目级 hooks/MCP 一致；被禁用时 session 启动会提示。
+**配置系统**：三层合并——内置 defaults.json → settings.json 的 `lsp` 键（用户级；旧 `~/.pico/lsp.json` 自动迁移）→ `.pico/lsp.json`（项目级）。支持 `fileTypes`、`rootMarkers`、`initOptions`、`settings` 配置。本地二进制解析优先检查 `node_modules/.bin/`、`.venv/bin/`、`vendor/bundle/bin/`。**项目级 `.pico/lsp.json` 是安全开关默认关闭的能力**：仓库内的配置（可含任意服务器 command）需设置 `safety.enableProjectLsp=true` 或 `PICO_ENABLE_PROJECT_LSP=1` 才会加载，与项目级 hooks/MCP 一致；被禁用时 session 启动会提示。
 
 **Write/Edit 联动**：编辑代码文件后，LSP 自动同步文件内容、通知服务器重新分析、收集诊断信息并追加到工具结果（500ms 内联等待 + 最长 5s 后台等待）。`.editorconfig` 解析支持自动格式化；自动格式化会二次写文件，因此即使 `formatOnWrite=true`，仍需设置 `safety.allowLspFormatOnWrite=true` 或 `PICO_ALLOW_LSP_FORMAT_ON_WRITE=1` 才会写回。
 

@@ -15,9 +15,10 @@
  *
  * Slash command: /mcp — list connected servers and their tools.
  *
- * Config files (JSON, Claude Code compatible):
- *   ~/.pico/mcp-servers.json      — home-wide
- *   <cwd>/.pico/mcp-servers.json  — project-specific (overrides home)
+ * Config sources (JSON, Claude Code compatible):
+ *   settings.json `mcpServers` key — home-wide (legacy ~/.pico/mcp-servers.json
+ *       auto-migrated by `pico setup`; readers fall back while un-migrated)
+ *   <cwd>/.pico/mcp-servers.json   — project-specific (overrides home)
  *
  * Format:
  *   { "mcpServers": { "name": { "command": "npx", "args": [...], "env": {} } } }

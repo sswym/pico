@@ -1,5 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { isSettingsDamaged, readSettings, writeSettings } from "../settings.ts";
+import { picoAutomodeConfigPath } from "../paths.ts";
 import {
   DEFAULT_ALLOW,
   DEFAULT_ALLOW_INSIDE_WORKING_DIRECTORY,
@@ -13,7 +15,6 @@ import {
   DEFAULT_MAX_USER_TRANSCRIPT_TOKENS,
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_SOFT_DENY,
-  PI_GLOBAL_SETTINGS,
   PI_PROJECT_LOCAL_SETTINGS,
   PI_PROJECT_SHARED_SETTINGS,
 } from "./constants.ts";
@@ -30,6 +31,29 @@ import type {
   ToolPattern,
 } from "./types.ts";
 import { hasOwn, stringArray } from "./utils.ts";
+
+/**
+ * 用户级 automode：settings.json `automode` 命名空间优先（值与旧
+ * ~/.pico/agent/automode.json 顶层对象逐字一致），不存在时回退旧文件。
+ */
+function readAutomodeGlobalSettings(): LoadedSettingsFile | undefined {
+  const settings = readSettings();
+  if (settings.automode !== undefined) {
+    if (!settings.automode || typeof settings.automode !== "object" || Array.isArray(settings.automode)) {
+      return {
+        path: "settings.json:automode",
+        diagnostics: ["settings.json:automode must be an object"],
+      };
+    }
+    const automode = settings.automode as SettingsFile;
+    return {
+      path: "settings.json:automode",
+      settings: automode,
+      diagnostics: validateSettingsFile(automode, "settings.json:automode"),
+    };
+  }
+  return readSettingsFile(picoAutomodeConfigPath());
+}
 
 function readSettingsFile(path: string): LoadedSettingsFile | undefined {
   if (!existsSync(path)) return undefined;
@@ -562,7 +586,7 @@ export function loadEffectiveConfigWithDiagnostics(
     }
   }
 
-  const globalFiles = PI_GLOBAL_SETTINGS.map(readSettingsFile);
+  const globalFiles = [readAutomodeGlobalSettings()];
   const projectLocalFiles = PI_PROJECT_LOCAL_SETTINGS.map((file) =>
     readSettingsFile(resolve(cwd, file))
   );
@@ -609,11 +633,32 @@ function readWritableSettingsFile(path: string): SettingsFile {
   return settings;
 }
 
-/** Persist the global default classifier model while preserving other settings. */
+/**
+ * Persist the global default classifier model while preserving other settings.
+ *
+ * 目标随来源：settings.json `automode` 命名空间为权威来源时写回 settings.json
+ * （损坏保护 + 0o600 原子写）；否则保持旧 automode.json 路径（未迁移用户）。
+ */
 export function writeGlobalClassifierModel(
   classifierModel: string,
-  path: string = PI_GLOBAL_SETTINGS[0] ?? "automode.json",
+  path: string = picoAutomodeConfigPath(),
 ): void {
+  if (readSettings().automode !== undefined) {
+    if (isSettingsDamaged()) return; // 拒绝覆盖损坏的 settings.json
+    const settings = readSettings();
+    const automode = (
+      settings.automode && typeof settings.automode === "object" && !Array.isArray(settings.automode)
+    ) ? settings.automode as SettingsFile : {} as SettingsFile;
+    settings.automode = {
+      ...automode,
+      autoMode: {
+        ...automode.autoMode,
+        classifierModel,
+      },
+    };
+    writeSettings(settings);
+    return;
+  }
   const settings = readWritableSettingsFile(path);
   const next: SettingsFile = {
     ...settings,

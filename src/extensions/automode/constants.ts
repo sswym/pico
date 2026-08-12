@@ -1,6 +1,5 @@
 import os from "node:os";
 import { resolve } from "node:path";
-import { picoAgentHome } from "../paths.ts";
 
 export const HOME = os.homedir();
 
@@ -162,7 +161,8 @@ Valid decision/tier combinations:
 - block: hard_deny, soft_deny, or none
 If an allow exception or explicit user intent overrides a soft-deny rule, return allow with tier allow or explicit_intent, never soft_deny.`;
 
-export const PI_GLOBAL_SETTINGS = [resolve(picoAgentHome(), "automode.json")];
+// 用户级 automode 配置路径运行时求值（picoAutomodeConfigPath()），因为模块
+// 级常量在 import 时求值，PICO_HOME 在测试/进程内切换时会指向旧位置。
 export const PI_PROJECT_LOCAL_SETTINGS = [".pico/automode.local.json"];
 export const PI_PROJECT_SHARED_SETTINGS = [".pico/automode.json"];
 

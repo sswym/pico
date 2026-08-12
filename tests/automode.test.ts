@@ -9,10 +9,14 @@
  * Uses injected loadConfig/classifyAction so no real LLM/API is touched.
  */
 import { describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createPiAutomode } from "../src/extensions/automode/extension.ts";
 import {
   buildEffectiveConfigFromSources,
   loadEffectiveConfig,
+  writeGlobalClassifierModel,
 } from "../src/extensions/automode/config.ts";
 import { deterministicHardDeny } from "../src/extensions/automode/hard-deny.ts";
 import { matchesToolPattern, parseToolPattern } from "../src/extensions/automode/permissions.ts";
@@ -285,5 +289,65 @@ describe("automode safety control paths", () => {
   test("normal project files are not protected", () => {
     expect(isSafetyControlPath("/proj/src/a.ts", "/proj")).toBe(false);
     expect(isSafetyControlPath("/proj/package.json", "/proj")).toBe(false);
+  });
+});
+
+describe("automode settings namespace", () => {
+  test("loadEffectiveConfig prefers the settings.json automode namespace over the legacy file", () => {
+    const oldHome = process.env.PICO_HOME;
+    const home = mkdtempSync(join(tmpdir(), "pico-auto-home-"));
+    process.env.PICO_HOME = home;
+    try {
+      mkdirSync(join(home, "agent"), { recursive: true });
+      writeFileSync(join(home, "agent", "automode.json"), JSON.stringify({
+        autoMode: { enabled: true, classifierModel: "legacy-model" },
+      }));
+      writeFileSync(join(home, "agent", "settings.json"), JSON.stringify({
+        automode: { autoMode: { enabled: true, classifierModel: "ns-model" } },
+      }));
+      const cfg = loadEffectiveConfig("/tmp/automode-proj");
+      expect(cfg.classifierModel).toBe("ns-model");
+    } finally {
+      if (oldHome === undefined) delete process.env.PICO_HOME;
+      else process.env.PICO_HOME = oldHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("writeGlobalClassifierModel writes into settings.json when the namespace is authoritative", () => {
+    const oldHome = process.env.PICO_HOME;
+    const home = mkdtempSync(join(tmpdir(), "pico-auto-home-"));
+    process.env.PICO_HOME = home;
+    try {
+      mkdirSync(join(home, "agent"), { recursive: true });
+      writeFileSync(join(home, "agent", "settings.json"), JSON.stringify({
+        automode: { autoMode: { enabled: true } },
+      }));
+      writeGlobalClassifierModel("provider/model");
+      const settings = JSON.parse(readFileSync(join(home, "agent", "settings.json"), "utf8"));
+      expect(settings.automode.autoMode.classifierModel).toBe("provider/model");
+      expect(settings.automode.autoMode.enabled).toBe(true);
+      expect(existsSync(join(home, "agent", "automode.json"))).toBe(false);
+    } finally {
+      if (oldHome === undefined) delete process.env.PICO_HOME;
+      else process.env.PICO_HOME = oldHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("writeGlobalClassifierModel keeps writing the legacy file when the namespace is absent", () => {
+    const oldHome = process.env.PICO_HOME;
+    const home = mkdtempSync(join(tmpdir(), "pico-auto-home-"));
+    process.env.PICO_HOME = home;
+    try {
+      mkdirSync(join(home, "agent"), { recursive: true });
+      writeGlobalClassifierModel("provider/model");
+      const legacy = JSON.parse(readFileSync(join(home, "agent", "automode.json"), "utf8"));
+      expect(legacy.autoMode.classifierModel).toBe("provider/model");
+    } finally {
+      if (oldHome === undefined) delete process.env.PICO_HOME;
+      else process.env.PICO_HOME = oldHome;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

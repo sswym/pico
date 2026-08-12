@@ -392,7 +392,7 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 
 	const rawAgents = Array.from(agentMap.values());
 
-	// Apply overrides from ~/.pico/subagent.json
+	// Apply overrides from settings.json "subagent" key
 	const config = loadSubagentConfig();
 	const finalAgents = applyOverrides(rawAgents, config);
 

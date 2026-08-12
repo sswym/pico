@@ -14,6 +14,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { picoHome } from "../paths.ts";
+import { readSettings } from "../settings.ts";
 import { allowProjectHooks } from "../policy.ts";
 
 export type HookEvent = "PreToolUse" | "PostToolUse" | "PreSessionEnd" | "PostUserMessage";
@@ -131,6 +132,18 @@ function dedupeKey(h: Hook): string {
 }
 
 /**
+ * 用户级 hooks：settings.json `hooks` 命名空间优先（值与旧 ~/.pico/hooks.json
+ * 顶层对象逐字一致），不存在时回退旧文件（未迁移用户零破坏）。
+ */
+function loadHomeHooks(): Hook[] {
+  const settings = readSettings();
+  if (settings.hooks !== undefined) {
+    return normalize(settings.hooks, "settings.json:hooks");
+  }
+  return loadOne(join(picoHome(), "hooks.json"));
+}
+
+/**
  * Load and merge hooks for the given working directory. Home layer runs
  * first; cwd layer is appended afterwards when PICO_ENABLE_PROJECT_HOOKS=1.
  * Order is preserved within each layer, and duplicates (same event+tool+
@@ -147,7 +160,7 @@ export function loadHooks(cwd: string): Hook[] {
     console.warn(line);
   }
   const merged = [
-    ...loadOne(homePath!),
+    ...loadHomeHooks(),
     ...(allowProjectHooks() ? loadOne(cwdPath!) : []),
   ];
 

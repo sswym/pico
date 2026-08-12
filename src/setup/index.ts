@@ -3,7 +3,8 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as defaultInput, stdout as defaultOutput } from "node:process";
 import { spawnSync } from "node:child_process";
-import { picoHome, picoHooksConfigPath, picoLspConfigPath, picoMcpConfigPath, picoModelsPath, picoSettingsPath } from "../extensions/paths.ts";
+import { picoHome, picoHooksConfigPath, picoLspConfigPath, picoMcpConfigPath, picoSubagentConfigPath, picoAutomodeConfigPath, picoModelsPath, picoSettingsPath } from "../extensions/paths.ts";
+import { migrateLegacyUserConfigs } from "../extensions/config-migrate.ts";
 import type { Settings } from "../extensions/settings.ts";
 
 export type SetupSection = "model" | "tools" | "safety" | "ui" | "memory" | "lsp" | "hooks" | "mcp" | "integrations" | "env";
@@ -558,6 +559,13 @@ export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
   if (damagedConfig) {
     writeLine(io, `error: refusing to run setup — ${damagedConfig} is malformed JSON and would be overwritten, losing API keys / safety config. Fix or remove it manually, then re-run.`);
     return 1;
+  }
+  // 2026-08 配置收敛：setup 运行前把遗留独立配置文件（~/.pico/hooks.json 等）
+  // 迁入 settings.json 命名空间（幂等；损坏文件跳过）。此后所有读写统一走
+  // settings.json，避免再次出现"改哪一处生效"的多入口困惑。
+  const migrated = migrateLegacyUserConfigs();
+  if (migrated.length > 0) {
+    writeLine(io, `migrated legacy config into settings.json: ${migrated.join(", ")}`);
   }
   if (options.nonInteractive) {
     applyNonInteractiveDefaults();
@@ -1131,26 +1139,27 @@ async function runMemorySetup(prompt: SetupPrompter, io: SetupIo): Promise<void>
 async function runLspSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.lspHeader);
-  writeLine(io, `${text.lspConfig}: ${picoLspConfigPath()}`);
-  const config = readJson(picoLspConfigPath());
+  writeLine(io, `${text.lspConfig}: settings.json (lsp)`);
+  const settings = readJson(picoSettingsPath()) as Settings;
+  const config = objectSetting(settings.lsp);
   config.formatOnWrite = await prompt.yesNo(text.lspFormatOnWrite, booleanSetting(config.formatOnWrite, false));
   const idle = await prompt.text(text.lspIdleTimeout, numberSetting(config.idleTimeoutMs)?.toString() ?? "600000");
   const parsedIdle = Number.parseInt(idle, 10);
   if (Number.isFinite(parsedIdle) && parsedIdle > 0) config.idleTimeoutMs = parsedIdle;
-  writeJson(picoLspConfigPath(), config);
+  settings.lsp = config;
+  writeJson(picoSettingsPath(), settings);
 }
 
 async function runHooksSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.hooksHeader);
-  writeLine(io, `${text.hookConfig}: ${userHooksPath()}`);
+  writeLine(io, `${text.hookConfig}: settings.json (hooks)`);
   const settings = readJson(picoSettingsPath()) as Settings;
   const safety = { ...SAFETY_DEFAULTS, ...objectSetting(settings.safety) };
   safety.enableProjectHooks = await prompt.yesNo(text.projectHooks, booleanSetting(safety.enableProjectHooks, false));
   settings.safety = safety;
-  writeJson(picoSettingsPath(), settings);
 
-  const config = readJson(userHooksPath());
+  const config = objectSetting(settings.hooks);
   const hooks = Array.isArray(config.hooks) ? config.hooks.filter((h): h is JsonObject => h && typeof h === "object" && !Array.isArray(h)) : [];
   if (await prompt.yesNo(text.createHook, false)) {
     const event = HOOK_EVENTS[await prompt.choice(text.hookEvent, HOOK_EVENT_LABELS[prompt.language])]!;
@@ -1164,20 +1173,20 @@ async function runHooksSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> 
     hooks.push(hook);
   }
   config.hooks = hooks;
-  writeJson(userHooksPath(), config);
+  settings.hooks = config;
+  writeJson(picoSettingsPath(), settings);
 }
 
 async function runMcpSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.mcpHeader);
-  writeLine(io, `${text.mcpConfig}: ${picoMcpConfigPath()}`);
+  writeLine(io, `${text.mcpConfig}: settings.json (mcpServers)`);
   const settings = readJson(picoSettingsPath()) as Settings;
   const safety = { ...SAFETY_DEFAULTS, ...objectSetting(settings.safety) };
   safety.enableProjectMcp = await prompt.yesNo(text.projectMcp, booleanSetting(safety.enableProjectMcp, false));
   settings.safety = safety;
-  writeJson(picoSettingsPath(), settings);
 
-  const config = readJson(picoMcpConfigPath());
+  const config = objectSetting(settings.mcpServers);
   const servers = objectSetting(config.mcpServers);
   if (await prompt.yesNo(text.createMcp, false)) {
     const name = await prompt.text(text.mcpName, "local");
@@ -1186,7 +1195,8 @@ async function runMcpSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
     servers[name] = args.length > 0 ? { command, args } : { command };
   }
   config.mcpServers = servers;
-  writeJson(picoMcpConfigPath(), config);
+  settings.mcpServers = config;
+  writeJson(picoSettingsPath(), settings);
 }
 
 async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo, shell: SetupShell): Promise<void> {
@@ -1220,7 +1230,9 @@ async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo, shell: S
     }
     const disableTelemetry = await prompt.yesNo(text.codegraphTelemetryOff, true);
     if (await prompt.yesNo(text.codegraphMcp, true)) {
-      configureCodeGraphMcp({ telemetry: disableTelemetry ? "0" : undefined });
+      // 内联注册（不调 configureCodeGraphMcp——它会独立读盘写盘，与本节的
+      // settings 内存对象互相覆盖，丢掉刚编辑的 integrations）。
+      setCodeGraphMcpServer(settings, disableTelemetry ? "0" : undefined);
     }
     if (await prompt.yesNo(text.codegraphInitProject, false)) {
       const result = shell.run(["codegraph", "init"]);
@@ -1352,31 +1364,33 @@ function summarizeMemorySection(settings: JsonObject): string | undefined {
   return bits.length > 0 ? bits.join(", ") : undefined;
 }
 
-function hasLspSection(_settings: JsonObject): boolean {
-  return existsSync(picoLspConfigPath());
+function hasLspSection(settings: JsonObject): boolean {
+  return settings.lsp !== undefined || existsSync(picoLspConfigPath());
 }
 
-function summarizeLspSection(): string | undefined {
-  const config = readJson(picoLspConfigPath());
+function summarizeLspSection(settings: JsonObject): string | undefined {
+  const config = settings.lsp !== undefined ? objectSetting(settings.lsp) : readJson(picoLspConfigPath());
   const bits: string[] = [];
   if (typeof config.formatOnWrite === "boolean") bits.push(`formatOnWrite=${config.formatOnWrite ? "on" : "off"}`);
   if (typeof config.idleTimeoutMs === "number") bits.push(`idle=${config.idleTimeoutMs}`);
   return bits.length > 0 ? bits.join(", ") : undefined;
 }
 
-function hasHooksSection(_settings: JsonObject): boolean {
-  return existsSync(userHooksPath());
+function hasHooksSection(settings: JsonObject): boolean {
+  return settings.hooks !== undefined || existsSync(userHooksPath());
 }
 
-function summarizeHooksSection(_settings: JsonObject): string | undefined {
+function summarizeHooksSection(settings: JsonObject): string | undefined {
+  if (settings.hooks !== undefined) return "settings.json:hooks";
   return existsSync(userHooksPath()) ? userHooksPath() : undefined;
 }
 
-function hasMcpSection(_settings: JsonObject): boolean {
-  return existsSync(picoMcpConfigPath());
+function hasMcpSection(settings: JsonObject): boolean {
+  return settings.mcpServers !== undefined || existsSync(picoMcpConfigPath());
 }
 
-function summarizeMcpSection(_settings: JsonObject): string | undefined {
+function summarizeMcpSection(settings: JsonObject): string | undefined {
+  if (settings.mcpServers !== undefined) return "settings.json:mcpServers";
   return existsSync(picoMcpConfigPath()) ? picoMcpConfigPath() : undefined;
 }
 
@@ -1425,7 +1439,7 @@ export function applyNonInteractiveDefaults(): void {
 
 export function resetSetupConfig(): void {
   const settings = readJson(picoSettingsPath()) as Settings;
-  for (const key of ["defaultProvider", "defaultModel", "defaultThinkingLevel", "language", "auxiliary", "safety", "memory", "integrations"]) {
+  for (const key of ["defaultProvider", "defaultModel", "defaultThinkingLevel", "language", "auxiliary", "safety", "memory", "integrations", "hooks", "mcpServers", "lsp", "subagent", "automode"]) {
     delete settings[key];
   }
   const env = readSettingsEnv(settings);
@@ -1435,7 +1449,7 @@ export function resetSetupConfig(): void {
   writeJson(picoSettingsPath(), settings);
   // Files managed by the per-section setups must go too, or --reset followed
   // by --quick would still report those sections as "configured" and skip.
-  for (const file of [picoLspConfigPath(), picoHooksConfigPath(), picoMcpConfigPath()]) {
+  for (const file of [picoLspConfigPath(), picoHooksConfigPath(), picoMcpConfigPath(), picoSubagentConfigPath(), picoAutomodeConfigPath()]) {
     try {
       rmSync(file, { force: true });
     } catch {
@@ -1462,18 +1476,25 @@ export function writeCustomProvider(config: CustomProviderConfig): void {
 }
 
 export function configureCodeGraphMcp(options: { telemetry?: string } = {}): void {
-  const config = readJson(picoMcpConfigPath());
+  const settings = readJson(picoSettingsPath()) as Settings;
+  setCodeGraphMcpServer(settings, options.telemetry);
+  writeJson(picoSettingsPath(), settings);
+}
+
+/** 在 settings 对象上注册 CodeGraph MCP 服务器（integrations 节与独立入口共用）。 */
+function setCodeGraphMcpServer(settings: JsonObject, telemetry: string | undefined): void {
+  const config = objectSetting(settings.mcpServers);
   const servers = objectSetting(config.mcpServers);
   const server: JsonObject = {
     command: "codegraph",
     args: ["serve", "--mcp"],
   };
-  if (options.telemetry !== undefined) {
-    server.env = { CODEGRAPH_TELEMETRY: options.telemetry };
+  if (telemetry !== undefined) {
+    server.env = { CODEGRAPH_TELEMETRY: telemetry };
   }
   servers.codegraph = server;
   config.mcpServers = servers;
-  writeJson(picoMcpConfigPath(), config);
+  settings.mcpServers = config;
 }
 
 export function configureRtkIntegration(options: { enabled: boolean; mode?: "spawnHook" | "instructionsOnly"; command?: string }): void {
@@ -1511,9 +1532,15 @@ export function buildSetupSummary(
     const vision = objectSetting(objectSetting(settings.auxiliary).vision);
     lines.push(`${text.vision}: ${stringSetting(vision.provider)}/${stringSetting(vision.model)}`);
   }
-  if (existsSync(picoLspConfigPath())) lines.push(`${text.lspConfigSummary}: ${picoLspConfigPath()}`);
-  if (existsSync(userHooksPath())) lines.push(`${text.hooksConfigSummary}: ${userHooksPath()}`);
-  if (existsSync(picoMcpConfigPath())) lines.push(`${text.mcpConfigSummary}: ${picoMcpConfigPath()}`);
+  if (settings.lsp !== undefined || existsSync(picoLspConfigPath())) {
+    lines.push(`${text.lspConfigSummary}: ${settings.lsp !== undefined ? "settings.json (lsp)" : picoLspConfigPath()}`);
+  }
+  if (settings.hooks !== undefined || existsSync(userHooksPath())) {
+    lines.push(`${text.hooksConfigSummary}: ${settings.hooks !== undefined ? "settings.json (hooks)" : userHooksPath()}`);
+  }
+  if (settings.mcpServers !== undefined || existsSync(picoMcpConfigPath())) {
+    lines.push(`${text.mcpConfigSummary}: ${settings.mcpServers !== undefined ? "settings.json (mcpServers)" : picoMcpConfigPath()}`);
+  }
   const integrationsSummary = summarizeIntegrationsSection(settings);
   if (integrationsSummary) lines.push(`${text.integrationsSummary}: ${integrationsSummary}`);
   if (Object.keys(objectSetting(models.providers)).length > 0) {

@@ -76,3 +76,11 @@ export function picoLspConfigPath(): string {
 export function picoHooksConfigPath(): string {
   return join(picoHome(), "hooks.json");
 }
+
+export function picoSubagentConfigPath(): string {
+  return join(picoHome(), "subagent.json");
+}
+
+export function picoAutomodeConfigPath(): string {
+  return join(picoAgentHome(), "automode.json");
+}

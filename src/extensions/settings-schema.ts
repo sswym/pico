@@ -237,6 +237,42 @@ export function validateSettingsObject(obj: unknown): SettingsValidationResult {
     checkNumber(memory, "temporalDecayHalfLifeDays", `${path}.temporalDecayHalfLifeDays`, out);
   }, issues);
 
+  // 2026-08 配置收敛：用户级 hooks/mcp/lsp/subagent/automode 并入 settings.json
+  // 命名空间（值与旧独立文件顶层对象逐字一致）。此处只做顶层形状校验，字段级
+  // 深校验由各扩展加载器负责（report-only，绝不 veto 整文件）。
+  checkNamespace(obj, "hooks", "hooks", (hooks, path, out) => {
+    if (!Array.isArray(hooks.hooks)) {
+      out.push(makeIssue(`${path}.hooks`, "array", `"${path}.hooks" must be an array of hook entries`, hooks.hooks));
+    }
+  }, issues);
+
+  checkNamespace(obj, "mcpServers", "mcpServers", (mcpServers, path, out) => {
+    if (!isPlainObject(mcpServers.mcpServers)) {
+      out.push(makeIssue(`${path}.mcpServers`, "object", `"${path}.mcpServers" must be an object of server definitions`, mcpServers.mcpServers));
+    }
+  }, issues);
+
+  checkNamespace(obj, "lsp", "lsp", (lsp, path, out) => {
+    checkNumber(lsp, "idleTimeoutMs", `${path}.idleTimeoutMs`, out);
+    checkBoolean(lsp, "formatOnWrite", `${path}.formatOnWrite`, out);
+  }, issues);
+
+  checkNamespace(obj, "subagent", "subagent", (subagent, path, out) => {
+    if (subagent.agents !== undefined && !isPlainObject(subagent.agents)) {
+      out.push(makeIssue(`${path}.agents`, "object", `"${path}.agents" must be an object of agent overrides`, subagent.agents));
+    }
+    if (subagent.spawns !== undefined && !Array.isArray(subagent.spawns)) {
+      out.push(makeIssue(`${path}.spawns`, "array", `"${path}.spawns" must be an array of allowed agent names`, subagent.spawns));
+    }
+  }, issues);
+
+  checkNamespace(obj, "automode", "automode", (automode, path, out) => {
+    checkNamespace(automode, "autoMode", `${path}.autoMode`, (_autoMode, _autoModePath, _autoModeOut) => {}, out);
+    if (automode.permissions !== undefined && !isPlainObject(automode.permissions)) {
+      out.push(makeIssue(`${path}.permissions`, "object", `"${path}.permissions" must be an object`, automode.permissions));
+    }
+  }, issues);
+
   checkLanguage(obj, issues);
   checkString(obj, "defaultProvider", "defaultProvider", issues, { nonEmpty: true });
   checkString(obj, "defaultModel", "defaultModel", issues, { nonEmpty: true });

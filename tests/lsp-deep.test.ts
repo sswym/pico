@@ -425,7 +425,7 @@ describe("lsp missing-command install dialog branches", () => {
     await expect(execute({ action: "capabilities" }))
       .rejects.toThrow("No language server available for this project.");
     expect(notices.length).toBeGreaterThan(0);
-    expect(notices[0]!.msg).toContain("lsp.json");
+    expect(notices[0]!.msg).toContain("settings.json");
     // Second call: warned already → no repeat notice.
     const before = notices.length;
     await expect(execute({ action: "capabilities" }))

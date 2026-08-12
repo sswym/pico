@@ -576,3 +576,25 @@ test("buildDoctorReport surfaces the request timeout with its source", () => {
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("doctor reports config namespace sources and env mappings", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-doctor-home-"));
+  process.env.PICO_HOME = home;
+  try {
+    mkdirSync(join(home, "agent"), { recursive: true });
+    writeFileSync(join(home, "agent", "settings.json"), JSON.stringify({
+      hooks: { hooks: [] },
+      mcpServers: { mcpServers: {} },
+    }));
+    const report = buildDoctorReport("/repo");
+    expect(report).toContain("Config sources:");
+    expect(report).toContain("hooks: settings.json");
+    expect(report).toContain("mcpServers: settings.json");
+    expect(report).toContain("lsp: legacy file");
+    expect(report).toContain("Env ↔ settings:");
+    expect(report).toContain("PICO_HOME");
+    expect(report).toContain("PICO_RTK");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});

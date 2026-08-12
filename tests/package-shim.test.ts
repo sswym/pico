@@ -37,7 +37,8 @@ test("ensurePackageShim builds an overlay with pico brand and symlinked assets",
 
     const pkg = JSON.parse(readFileSync(join(shim!, "package.json"), "utf8"));
     expect(pkg.piConfig.name).toBe("pico");
-    expect(pkg.piConfig.configDir).toBe(".pi");
+    // 源码/编译模式项目配置目录必须一致（否则上游项目配置读 .pi vs .pico 分裂）。
+    expect(pkg.piConfig.configDir).toBe(".pico");
     expect(pkg.name).toBe("@earendil-works/pi-coding-agent");
     expect(pkg.version).toBe("0.84.0");
     expect(pkg.type).toBe("module");

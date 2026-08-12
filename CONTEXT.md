@@ -19,6 +19,14 @@ default tools. pico adds behaviour through ExtensionFactory modules.
   the extension closure unless a module needs explicit state objects for tests.
 - Project scope: data or configuration tied to the current working directory,
   such as project memory facts, project MCP servers, and project LSP config.
+- User config namespace (2026-08 consolidation): user-level pico config lives
+  in settings.json keys `hooks` / `mcpServers` / `lsp` / `subagent` / `automode`
+  (values byte-identical to the old standalone files). Readers prefer the
+  namespace and fall back to the legacy file; `pico setup` migrates legacy
+  files once (`src/extensions/config-migrate.ts`). Project-level config stays
+  in separate `.pico/*` files (repo-controlled + safety-gated). New code must
+  read user config via the namespace-first pattern and register new `PICO_*`
+  env vars in `src/extensions/envmap.ts`.
 
 ## Architectural Preferences
 
