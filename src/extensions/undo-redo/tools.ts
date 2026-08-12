@@ -20,6 +20,7 @@ import {
 	createReadTool,
 	createWriteTool,
 } from "@earendil-works/pi-coding-agent";
+import { composeBashSpawnHooks } from "../bash-hooks.ts";
 import {
 	expandPath,
 	isWithinRoot,
@@ -198,12 +199,21 @@ export function createBufferedToolSet(
 	const baseLsTool = createLsTool(sandboxRoot);
 	const baseGrepTool = createGrepTool(sandboxRoot);
 
+	// Shared bash augmentations (rtk output compression) are registered by
+	// other extensions' factories; compose them after the sandbox relocation
+	// so the wrapped command still runs inside the sandbox. See
+	// src/extensions/bash-hooks.ts.
+	const sharedSpawnHook = composeBashSpawnHooks();
 	const baseBashTool = createBashTool(realRoot, {
-		spawnHook: (context: BashSpawnContext) => ({
-			...context,
-			cwd: sandboxRoot,
-			command: replaceRootInText(context.command, realRoot, sandboxRoot),
-		}),
+		spawnHook: (context: BashSpawnContext) => {
+			let next: BashSpawnContext = {
+				...context,
+				cwd: sandboxRoot,
+				command: replaceRootInText(context.command, realRoot, sandboxRoot),
+			};
+			if (sharedSpawnHook) next = sharedSpawnHook(next);
+			return next;
+		},
 	});
 
 	const readExecute: typeof baseReadTool.execute = async (

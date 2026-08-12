@@ -1,11 +1,14 @@
 /**
  * RTK integration.
  *
- * When enabled in settings, this replaces the built-in bash tool with the
- * standard pi bash tool plus a spawnHook that runs supported commands through
- * `rtk` for compact output.
+ * When enabled in settings, supported bash commands run through `rtk` for
+ * compact output. The "bash" tool itself is registered by undo-redo (upstream
+ * rejects duplicate extension tool names as a fatal startup error), so this
+ * extension contributes a bash spawn hook that undo-redo composes into its
+ * tool — see src/extensions/bash-hooks.ts.
  */
-import { createBashTool, type ExtensionAPI, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { registerBashSpawnHook } from "../bash-hooks.ts";
 import { readSettingsObject } from "../settings.ts";
 
 export interface RtkConfig {
@@ -190,6 +193,13 @@ export const rtkExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   const config = readRtkConfig();
   if (!config.enabled || config.mode !== "spawnHook" || process.env.PICO_RTK === "0") return;
 
+  registerBashSpawnHook((context) => ({
+    ...context,
+    command: isRtkAvailable(config.command)
+      ? rewriteRtkCommand(context.command, config.command)
+      : context.command,
+  }));
+
   let noticeShown = false;
   pi.on("session_start", (_event, ctx) => {
     if (noticeShown || !ctx.hasUI) return;
@@ -209,21 +219,6 @@ export const rtkExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         );
       }
     } catch {}
-  });
-
-  const bashTool = createBashTool(process.cwd(), {
-    spawnHook: ({ command, cwd, env }) => ({
-      command: isRtkAvailable(config.command) ? rewriteRtkCommand(command, config.command) : command,
-      cwd,
-      env,
-    }),
-  });
-
-  pi.registerTool({
-    ...bashTool,
-    execute: async (id, params, signal, onUpdate, _ctx) => {
-      return bashTool.execute(id, params, signal, onUpdate);
-    },
   });
 };
 

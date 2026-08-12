@@ -1,5 +1,82 @@
-import { expect, test } from "bun:test";
-import { rewriteRtkCommand, shouldRewriteWithRtk } from "../src/extensions/rtk/index.ts";
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { rewriteRtkCommand, rtkExtension, shouldRewriteWithRtk } from "../src/extensions/rtk/index.ts";
+import {
+  __resetBashSpawnHooksForTests,
+  composeBashSpawnHooks,
+  registerBashSpawnHook,
+} from "../src/extensions/bash-hooks.ts";
+
+const ORIG_PICO_HOME = process.env.PICO_HOME;
+const ORIG_PICO_RTK = process.env.PICO_RTK;
+let testHome: string;
+
+beforeEach(() => {
+  testHome = mkdtempSync(join(tmpdir(), "pico-rtk-home-"));
+  process.env.PICO_HOME = testHome;
+  delete process.env.PICO_RTK;
+  __resetBashSpawnHooksForTests();
+});
+
+afterEach(() => {
+  rmSync(testHome, { recursive: true, force: true });
+  if (ORIG_PICO_HOME === undefined) delete process.env.PICO_HOME;
+  else process.env.PICO_HOME = ORIG_PICO_HOME;
+  if (ORIG_PICO_RTK === undefined) delete process.env.PICO_RTK;
+  else process.env.PICO_RTK = ORIG_PICO_RTK;
+  __resetBashSpawnHooksForTests();
+});
+
+test("registerBashSpawnHook feeds composeBashSpawnHooks in registration order", () => {
+  expect(composeBashSpawnHooks()).toBeUndefined();
+
+  registerBashSpawnHook((context) => ({ ...context, command: `a ${context.command}` }));
+  registerBashSpawnHook((context) => ({ ...context, command: `b ${context.command}` }));
+
+  const compose = composeBashSpawnHooks();
+  expect(compose).toBeDefined();
+  expect(compose!({ command: "x", cwd: "/tmp", env: {} }).command).toBe("b a x");
+});
+
+test("rtkExtension registers a bash spawn hook, not a bash tool (no conflict with undo-redo)", () => {
+  // Upstream treats duplicate extension tool names as a FATAL startup error,
+  // so enabling rtk must never register its own "bash" tool — it contributes
+  // a spawn hook that undo-redo composes into the single bash registration.
+  const agentDir = join(testHome, "agent");
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(
+    join(agentDir, "settings.json"),
+    JSON.stringify({
+      integrations: { rtk: { enabled: true, command: "bun" } },
+    }),
+    "utf8",
+  );
+
+  const registeredTools: string[] = [];
+  const handlers: Record<string, Array<(event: unknown, ctx: unknown) => void>> = {};
+  const fakePi = {
+    on: (event: string, handler: (event: unknown, ctx: unknown) => void) => {
+      (handlers[event] ??= []).push(handler);
+    },
+    registerTool: (tool: { name: string }) => registeredTools.push(tool.name),
+  } as any;
+
+  rtkExtension(fakePi);
+
+  expect(registeredTools).toEqual([]);
+
+  // The hook rewrites eligible commands through the configured binary…
+  const compose = composeBashSpawnHooks();
+  expect(compose).toBeDefined();
+  expect(compose!({ command: "git status", cwd: "/tmp", env: {} }).command).toBe("bun git status");
+  // …and leaves ineligible commands untouched.
+  expect(compose!({ command: "cd ..", cwd: "/tmp", env: {} }).command).toBe("cd ..");
+
+  // Session notification wiring is still installed.
+  expect(handlers["session_start"]).toBeDefined();
+});
 
 test("shouldRewriteWithRtk accepts compact shell commands", () => {
   expect(shouldRewriteWithRtk("git status")).toBe(true);

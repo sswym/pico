@@ -659,7 +659,7 @@ flowchart TD
 将 `@justram/pi-undo-redo` v0.2.0 移植为 pico 第 25 个内置扩展 `src/extensions/undo-redo/`（9 模块，MIT 许可）。功能：**带缓冲的 undo/redo**——工具调用在沙箱工作副本执行，按会话对话叶节点保存文件快照，undo/redo 或 `/tree` 导航时恢复真实工作区。
 
 **机制**（源码级移植 + pico 化）：
-- **工具覆盖**：`registerTool` 注册同名 `read/edit/write/find/ls/grep/bash` 覆盖内置（0.83 上游 `_refreshToolRegistry` 中 custom 工具覆盖 builtin，`getAllRegisteredTools` first-wins 无竞争者）；包装 `execute` 延迟到运行时沙箱工具集（`buildDeferredTool` 模式）
+- **工具覆盖**：`registerTool` 注册同名 `read/edit/write/find/ls/grep/bash` 覆盖内置（0.83 上游 custom 工具覆盖 builtin）；**扩展之间的同名工具则是致命冲突**（`resource-loader.detectExtensionConflicts` → `main.js` 对 error diagnostic 直接 `exit 1`），因此 "bash" 只能由 undo-redo 一家注册，rtk 等增强通过 `src/extensions/bash-hooks.ts` 的 spawn hook 注册表注入、由 undo-redo 合成进自己的 bash 工具（`spawnHook` 链：沙箱路径重写 → 共享 hook）；包装 `execute` 延迟到运行时沙箱工具集（`buildDeferredTool` 模式）
 - **沙箱**：`${PICO_HOME}/agent/cache/undo-redo/<sessionId>/`（blobs 内容寻址快照 / leaves 每叶清单 / sandbox 工作副本）；`prepareSandbox` 同步真实项目（honor .gitignore）；写操作沙箱+真实双写，路径重写回显（`rewriteResultPaths`）
 - **恢复**：`session_tree`（0.83 事后事件，原版用 0.51 的 session_tree）与 `session_before_switch/fork` 重新初始化；`/undo`、`/redo`、`/diff-stack`、`/undo-redo-clear-cache` 命令 + `undo_redo` LLM 工具（undo/redo/list_diffs/diff，不触发 UI 导航保持 KV 缓存）
 - **编辑器**：`ctx.ui.setEditorComponent` 注入 UndoRedoEditor（`ctrl+shift+z/y` undo/redo，keybindings 可配 `treeUndo/treeRedo`）。UndoRedoEditor **extends `src/extensions/persistent-editor.ts` 的 PersistentHistoryEditor**（而非 CustomEditor）：两个扩展都在 `session_start` 抢占编辑器组件（后写覆盖，undo-redo 的 async 处理器最后落笔），若各自为政，输入历史上下键导航会被无历史行为的 UndoRedoEditor 覆盖丢失；共享基类保证无论哪个扩展胜出，历史预载与提交落盘行为都在。
