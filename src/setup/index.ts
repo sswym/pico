@@ -160,6 +160,26 @@ const API_COMPAT_LABELS: Record<SetupLanguage, string[]> = {
   ],
 };
 
+/**
+ * Where a beginner can obtain an API key for each known provider, shown
+ * inside the key prompt — "ANTHROPIC_API_KEY:" means nothing to a first-time
+ * user, "platform.anthropic.com" does.
+ */
+const PROVIDER_KEY_HINTS: Record<SetupLanguage, Record<string, string>> = {
+  en: {
+    anthropic: "create at platform.anthropic.com → API keys",
+    openai: "create at platform.openai.com → API keys",
+    google: "create at aistudio.google.com → Get API key",
+    openrouter: "create at openrouter.ai → Keys",
+  },
+  zh: {
+    anthropic: "在 platform.anthropic.com → API keys 创建",
+    openai: "在 platform.openai.com → API keys 创建",
+    google: "在 aistudio.google.com → Get API key 创建",
+    openrouter: "在 openrouter.ai → Keys 创建",
+  },
+};
+
 const SAFETY_DEFAULTS = {
   allowUnattendedPlanApproval: false,
   allowLspFormatOnWrite: false,
@@ -233,22 +253,23 @@ const SETUP_SECTION_META: SetupSectionMeta[] = [
 const TEXT = {
   en: {
     setupTitle: "pico setup",
-    introFirstLine: "This wizard configures what pico needs to start: pick a model provider and paste an API key.",
+    introFirstLine: "This wizard configures what pico needs to start: pick a model provider and paste an API key. Pressing Enter throughout picks the recommended options.",
     introAdvancedHint: "Advanced options (search, safety, memory, LSP, hooks, MCP, integrations, env) can be skipped and configured later with `pico setup`.",
-    advancedSetupQuestion: "Continue to advanced options (tools / safety / memory / LSP / hooks / MCP / integrations / env)?",
+    advancedSetupQuestion: "Continue to advanced options? (tools, safety, memory, LSP, hooks, MCP, integrations, env — most users can skip; configurable anytime later)",
     languageQuestion: "Choose setup language",
     languageChoices: ["中文", "English"],
-    menuHint: "Use Up/Down or j/k, Enter to select, Esc to keep current",
+    menuHint: "↑/↓ or j/k to move (or a number key), Enter to confirm, Esc to keep current",
+    introExitHint: "Press Enter throughout to take the recommended options; Ctrl+C exits anytime — completed steps are kept.",
     settings: "settings",
     modelHeader: "Model & Provider",
     providerQuestion: "Default provider",
     customProvider: "Custom provider (local models, e.g. Ollama)",
     skipModel: "Skip for now (configure later)",
-    defaultModel: "Default model",
-    providerId: "Provider id",
+    defaultModel: "Default model (Enter to use the recommended one)",
+    providerId: "Provider id (e.g. local)",
     baseUrl: "Base URL",
     apiKey: "API key value or env reference",
-    modelId: "Model id",
+    modelId: "Model id (e.g. qwen2.5-coder:7b)",
     apiCompatibility: "API compatibility",
     toolsHeader: "Tools",
     webSearchProvider: "Web search provider (used when the agent searches the web)",
@@ -307,9 +328,11 @@ const TEXT = {
     leaveSkip: "leave empty to skip",
     invalidYesNo: "Please enter y or n.",
     nonInteractiveError: "error: pico setup needs an interactive terminal. Use --non-interactive for defaults.",
+    quickDone: "Basic setup complete",
+    sectionSaved: "saved",
     testConnection: "Test the connection with this API key?",
     connectionOk: "Connection OK — the provider accepted this API key.",
-    connectionFailed: "Connection failed: ",
+    connectionFailed: "Connection failed (check that the API key was copied completely; re-run pico setup to fix): ",
     complete: "pico setup complete",
     models: "models",
     defaultModelSummary: "default model",
@@ -325,22 +348,23 @@ const TEXT = {
   },
   zh: {
     setupTitle: "pico 设置",
-    introFirstLine: "本向导会帮你完成 pico 的必需配置：选择一个模型提供商并填入 API key，之后就能开始对话。",
+    introFirstLine: "本向导会帮你完成 pico 的必需配置：选择一个模型提供商并填入 API key，之后就能开始对话。全程按回车即可使用推荐选项。",
     introAdvancedHint: "高级选项（工具、安全、记忆、LSP、Hooks、MCP、集成、环境变量）均可跳过，之后随时运行 `pico setup` 补充。",
-    advancedSetupQuestion: "是否继续配置高级选项？（工具 / 安全 / 记忆 / LSP / Hooks / MCP / 集成 / 环境变量）",
+    advancedSetupQuestion: "是否继续配置高级选项？（工具、安全、记忆、LSP、Hooks、MCP、集成、环境变量；大多数用户可直接跳过，之后随时可补）",
     languageQuestion: "选择设置界面语言",
     languageChoices: ["中文", "English"],
-    menuHint: "使用上下方向键或 j/k 移动，Enter 选择，Esc 保留当前项",
+    menuHint: "↑↓ 或 j/k 选择（也可按数字键），Enter 确认，Esc 保留当前",
+    introExitHint: "全程按回车即可使用推荐选项；按 Ctrl+C 可随时退出，已完成的步骤会保留。",
     settings: "设置文件",
     modelHeader: "模型与提供商",
     providerQuestion: "默认提供商",
     customProvider: "自定义提供商（本地模型，如 Ollama）",
     skipModel: "暂时跳过（之后可随时配置）",
-    defaultModel: "默认模型",
-    providerId: "提供商 ID",
+    defaultModel: "默认模型（直接回车使用推荐模型）",
+    providerId: "标识名（如 local）",
     baseUrl: "Base URL",
     apiKey: "API key 值或环境变量引用",
-    modelId: "模型 ID",
+    modelId: "模型名（如 qwen2.5-coder:7b）",
     apiCompatibility: "API 兼容类型",
     toolsHeader: "工具",
     webSearchProvider: "网页搜索提供商（agent 搜索网页时使用）",
@@ -358,7 +382,7 @@ const TEXT = {
     lspFormat: "允许 LSP 在写入后自动格式化？（自动整理代码格式；可稍后开启）",
     unattendedPlan: "允许非交互模式自动批准计划？（仅自动化场景需要；日常使用保持关闭）",
     uiHeader: "界面",
-    responseLanguage: "agent 回复语言",
+    responseLanguage: "pico 回复语言",
     memoryHeader: "记忆",
     memoryBackend: "记忆 backend",
     memoryDeny: "记忆拒写模式（逗号分隔的正则片段，例：password,secret-.*；留空表示不限制）",
@@ -399,9 +423,11 @@ const TEXT = {
     leaveSkip: "留空跳过",
     invalidYesNo: "请输入 y 或 n。",
     nonInteractiveError: "error: pico setup 需要交互式终端。可使用 --non-interactive 写入默认配置。",
+    quickDone: "基础配置完成",
+    sectionSaved: "已保存",
     testConnection: "用这个 API key 测试连接？",
     connectionOk: "连接成功——提供商已接受该 API key。",
-    connectionFailed: "连接失败：",
+    connectionFailed: "连接失败（请检查 API key 是否复制完整；可重跑 pico setup 修改）：",
     complete: "pico 设置完成",
     models: "模型配置",
     defaultModelSummary: "默认模型",
@@ -555,9 +581,13 @@ export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
     const { quick, advanced } = planSetupSections(options, options.section);
     // The gate comes after the quick flow so a first-time user has context
     // ("basic config done") before being offered jargon-heavy sections.
-    await runSectionsWithQuickSkip(quick, prompt, io, options);
-    if (!options.section && (await prompt.yesNo(text.advancedSetupQuestion, options.reconfigure))) {
-      await runSectionsWithQuickSkip(advanced, prompt, io, options);
+    await runSectionsWithSkip(quick, prompt, io, options);
+    if (!options.section) {
+      writeLine(io, "");
+      writeLine(io, styler(io).success(`✓ ${text.quickDone}`));
+      if (await prompt.yesNo(text.advancedSetupQuestion, options.reconfigure)) {
+        await runSectionsWithSkip(advanced, prompt, io, options);
+      }
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -566,7 +596,7 @@ export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
   }
 
   writeLine(io, "");
-  writeLine(io, buildSetupSummary(readJson(picoSettingsPath()), readJson(picoModelsPath()), language));
+  writeLine(io, buildSetupSummary(readJson(picoSettingsPath()), readJson(picoModelsPath()), language, supportsColor(io)));
   return 0;
 }
 
@@ -576,10 +606,14 @@ class ReadlinePrompter implements SetupPrompter {
     readonly language: SetupLanguage,
   ) {}
 
+  private get style(): Styled {
+    return styler(this.io);
+  }
+
   async text(question: string, defaultValue = ""): Promise<string> {
     const suffix = defaultValue ? ` [${defaultValue}]` : "";
     return await withReadline(this.io, async (rl) => {
-      const answer = await rl.question(`${question}${suffix}: `);
+      const answer = await rl.question(this.style.question(`${question}${suffix}: `));
       return sanitizeInput(answer).trim() || defaultValue;
     });
   }
@@ -587,17 +621,14 @@ class ReadlinePrompter implements SetupPrompter {
   async optionalSecret(question: string, currentConfigured: boolean): Promise<string | undefined> {
     const text = TEXT[this.language];
     const suffix = currentConfigured ? ` [${text.leaveKeep}]` : ` [${text.leaveSkip}]`;
-    return await withReadline(this.io, async (rl) => {
-      const answer = await rl.question(`${question}${suffix}: `);
-      const value = sanitizeInput(answer).trim();
-      return value.length > 0 ? value : undefined;
-    });
+    const value = await readSecret(this.io, this.style.question(`${question}${suffix}: `));
+    return value.length > 0 ? value : undefined;
   }
 
   async optionalValue(question: string, defaultValue?: string): Promise<string | undefined> {
     const suffix = defaultValue ? ` [${defaultValue}]` : ` [${TEXT[this.language].leaveSkip}]`;
     return await withReadline(this.io, async (rl) => {
-      const answer = await rl.question(`${question}${suffix}: `);
+      const answer = await rl.question(this.style.question(`${question}${suffix}: `));
       const value = sanitizeInput(answer).trim();
       if (value.length > 0) return value;
       return defaultValue === undefined ? undefined : defaultValue;
@@ -608,7 +639,7 @@ class ReadlinePrompter implements SetupPrompter {
     const suffix = defaultValue ? "Y/n" : "y/N";
     while (true) {
       const answer = await withReadline(this.io, async (rl) => (
-        sanitizeInput(await rl.question(`${question} [${suffix}]: `)).trim().toLowerCase()
+        sanitizeInput(await rl.question(this.style.question(`${question} [${suffix}]: `))).trim().toLowerCase()
       ));
       if (!answer) return defaultValue;
       if (["y", "yes"].includes(answer)) return true;
@@ -643,6 +674,81 @@ async function withReadline<T>(io: SetupIo, fn: (rl: ReturnType<typeof createInt
   }
 }
 
+/**
+ * Masked secret entry: echoes `*` per character so a pasted API key never
+ * scrolls into terminal history. Raw-mode keypress loop like runChoiceMenu —
+ * Enter confirms, Ctrl+C aborts, a lone Esc skips (empty), Backspace edits.
+ */
+function readSecret(io: SetupIo, question: string): Promise<string> {
+  const input = io.input as NodeJS.ReadStream;
+  const output = io.output;
+  return new Promise<string>((resolve, reject) => {
+    const previousRaw = input.isRaw;
+    let buffer = "";
+    let escRemaining = 0;
+    const cleanup = () => {
+      input.off("data", onData);
+      input.setRawMode?.(previousRaw ?? false);
+      output.write("\x1b[?25h");
+    };
+    const finish = () => {
+      cleanup();
+      output.write("\n");
+      resolve(buffer);
+    };
+    const fail = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onData = (chunk: Buffer | string) => {
+      const text = chunk.toString("utf-8");
+      for (const ch of text) {
+        if (ch === "\r" || ch === "\n") {
+          finish();
+          return;
+        }
+        if (ch === "\u0003") {
+          fail(new Error("Setup cancelled"));
+          return;
+        }
+        if (ch === "\x7f" || ch === "\b") {
+          if (buffer.length > 0) {
+            buffer = buffer.slice(0, -1);
+            output.write("\b \b");
+          }
+          continue;
+        }
+        if (ch === "\x1b") {
+          // Escape starts an arrow/keypad sequence; swallow its remaining bytes.
+          escRemaining = 2;
+          continue;
+        }
+        if (escRemaining > 0) {
+          escRemaining--;
+          continue;
+        }
+        buffer += ch;
+        output.write("*");
+      }
+      if (escRemaining > 0) {
+        // A lone Esc with nothing following it — treat as skip.
+        escRemaining = 0;
+        finish();
+      }
+    };
+
+    try {
+      output.write("\x1b[?25l");
+      input.setRawMode?.(true);
+      input.resume();
+      input.on("data", onData);
+      output.write(question);
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
 async function runChoiceMenu(
   io: SetupIo,
   question: string,
@@ -652,6 +758,7 @@ async function runChoiceMenu(
 ): Promise<number> {
   const input = io.input as NodeJS.ReadStream;
   const output = io.output;
+  const style = styler(io);
   let selected = clampIndex(defaultIndex, choices.length);
   let renderedLines = 0;
 
@@ -666,13 +773,12 @@ async function runChoiceMenu(
     }
 
     const lines = [
-      question,
+      style.question(question),
       ...choices.map((choice, index) => {
-        const cursor = index === selected ? ">" : " ";
-        const marker = index === selected ? "*" : " ";
-        return ` ${cursor} ${marker} ${choice}`;
+        const row = ` ${index === selected ? "●" : "○"} ${choice}`;
+        return index === selected ? style.success(row) : row;
       }),
-      `  ${TEXT[language].menuHint}`,
+      style.dim(`  ${TEXT[language].menuHint}`),
     ];
     output.write(lines.join("\n") + "\n");
     renderedLines = lines.length;
@@ -761,21 +867,42 @@ async function runChoiceMenu(
   });
 }
 
-async function runSectionsWithQuickSkip(
+async function runSectionsWithSkip(
   keys: SetupSection[],
   prompt: SetupPrompter,
   io: SetupIo,
   options: SetupCliOptions,
 ): Promise<void> {
+  const text = TEXT[prompt.language];
+  // An explicit `pico setup <section>` is an unambiguous request — run it
+  // without the reconfigure gate. The gate belongs to the full-wizard flow.
+  const gateEnabled = options.section === undefined;
   for (const key of keys) {
     const meta = getSectionMeta(key);
     if (!meta) continue;
+    const title = sectionTitle(key, prompt.language);
     const settings = readJson(picoSettingsPath());
-    if (!options.reconfigure && options.quick && meta.isConfigured(settings)) {
-      printSectionSummary(io, meta, settings);
-      continue;
+    const summary = meta.summary(settings);
+    const configured = meta.isConfigured(settings) && summary !== undefined;
+    if (configured && !options.reconfigure && gateEnabled) {
+      // Hermes-style skip gate: already-configured sections show what they
+      // hold and offer to be redone, defaulting to skip — re-running `pico
+      // setup` on a working install stops nagging about every section.
+      if (options.quick) {
+        printSectionSummary(io, title, summary);
+        continue;
+      }
+      const question = prompt.language === "zh"
+        ? `重新配置${title}？（当前：${summary}）`
+        : `Reconfigure ${title}? (currently: ${summary})`;
+      if (!(await prompt.yesNo(question, false))) {
+        printSectionSummary(io, title, summary);
+        continue;
+      }
     }
     await runSection(key, prompt, io);
+    writeLine(io, "");
+    writeLine(io, styler(io).success(`✓ ${title} ${text.sectionSaved}`));
   }
 }
 
@@ -801,19 +928,42 @@ function getSectionMeta(section: SetupSection): SetupSectionMeta | undefined {
   return SETUP_SECTION_META.find((item) => item.key === section);
 }
 
+/** Localized section name — SETUP_SECTION_META titles are English-only. */
+function sectionTitle(key: SetupSection, language: SetupLanguage): string {
+  const text = TEXT[language];
+  switch (key) {
+    case "model": return text.modelHeader;
+    case "tools": return text.toolsHeader;
+    case "safety": return text.safetyHeader;
+    case "ui": return text.uiHeader;
+    case "memory": return text.memoryHeader;
+    case "lsp": return text.lspHeader;
+    case "hooks": return text.hooksHeader;
+    case "mcp": return text.mcpHeader;
+    case "integrations": return text.integrationsHeader;
+    case "env": return text.envHeader;
+  }
+}
+
 function printSetupIntro(io: SetupIo, language: SetupLanguage): void {
   const text = TEXT[language];
-  printHeader(io, text.setupTitle);
-  writeLine(io, text.introFirstLine);
-  writeLine(io, text.introAdvancedHint);
+  const s = styler(io);
+  const title = `⚙ ${text.setupTitle}`;
+  const content = [text.introFirstLine, text.introAdvancedHint, text.introExitHint]
+    .flatMap((line) => wrapLine(line, SETUP_BANNER_WIDTH - 4));
+  const width = SETUP_BANNER_WIDTH;
+  const border = "─".repeat(width - 2);
+  const pad = (line: string) => `│ ${line}${" ".repeat(Math.max(0, width - 4 - displayWidth(line)))} │`;
+  writeLine(io, s.banner(`┌${border}┐`));
+  writeLine(io, s.banner(s.bold(pad(title))));
+  writeLine(io, s.banner(pad("")));
+  for (const line of content) writeLine(io, s.banner(pad(line)));
+  writeLine(io, s.banner(`└${border}┘`));
   writeLine(io, "");
 }
 
-function printSectionSummary(io: SetupIo, meta: SetupSectionMeta, settings: JsonObject): void {
-  const summary = meta.summary(settings);
-  if (summary) {
-    writeLine(io, `${meta.title}: ${summary}`);
-  }
+function printSectionSummary(io: SetupIo, title: string, summary: string): void {
+  writeLine(io, styler(io).success(`✓ ${title}: ${summary}`));
 }
 
 async function runModelSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
@@ -842,12 +992,23 @@ async function runModelSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> 
 
   if (provider.envName) {
     const current = readSettingsEnv(settings)[provider.envName] ?? process.env[provider.envName];
-    const value = await prompt.optionalSecret(`${provider.envName}`, typeof current === "string" && current.length > 0);
+    const hint = PROVIDER_KEY_HINTS[prompt.language][provider.id];
+    const question = hint
+      ? `${provider.label} API key ${prompt.language === "zh" ? "（" : "("}${hint}${prompt.language === "zh" ? "）" : ")"}`
+      : `${provider.label} API key`;
+    const value = await prompt.optionalSecret(question, typeof current === "string" && current.length > 0);
     if (value) setSettingsEnv(settings, provider.envName, value);
     const effectiveKey = readSettingsEnv(settings)[provider.envName] ?? process.env[provider.envName];
-    if (typeof effectiveKey === "string" && effectiveKey.length > 0 && (await prompt.yesNo(text.testConnection, false))) {
-      const result = await testProviderConnection(provider.id, effectiveKey);
-      writeLine(io, result.ok ? text.connectionOk : `${text.connectionFailed}${result.detail}`);
+    if (typeof effectiveKey === "string" && effectiveKey.length > 0) {
+      // A freshly typed key is exactly when a paste error would slip through —
+      // default the connection test to yes. An existing key the user kept is
+      // already known to work, so default it to no.
+      const testDefault = value !== undefined;
+      if (await prompt.yesNo(text.testConnection, testDefault)) {
+        const result = await testProviderConnection(provider.id, effectiveKey);
+        if (result.ok) writeLine(io, styler(io).success(text.connectionOk));
+        else writeLine(io, styler(io).error(`${text.connectionFailed}${result.detail}`));
+      }
     }
   }
   writeJson(picoSettingsPath(), settings);
@@ -1327,9 +1488,15 @@ export function configureRtkIntegration(options: { enabled: boolean; mode?: "spa
   writeJson(picoSettingsPath(), settings);
 }
 
-export function buildSetupSummary(settings: JsonObject, models: JsonObject, language: SetupLanguage = "en"): string {
+export function buildSetupSummary(
+  settings: JsonObject,
+  models: JsonObject,
+  language: SetupLanguage = "en",
+  colorEnabled = false,
+): string {
   const text = TEXT[language];
-  const lines = [text.complete];
+  const s = makeStyle(colorEnabled);
+  const lines = [s.success(`✓ ${text.complete}`)];
   lines.push(`${text.settings}: ${picoSettingsPath()}`);
   if (existsSync(picoModelsPath())) lines.push(`${text.models}: ${picoModelsPath()}`);
   const provider = stringSetting(settings.defaultProvider);
@@ -1352,7 +1519,7 @@ export function buildSetupSummary(settings: JsonObject, models: JsonObject, lang
   if (Object.keys(objectSetting(models.providers)).length > 0) {
     lines.push(`${text.customProviders}: ${Object.keys(objectSetting(models.providers)).sort().join(", ")}`);
   }
-  lines.push(text.nextStep);
+  lines.push(s.bold(text.nextStep));
   return lines.join("\n");
 }
 
@@ -1552,7 +1719,18 @@ export async function testProviderConnection(
     });
     if (response.ok) return { ok: true, detail: `HTTP ${response.status}` };
     const body = (await response.text()).slice(0, 200);
-    return { ok: false, detail: `HTTP ${response.status} ${body.trim()}` };
+    let detail = `HTTP ${response.status} ${body.trim()}`;
+    // Most providers wrap a human-readable reason in JSON — surface just that
+    // instead of dumping the whole error object at a beginner.
+    try {
+      const parsed = JSON.parse(body) as { error?: { message?: unknown } };
+      if (typeof parsed.error?.message === "string" && parsed.error.message.length > 0) {
+        detail = `HTTP ${response.status} ${parsed.error.message}`;
+      }
+    } catch {
+      // Not JSON — keep the raw body.
+    }
+    return { ok: false, detail };
   } catch (error) {
     return { ok: false, detail: error instanceof Error ? error.message : String(error) };
   }
@@ -1580,9 +1758,94 @@ function isInteractive(io: SetupIo): boolean {
   return Boolean(input.isTTY && output.isTTY);
 }
 
+const ANSI_RESET = "\x1b[0m";
+const ANSI_BOLD = "\x1b[1m";
+const ANSI_DIM = "\x1b[2m";
+const ANSI_RED = "\x1b[31m";
+const ANSI_GREEN = "\x1b[32m";
+const ANSI_YELLOW = "\x1b[33m";
+const ANSI_MAGENTA = "\x1b[35m";
+const ANSI_CYAN = "\x1b[36m";
+
+/** True when ANSI color output is appropriate (mirrors hermes colors.py). */
+function supportsColor(io: SetupIo): boolean {
+  if (process.env.NO_COLOR !== undefined) return false;
+  if (process.env.TERM === "dumb") return false;
+  return Boolean((io.output as NodeJS.WriteStream).isTTY);
+}
+
+interface Styled {
+  banner(text: string): string;
+  header(text: string): string;
+  question(text: string): string;
+  success(text: string): string;
+  dim(text: string): string;
+  bold(text: string): string;
+  error(text: string): string;
+}
+
+/** ANSI decorator; no-ops when the terminal doesn't support color. */
+function makeStyle(enabled: boolean): Styled {
+  const paint = (text: string, ...codes: string[]) =>
+    enabled ? `${codes.join("")}${text}${ANSI_RESET}` : text;
+  return {
+    banner: (t) => paint(t, ANSI_MAGENTA),
+    header: (t) => paint(t, ANSI_CYAN, ANSI_BOLD),
+    question: (t) => paint(t, ANSI_YELLOW),
+    success: (t) => paint(t, ANSI_GREEN),
+    dim: (t) => paint(t, ANSI_DIM),
+    bold: (t) => paint(t, ANSI_BOLD),
+    error: (t) => paint(t, ANSI_RED, ANSI_BOLD),
+  };
+}
+
+function styler(io: SetupIo): Styled {
+  return makeStyle(supportsColor(io));
+}
+
+/** Display width in terminal columns — CJK characters count double. */
+function displayWidth(text: string): number {
+  let width = 0;
+  for (const ch of text) width += ch.codePointAt(0)! > 0x2e7f ? 2 : 1;
+  return width;
+}
+
+/** Break a line so no segment exceeds maxWidth display columns. */
+function wrapLine(line: string, maxWidth: number): string[] {
+  if (displayWidth(line) <= maxWidth) return [line];
+  const out: string[] = [];
+  let current = "";
+  let width = 0;
+  for (const ch of line) {
+    const w = ch.codePointAt(0)! > 0x2e7f ? 2 : 1;
+    if (width + w > maxWidth && current.length > 0) {
+      // Prefer the last space so English words stay intact; CJK (no spaces)
+      // falls back to a hard break at any character.
+      const lastSpace = current.lastIndexOf(" ");
+      if (lastSpace > 0) {
+        out.push(current.slice(0, lastSpace));
+        current = current.slice(lastSpace + 1) + ch;
+        width = displayWidth(current);
+        continue;
+      }
+      out.push(current);
+      current = ch;
+      width = w;
+    } else {
+      current += ch;
+      width += w;
+    }
+  }
+  if (current.length > 0) out.push(current);
+  return out;
+}
+
+/** Banner box fits an 80-column terminal. */
+const SETUP_BANNER_WIDTH = 76;
+
 function printHeader(io: SetupIo, title: string): void {
   writeLine(io, "");
-  writeLine(io, `== ${title} ==`);
+  writeLine(io, styler(io).header(`◆ ${title}`));
 }
 
 function writeLine(io: SetupIo, line: string): void {

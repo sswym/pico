@@ -666,7 +666,9 @@ test("model section stores provider, model, and api key", async () => {
       expect(s.defaultProvider).toBe("anthropic");
       expect(s.defaultModel).toBe("claude-opus-4-8");
       expect(s.env.ANTHROPIC_API_KEY).toBe("sk-ant-test");
-      expect(asked.optionalSecret[0]!.question).toBe("ANTHROPIC_API_KEY");
+      // The question names the provider and where to get a key — the raw env
+      // var name would mean nothing to a first-time user.
+      expect(asked.optionalSecret[0]!.question).toBe("Anthropic API key (create at platform.anthropic.com → API keys)");
     },
   );
 });
