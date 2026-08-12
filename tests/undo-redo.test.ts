@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getCacheRoot } from "../src/extensions/undo-redo/cache.ts";
 import { UndoRedoEditor } from "../src/extensions/undo-redo/editor.ts";
+import { appendInputHistory, readInputHistory } from "../src/extensions/input-history/index.ts";
 import {
   isWithinRoot,
   mapToRealPath,
@@ -285,5 +286,40 @@ describe("UndoRedoEditor keybindings", () => {
     editor.handleInput("a");
     editor.handleInput(CTRL_SHIFT_X);
     expect(submitted).toHaveLength(0);
+  });
+});
+
+describe("UndoRedoEditor persistent history", () => {
+  // Regression: UndoRedoEditor replaces input-history's PersistentHistoryEditor
+  // (last writer on session_start), so it MUST keep the same persisted-history
+  // behavior — otherwise up/down arrow navigation dies whenever undo-redo's
+  // async session_start handler lands after input-history's.
+  test("preloads persisted history for up/down arrow navigation", () => {
+    const historyPath = join(testHome, "agent", "input-history.jsonl");
+    appendInputHistory("first prompt", historyPath);
+    appendInputHistory("second prompt", historyPath);
+
+    const editor = new UndoRedoEditor(makeFakeTui(), stubTheme, makeKeybindings());
+    editor.handleInput("\x1b[A");
+    expect(editor.getText()).toBe("second prompt");
+
+    editor.handleInput("\x1b[A");
+    expect(editor.getText()).toBe("first prompt");
+
+    editor.handleInput("\x1b[B");
+    expect(editor.getText()).toBe("second prompt");
+  });
+
+  test("wraps onSubmit to persist submitted input", async () => {
+    const submitted: string[] = [];
+    const editor = new UndoRedoEditor(makeFakeTui(), stubTheme, makeKeybindings());
+    editor.onSubmit = (text) => {
+      submitted.push(text);
+    };
+
+    await editor.onSubmit?.("/undo");
+
+    expect(submitted).toEqual(["/undo"]);
+    expect(readInputHistory()).toEqual(["/undo"]);
   });
 });

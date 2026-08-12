@@ -662,7 +662,7 @@ flowchart TD
 - **工具覆盖**：`registerTool` 注册同名 `read/edit/write/find/ls/grep/bash` 覆盖内置（0.83 上游 `_refreshToolRegistry` 中 custom 工具覆盖 builtin，`getAllRegisteredTools` first-wins 无竞争者）；包装 `execute` 延迟到运行时沙箱工具集（`buildDeferredTool` 模式）
 - **沙箱**：`${PICO_HOME}/agent/cache/undo-redo/<sessionId>/`（blobs 内容寻址快照 / leaves 每叶清单 / sandbox 工作副本）；`prepareSandbox` 同步真实项目（honor .gitignore）；写操作沙箱+真实双写，路径重写回显（`rewriteResultPaths`）
 - **恢复**：`session_tree`（0.83 事后事件，原版用 0.51 的 session_tree）与 `session_before_switch/fork` 重新初始化；`/undo`、`/redo`、`/diff-stack`、`/undo-redo-clear-cache` 命令 + `undo_redo` LLM 工具（undo/redo/list_diffs/diff，不触发 UI 导航保持 KV 缓存）
-- **编辑器**：`ctx.ui.setEditorComponent` 注入 UndoRedoEditor（`ctrl+shift+z/y` undo/redo，keybindings 可配 `treeUndo/treeRedo`）
+- **编辑器**：`ctx.ui.setEditorComponent` 注入 UndoRedoEditor（`ctrl+shift+z/y` undo/redo，keybindings 可配 `treeUndo/treeRedo`）。UndoRedoEditor **extends `src/extensions/persistent-editor.ts` 的 PersistentHistoryEditor**（而非 CustomEditor）：两个扩展都在 `session_start` 抢占编辑器组件（后写覆盖，undo-redo 的 async 处理器最后落笔），若各自为政，输入历史上下键导航会被无历史行为的 UndoRedoEditor 覆盖丢失；共享基类保证无论哪个扩展胜出，历史预载与提交落盘行为都在。
 
 **API 差异适配**（@mariozechner 0.51.2 → @earendil-works 0.83.0）：
 - `create*Tool` 工厂**两版本同签名**（`createReadTool(cwd)` 等，AgentTool extends Tool 含顶层 name）——tools.ts 近乎原样移植
@@ -672,7 +672,7 @@ flowchart TD
 - `noUncheckedIndexedAccess`/`noImplicitOverride` 适配（diff parts 索引、CustomEditor.handleInput override）
 - 缓存路径 `~/.pi/agent/cache` → `${picoAgentHome()}/cache`
 
-**回归测试**：`tests/undo-redo.test.ts` 10 条（PICO_HOME 隔离：路径映射 round trip、缓存 root 与 blob 读写、沙箱同步、tracker save/restore 快照恢复含真实+沙箱双写、无快照叶不误动）。端到端验证（TUI）：write 沙箱化（真实+沙箱双写）、两叶快照、`/undo` 恢复 first-version、`/redo` 恢复 second-version。
+**回归测试**：`tests/undo-redo.test.ts` 12 条（PICO_HOME 隔离：路径映射 round trip、缓存 root 与 blob 读写、沙箱同步、tracker save/restore 快照恢复含真实+沙箱双写、无快照叶不误动、UndoRedoEditor 快捷键 + 持久历史预载/提交落盘）。端到端验证（TUI）：write 沙箱化（真实+沙箱双写）、两叶快照、`/undo` 恢复 first-version、`/redo` 恢复 second-version。
 
 **已知局限**（继承原版 + 实测）：headless `-p` 模式不触发 session_start 扩展事件 → 沙箱不初始化（TUI/交互模式正常，记录为上游 -p 模式扩展事件限制）；仅跟踪 cwd 下经 pi 工具/沙箱 bash 的修改（外部修改不检测、恢复可能覆盖）；cwd 会话内需稳定。
 

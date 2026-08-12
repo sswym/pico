@@ -1,4 +1,4 @@
-import { CustomEditor } from "@earendil-works/pi-coding-agent";
+import { PersistentHistoryEditor } from "../persistent-editor.ts";
 import { type KeyId, matchesKey } from "@earendil-works/pi-tui";
 
 const DEFAULT_UNDO_KEYS: KeyId[] = ["ctrl+shift+z"];
@@ -12,15 +12,15 @@ function normalizeKeys(
 	return Array.isArray(keys) ? keys : [keys];
 }
 
-export class UndoRedoEditor extends CustomEditor {
+export class UndoRedoEditor extends PersistentHistoryEditor {
 	declare onSubmit?: (text: string) => void;
 	private readonly undoKeys: KeyId[];
 	private readonly redoKeys: KeyId[];
 
 	constructor(
-		tui: ConstructorParameters<typeof CustomEditor>[0],
-		theme: ConstructorParameters<typeof CustomEditor>[1],
-		keybindings: ConstructorParameters<typeof CustomEditor>[2],
+		tui: ConstructorParameters<typeof PersistentHistoryEditor>[0],
+		theme: ConstructorParameters<typeof PersistentHistoryEditor>[1],
+		keybindings: ConstructorParameters<typeof PersistentHistoryEditor>[2],
 	) {
 		super(tui, theme, keybindings);
 
