@@ -557,8 +557,15 @@ export async function ensureNamedServer(
     return managed.client.ready ? managed.client : null;
   }
 
-  // Start this server
-  checkInitBackoff(state, name);
+  // Start this server — a recent init failure is a soft skip, not a hard
+  // error: mirror ensureServer's catch-and-continue so the caller degrades
+  // to "Cannot open file" + failure details instead of leaking "failed to
+  // start recently" as a raw tool error.
+  try {
+    checkInitBackoff(state, name);
+  } catch {
+    return null;
+  }
   const resolvedCommand = resolveCommand(serverConfig.command, workspaceRoot) ?? serverConfig.command;
 
   const client = new LspClient(

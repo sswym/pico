@@ -67,34 +67,54 @@ test("logoExtension only subscribes to session_start and model_select", () => {
 });
 
 test("session_start handler installs a header factory that renders the logo", () => {
-  let capturedFactory: any = null;
-  const fakeUi = {
-    setHeader: (factory: any) => {
-      capturedFactory = factory;
-    },
-  };
-  let handler: any = null;
-  const fakePi: any = {
-    on: (name: string, h: any) => {
-      if (name === "session_start") handler = h;
-    },
-    registerTool: () => {},
-    registerCommand: () => {},
-    sendMessage: () => {},
-    sendUserMessage: () => {},
-  };
-  logoExtension(fakePi);
-  handler({ type: "session_start", reason: "startup" }, { ui: fakeUi, model: { id: "deepseek-v4-flash-free", provider: "zen-openai" } });
-  expect(typeof capturedFactory).toBe("function");
+  // The header factory renders LIVE session state (cachedSessionInfo): a
+  // clean home shows the first-run copy ("Welcome to pico!") while a home
+  // with session files shows "Welcome back!". Pin PICO_HOME to a temp dir
+  // seeded with a session file so this test is deterministic on any machine
+  // instead of depending on the host's ~/.pico contents.
+  const savedHome = process.env.PICO_HOME;
+  const testHome = mkdtempSync(join(tmpdir(), "pico-logo-home-"));
+  const sessionsDir = join(testHome, "agent", "sessions");
+  mkdirSync(sessionsDir, { recursive: true });
+  writeFileSync(
+    join(sessionsDir, "2026-01-01T00-00-00-000Z_x.jsonl"),
+    JSON.stringify({ type: "session", cwd: "/tmp/proj" }) + "\n",
+  );
+  process.env.PICO_HOME = testHome;
+  try {
+    let capturedFactory: any = null;
+    const fakeUi = {
+      setHeader: (factory: any) => {
+        capturedFactory = factory;
+      },
+    };
+    let handler: any = null;
+    const fakePi: any = {
+      on: (name: string, h: any) => {
+        if (name === "session_start") handler = h;
+      },
+      registerTool: () => {},
+      registerCommand: () => {},
+      sendMessage: () => {},
+      sendUserMessage: () => {},
+    };
+    logoExtension(fakePi);
+    handler({ type: "session_start", reason: "startup" }, { ui: fakeUi, model: { id: "deepseek-v4-flash-free", provider: "zen-openai" } });
+    expect(typeof capturedFactory).toBe("function");
 
-  // Render the factory: should produce a Container with at least one Text
-  // child carrying the compact header.
-  const component = capturedFactory({ terminal: { columns: 80 } }, stubTheme);
-  const lines = component.render(80);
-  const joined = lines.join("\n");
-  expect(joined).toContain("Welcome back!");
-  expect(joined).toContain("Tips");
-  expect(joined).toContain("deepseek-v4-flash-free");
+    // Render the factory: should produce a Container with at least one Text
+    // child carrying the compact header.
+    const component = capturedFactory({ terminal: { columns: 80 } }, stubTheme);
+    const lines = component.render(80);
+    const joined = lines.join("\n");
+    expect(joined).toContain("Welcome back!");
+    expect(joined).toContain("Tips");
+    expect(joined).toContain("deepseek-v4-flash-free");
+  } finally {
+    if (savedHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = savedHome;
+    rmSync(testHome, { recursive: true, force: true });
+  }
 });
 
 test("model_select updates the header model and triggers a re-render", () => {
