@@ -1,7 +1,7 @@
 /**
  * Bundled-skills smoke test.
  *
- * pico ships three skills under src/skills/ that bin/pico.ts wires
+ * pico ships four skills under src/skills/ that bin/pico.ts wires
  * into the agent via `--skill`. We don't test the wiring here (that's a
  * shell-arg concern); we just confirm the on-disk skills load cleanly
  * through pi-coding-agent's own loader, with the metadata downstream
@@ -20,10 +20,10 @@ test("loadSkillsFromDir returns the two bundled skills with non-empty descriptio
   const { skills, diagnostics } = loadSkillsFromDir({ dir: skillsDir, source: "bundled" });
 
   expect(diagnostics).toEqual([]);
-  expect(skills).toHaveLength(2);
+  expect(skills).toHaveLength(3);
 
   const names = skills.map((s) => s.name).sort();
-  expect(names).toEqual(["recap", "verify"]);
+  expect(names).toEqual(["auto-repair", "recap", "verify"]);
 
   for (const skill of skills) {
     expect(skill.description.length).toBeGreaterThan(0);
