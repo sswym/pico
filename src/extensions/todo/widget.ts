@@ -7,7 +7,7 @@ import { Key, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import type { Todo } from "./schema.ts";
 import {
-  formatTodoLine,
+  formatTodoPanelLines,
   summarizeTodos,
 } from "./display.ts";
 
@@ -17,7 +17,6 @@ export const TODO_SHORTCUT = Key.f7;
 export const TODO_SHORTCUT_HINT = "F7";
 
 const MAX_WIDGET_LINES = 14;
-const BODY_WINDOW_LINES = 7;
 
 interface TodoWidgetState {
   visible: boolean;
@@ -52,44 +51,12 @@ export function __getTodoWidgetStateForTests(sessionKey: string): TodoWidgetStat
 
 export { summarizeTodos };
 
-function visibleTodoWindow(todos: Todo[]): { todos: Todo[]; start: number; hiddenBefore: number; hiddenAfter: number } {
-  if (todos.length <= BODY_WINDOW_LINES) {
-    return { todos, start: 0, hiddenBefore: 0, hiddenAfter: 0 };
-  }
-
-  const firstOpen = todos.findIndex((todo) => todo.status !== "completed");
-  const anchor = firstOpen === -1 ? todos.length - BODY_WINDOW_LINES : firstOpen;
-  const start = Math.max(0, Math.min(anchor - 1, todos.length - BODY_WINDOW_LINES));
-  const window = todos.slice(start, start + BODY_WINDOW_LINES);
-  return {
-    todos: window,
-    start,
-    hiddenBefore: start,
-    hiddenAfter: Math.max(0, todos.length - start - window.length),
-  };
-}
-
 export function buildTodoWidgetLines(todos: Todo[], theme: Theme): string[] {
   const lines = [
-    theme.fg("accent", theme.bold("todos")),
-    theme.fg("dim", summarizeTodos(todos)),
+    ...formatTodoPanelLines(todos, theme),
     "",
+    theme.fg("dim", `${TODO_SHORTCUT_HINT} toggle panel`),
   ];
-
-  if (todos.length === 0) {
-    lines.push(theme.fg("dim", "no active todos"));
-  } else {
-    const window = visibleTodoWindow(todos);
-    if (window.hiddenBefore > 0) lines.push(theme.fg("dim", `… ${window.hiddenBefore} completed`));
-    for (let i = 0; i < window.todos.length; i++) {
-      const todo = window.todos[i]!;
-      const index = `${window.start + i + 1}`.padStart(2);
-      lines.push(` ${index}. ${formatTodoLine(todo, theme)}`);
-    }
-    if (window.hiddenAfter > 0) lines.push(theme.fg("dim", `… ${window.hiddenAfter} more`));
-  }
-
-  lines.push("", theme.fg("dim", `${TODO_SHORTCUT_HINT} toggle panel`));
   return lines.slice(0, MAX_WIDGET_LINES);
 }
 

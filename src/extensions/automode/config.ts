@@ -636,28 +636,32 @@ function readWritableSettingsFile(path: string): SettingsFile {
 /**
  * Persist the global default classifier model while preserving other settings.
  *
- * 目标随来源：settings.json `automode` 命名空间为权威来源时写回 settings.json
- * （损坏保护 + 0o600 原子写）；否则保持旧 automode.json 路径（未迁移用户）。
+ * 未显式传 path 时，目标随来源：settings.json `automode` 命名空间为权威来源
+ * 则写回 settings.json（损坏保护 + 0o600 原子写）；否则写旧 automode.json
+ * （未迁移用户）。显式传 path（测试/内部指定目标）时直接写该文件。
  */
 export function writeGlobalClassifierModel(
   classifierModel: string,
-  path: string = picoAutomodeConfigPath(),
+  path?: string,
 ): void {
-  if (readSettings().automode !== undefined) {
-    if (isSettingsDamaged()) return; // 拒绝覆盖损坏的 settings.json
-    const settings = readSettings();
-    const automode = (
-      settings.automode && typeof settings.automode === "object" && !Array.isArray(settings.automode)
-    ) ? settings.automode as SettingsFile : {} as SettingsFile;
-    settings.automode = {
-      ...automode,
-      autoMode: {
-        ...automode.autoMode,
-        classifierModel,
-      },
-    };
-    writeSettings(settings);
-    return;
+  if (path === undefined) {
+    if (readSettings().automode !== undefined) {
+      if (isSettingsDamaged()) return; // 拒绝覆盖损坏的 settings.json
+      const settings = readSettings();
+      const automode = (
+        settings.automode && typeof settings.automode === "object" && !Array.isArray(settings.automode)
+      ) ? settings.automode as SettingsFile : {} as SettingsFile;
+      settings.automode = {
+        ...automode,
+        autoMode: {
+          ...automode.autoMode,
+          classifierModel,
+        },
+      };
+      writeSettings(settings);
+      return;
+    }
+    path = picoAutomodeConfigPath();
   }
   const settings = readWritableSettingsFile(path);
   const next: SettingsFile = {

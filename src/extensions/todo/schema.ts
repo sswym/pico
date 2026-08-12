@@ -33,6 +33,13 @@ export const TodoItem = Type.Object({
         "Stable identifier. Provide on first add to keep the same task across updates; auto-assigned otherwise.",
     }),
   ),
+  phase: Type.Optional(
+    Type.String({
+      maxLength: 64,
+      description:
+        "Optional group label the task belongs to (e.g. a work phase like 'Foundation' or 'Verify'). Tasks sharing a phase are rendered together under one tree branch in the todo panel; omit for one-off tasks.",
+    }),
+  ),
 });
 
 export const TodoWriteParams = Type.Object({

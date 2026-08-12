@@ -17,8 +17,10 @@ const plainTheme = {
   bold: (text: string) => text,
 } as unknown as Theme;
 
-function todo(content: string, status: Todo["status"], id = content): Todo {
-  return { id, content, activeForm: `${content} active`, status };
+function todo(content: string, status: Todo["status"], id = content, phase?: string): Todo {
+  return phase === undefined
+    ? { id, content, activeForm: `${content} active`, status }
+    : { id, content, activeForm: `${content} active`, status, phase };
 }
 
 function makeFakePi() {
@@ -59,9 +61,54 @@ test("todo widget keeps the active window visible", () => {
     todo(`task ${i + 1}`, i < 8 ? "completed" : i === 8 ? "in_progress" : "pending"),
   );
   const lines = buildTodoWidgetLines(todos, plainTheme).join("\n");
-  expect(lines).toContain("… 5 completed");
+  expect(lines).toContain("… 7 completed");
   expect(lines).toContain("task 9 active");
   expect(lines).toContain("F7 toggle panel");
+});
+
+test("todo widget renders phase groups as a tree with roman numerals", () => {
+  const mk = (content: string, status: Todo["status"], phase: string): Todo =>
+    ({ content, activeForm: `${content} active`, status, phase });
+  const todos = [
+    mk("阶段1: 实施", "completed", "实施"),
+    mk("阶段2: 实施", "in_progress", "实施"),
+    mk("阶段3: 实施", "pending", "实施"),
+    mk("阶段4: 实施", "pending", "实施"),
+    mk("阶段5: 实施", "pending", "实施"),
+    mk("阶段6: 实施", "pending", "实施"),
+    mk("阶段7: 实施", "pending", "实施"),
+    mk("验证", "pending", "验证"),
+    mk("收尾", "pending", "收尾"),
+  ];
+  const lines = buildTodoWidgetLines(todos, plainTheme).join("\n");
+  // 根标题带激活阶段进度（激活 = 含 in_progress 的第一组）。
+  expect(lines).toContain("Todos · 1/3");
+  // 每个 phase 一行：罗马数字 + 名称 + 进度。
+  expect(lines).toContain("├─ I. 实施 · 1/7");
+  expect(lines).toContain("├─ II. 验证 · 0/1");
+  expect(lines).toContain("└─ III. 收尾 · 0/1");
+  // 激活组展开任务（树形连接线），折叠超出的任务。
+  expect(lines).toContain("│  ├─ ● 阶段2: 实施 active");
+  expect(lines).toContain("└─ … 2 more todos");
+  // 非激活组只显示标题行，不展开任务。
+  expect(lines).not.toContain("阶段8");
+});
+
+test("todo widget falls back to a flat task tree without phases", () => {
+  const todos = [
+    todo("first", "in_progress"),
+    todo("second", "pending"),
+  ];
+  const lines = buildTodoWidgetLines(todos, plainTheme).join("\n");
+  expect(lines).toContain("Todos");
+  expect(lines).not.toContain("Todos · ");
+  expect(lines).toContain("├─ ● #first first active");
+  expect(lines).toContain("└─ ○ #second second");
+});
+
+test("todo widget renders an empty state without phases", () => {
+  const lines = buildTodoWidgetLines([], plainTheme).join("\n");
+  expect(lines).toContain("no active todos");
 });
 
 test("todo extension registers shortcut and syncs widget status after writes", async () => {
