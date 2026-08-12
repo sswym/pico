@@ -86,9 +86,8 @@ src/extensions/    — 25 个功能扩展（memory、subagent、lsp、plan、aut
 src/runtime/       — 启动链：参数构建、嵌入资源解包、setup 命令、扩展注册表
 src/setup/         — `pico setup` 向导
 src/prompts/       — 系统提示词模板（.md）
-src/skills/        — 内置技能（recap、verify）
 scripts/build.ts   — 唯一构建脚本
-tests/             — 与 src/extensions/ 对应的测试文件（另有 runtime/setup/skills/paths/policy/events/ui 等非扩展测试）
+tests/             — 与 src/extensions/ 对应的测试文件（另有 runtime/setup/paths/policy/events/ui 等非扩展测试）
 docs/internal-tech-review.md — 架构、踩坑记录、已知局限
 CONTEXT.md         — 领域术语与重构记录（改架构前先读）
 ```

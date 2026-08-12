@@ -9,7 +9,7 @@ import { ExtensionRegistry } from "../src/runtime/extensions.ts";
 
 const entryMetaUrl = pathToFileURL(resolve(import.meta.dir, "..", "bin", "pico.ts")).href;
 
-test("buildRuntimeArgs injects bundled prompts and skills in source mode", () => {
+test("buildRuntimeArgs injects bundled prompts in source mode", () => {
   const args = buildRuntimeArgs({
     rawArgs: [],
     entryMetaUrl,
@@ -21,40 +21,37 @@ test("buildRuntimeArgs injects bundled prompts and skills in source mode", () =>
     "fullscreen",
     "--prompt-template",
     resolve(import.meta.dir, "..", "src", "prompts"),
-    "--skill",
-    resolve(import.meta.dir, "..", "src", "skills"),
   ]);
 });
 
 test("buildRuntimeArgs defaults to fullscreen TUI only when interactive and unset", () => {
   const promptsDir = resolve(import.meta.dir, "..", "src", "prompts");
-  const skillsDir = resolve(import.meta.dir, "..", "src", "skills");
 
   // Explicit separated and equals forms are preserved, not duplicated.
   expect(buildRuntimeArgs({
     rawArgs: ["--tui-mode", "regular"],
     entryMetaUrl,
     isBunBinary: false,
-  })).toEqual(["--tui-mode", "regular", "--prompt-template", promptsDir, "--skill", skillsDir]);
+  })).toEqual(["--tui-mode", "regular", "--prompt-template", promptsDir]);
 
   expect(buildRuntimeArgs({
     rawArgs: ["--tui-mode=regular"],
     entryMetaUrl,
     isBunBinary: false,
-  })).toEqual(["--tui-mode=regular", "--prompt-template", promptsDir, "--skill", skillsDir]);
+  })).toEqual(["--tui-mode=regular", "--prompt-template", promptsDir]);
 
   // Non-TUI output modes never get the TUI flag.
   expect(buildRuntimeArgs({
     rawArgs: ["-p", "hi"],
     entryMetaUrl,
     isBunBinary: false,
-  })).toEqual(["-p", "hi", "--prompt-template", promptsDir, "--skill", skillsDir]);
+  })).toEqual(["-p", "hi", "--prompt-template", promptsDir]);
 
   expect(buildRuntimeArgs({
     rawArgs: ["--mode", "json"],
     entryMetaUrl,
     isBunBinary: false,
-  })).toEqual(["--mode", "json", "--prompt-template", promptsDir, "--skill", skillsDir]);
+  })).toEqual(["--mode", "json", "--prompt-template", promptsDir]);
 });
 
 test("buildRuntimeArgs respects opt-out and package-management commands", () => {
