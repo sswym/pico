@@ -102,8 +102,8 @@ test("todo widget falls back to a flat task tree without phases", () => {
   const lines = buildTodoWidgetLines(todos, plainTheme).join("\n");
   expect(lines).toContain("Todos");
   expect(lines).not.toContain("Todos · ");
-  expect(lines).toContain("├─ ● #first first active");
-  expect(lines).toContain("└─ ○ #second second");
+  expect(lines).toContain("├─ ● first active");
+  expect(lines).toContain("└─ ○ second");
 });
 
 test("todo widget renders an empty state without phases", () => {

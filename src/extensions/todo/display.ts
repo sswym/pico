@@ -15,12 +15,12 @@ export function summarizeTodos(todos: Todo[]): string {
 
 export function formatTodoLine(todo: Todo, theme?: Theme): string {
   const icon = todoStatusIcon(todo.status);
-  const id = todo.id ? ` #${todo.id}` : "";
   const label = todoLabel(todo);
-  if (!theme) return `${icon}${id} ${label}`;
-  if (todo.status === "completed") return `${theme.fg("success", icon)}${id} ${theme.fg("dim", label)}`;
-  if (todo.status === "in_progress") return `${theme.fg("warning", icon)}${id} ${theme.fg("accent", theme.bold(label))}`;
-  return `${theme.fg("dim", icon)}${id} ${label}`;
+  // id 是内部稳定标识（TodoStore 用于跨更新识别同一任务），对用户是噪音，不渲染。
+  if (!theme) return `${icon} ${label}`;
+  if (todo.status === "completed") return `${theme.fg("success", icon)} ${theme.fg("dim", label)}`;
+  if (todo.status === "in_progress") return `${theme.fg("warning", icon)} ${theme.fg("accent", theme.bold(label))}`;
+  return `${theme.fg("dim", icon)} ${label}`;
 }
 
 export function formatTodoList(todos: Todo[]): string {
