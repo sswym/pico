@@ -19,6 +19,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { getJob } from "./jobs.ts";
 
 export const SUBAGENT_CHANNEL_DIR_ENV = "PICO_SUBAGENT_CHANNEL_DIR";
 export const SUBAGENT_RUN_ID_ENV = "PICO_SUBAGENT_RUN_ID";
@@ -28,9 +29,12 @@ export const SUBAGENT_ORCHESTRATOR_SESSION_ID_ENV = "PICO_SUBAGENT_ORCHESTRATOR_
 
 export const CONTACT_SUPERVISOR_TOOL = "contact_supervisor";
 export const SUPERVISOR_TOOL = "subagent_supervisor";
+export const STEER_TOOL = "subagent_steer";
 
 const REQUESTS_DIR = "requests";
 const REPLIES_DIR = "replies";
+/** Parent-side steering instructions to a running child (subagent_steer). */
+const STEER_DIR = "steer";
 const MAX_MESSAGE_BYTES = 64 * 1024;
 const DEFAULT_ASK_TIMEOUT_MS = 10 * 60 * 1000;
 /** Parent poller cadence for new request files. */
@@ -319,6 +323,23 @@ const SupervisorToolParamsSchema = Type.Object({
 	message: Type.Optional(Type.String({ description: "Reply text (required for reply)" })),
 });
 
+interface SteerParams {
+	jobs: string[];
+	message: string;
+}
+
+const SteerParamsSchema = Type.Object({
+	jobs: Type.Array(Type.String(), { description: "Async job ids (subagent-job-N) to steer" }),
+	message: Type.String({ description: "Instruction to the running subagents" }),
+});
+
+/** 从工具执行 ctx 解析当前会话 id（jobs 按会话隔离）。 */
+function sessionIdFromContext(ctx: unknown): string {
+	const manager = (ctx as { sessionManager?: { getSessionId?: () => unknown } } | undefined)?.sessionManager;
+	const id = manager?.getSessionId?.();
+	return typeof id === "string" && id.length > 0 ? id : "default";
+}
+
 function listRequestFiles(): Array<{ channelDir: string; file: string }> {
 	let channelEntries: fs.Dirent[];
 	try {
@@ -367,6 +388,71 @@ function writeReply(channelDir: string, requestId: string, message: string): voi
 		message: message.trim(),
 	};
 	writeAtomicJson(replyPath(channelDir, requestId), reply);
+}
+
+/** 父侧：向运行中的子代理投递一条 steer 指令。返回指令 id。 */
+export function writeSteer(channelDir: string, message: string): string {
+	if (!message.trim()) throw new Error("message is required for steering.");
+	const id = randomUUID();
+	const payload = JSON.stringify({ type: "pico.supervisor.steer", id, createdAt: Date.now(), message: message.trim() });
+	if (Buffer.byteLength(payload, "utf-8") > MAX_MESSAGE_BYTES) throw new Error("Steer message is too large.");
+	const steerDir = path.join(channelDir, STEER_DIR);
+	fs.mkdirSync(steerDir, { recursive: true, mode: 0o700 });
+	writeAtomicJson(path.join(steerDir, `${safeSegment(id)}.json`), JSON.parse(payload) as unknown);
+	return id;
+}
+
+/**
+ * 子侧：事件驱动的 steer 消费。子代理进程内注册后，在每次工具结果/回合
+ * 开始时检查 channel 的 steer/ 目录，新指令经 sendMessage 注入子会话
+ * （子代理下一回合看到并执行），文件随即删除防重复投递。
+ */
+export function registerChildSteerWatcher(pi: ExtensionAPI): boolean {
+	const metadata = readChildMetadata();
+	if (!metadata) return false;
+	const steerDir = path.join(metadata.channelDir, STEER_DIR);
+	const consumed = new Set<string>();
+
+	const deliver = (): void => {
+		let files: string[];
+		try {
+			files = fs.readdirSync(steerDir).filter((name) => name.endsWith(".json"));
+		} catch {
+			return; // 目录尚不存在 = 无指令
+		}
+		for (const file of files) {
+			if (consumed.has(file)) continue;
+			consumed.add(file);
+			let message: string | undefined;
+			try {
+				const parsed = JSON.parse(fs.readFileSync(path.join(steerDir, file), "utf-8")) as { type?: unknown; message?: unknown };
+				if (parsed.type === "pico.supervisor.steer" && typeof parsed.message === "string" && parsed.message) {
+					message = parsed.message;
+				}
+			} catch {
+				// 写了一半的文件（原子写前的 .tmp）——跳过，下次再读。
+			}
+			if (!message) continue;
+			try {
+				fs.rmSync(path.join(steerDir, file), { force: true });
+			} catch {
+				// best-effort
+			}
+			pi.sendMessage(
+				{
+					customType: "subagent_steer",
+					content: `**Steer from supervisor:**\n${message}`,
+					display: true,
+					details: { from: "supervisor" },
+				},
+				{ deliverAs: "nextTurn" },
+			);
+		}
+	};
+
+	pi.on("tool_result", deliver);
+	pi.on("agent_start", deliver);
+	return true;
 }
 
 function resolvePendingRequest(pending: Map<string, PendingRequest>, params: SupervisorToolParams): PendingRequest {
@@ -476,6 +562,40 @@ export function createSupervisorChannel(pi: ExtensionAPI): SupervisorChannel {
 		},
 	};
 	pi.registerTool(supervisorTool);
+
+	const steerTool: ToolDefinition<typeof SteerParamsSchema, Record<string, unknown>> = {
+		name: STEER_TOOL,
+		label: "Subagent Steer",
+		description: [
+			"Send an instruction to running async subagent jobs (launched with subagent(async: true)).",
+			"The job's child picks the instruction up at its next tool boundary and acts on it — use it to correct direction mid-run instead of waiting for the job to finish and restarting.",
+			"Only jobs of the current session can be steered; settled/unknown jobs are reported as skipped.",
+		].join(" "),
+		parameters: SteerParamsSchema,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const input = params as SteerParams;
+			const sessionKey = sessionIdFromContext(ctx);
+			const results: Array<{ jobId: string; status: string }> = [];
+			for (const jobId of input.jobs) {
+				const job = getJob(sessionKey, jobId);
+				if (!job) {
+					results.push({ jobId, status: "unknown" });
+					continue;
+				}
+				if (job.status !== "running" || !job.channelDir) {
+					results.push({ jobId, status: "not-runnable" });
+					continue;
+				}
+				writeSteer(job.channelDir, input.message);
+				results.push({ jobId, status: "delivered" });
+			}
+			const text = results
+				.map((r) => `- ${r.jobId}: ${r.status}`)
+				.join("\n");
+			return { content: [{ type: "text", text: `Steer delivered:\n${text}` }], details: { results } };
+		},
+	};
+	pi.registerTool(steerTool);
 
 	return {
 		start(sessionId) {

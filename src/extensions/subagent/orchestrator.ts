@@ -159,6 +159,10 @@ interface AgentRunSupport {
 	maxSpawnsPerSession?: number;
 	/** Test seam: override the child spawn. */
 	spawnProcess?: ChildSpawnFn;
+	/** Pre-created supervisor channel (async jobs: parent needs the dir to
+	 *  steer the run); when unset the run creates its own. */
+	channelRunId?: string;
+	channelDir?: string;
 }
 
 /** Per-session child spawn counter (subagent.json maxSubagentSpawnsPerSession). */
@@ -312,11 +316,12 @@ async function runSingleAgent(
 		const args = buildAgentProcessArgs(agent, task, forkSessionPath, tmpPromptPath ?? undefined, sessionFile);
 		const invocation = getPiInvocation(args);
 
-		// Supervisor channel（intercom）：每个 run 一个通道目录，身份经环境
-		// 变量传给子进程；子进程内 contact_supervisor 据此写请求/轮询回复，
-		// 父侧轮询器（supervisor-channel.ts）扫描同一根目录。
-		const runId = createRunId();
-		const channelDir = createChannelDir(runId, agent.name, step ?? 0);
+		// Supervisor channel（intercom/steering）：每个 run 一个通道目录，身份
+		// 经环境变量传给子进程；子进程内 contact_supervisor 据此写请求/轮询
+		// 回复，父侧轮询器（supervisor-channel.ts）扫描同一根目录。异步作业
+		// 的通道由 launchAsyncSingleJob 预创建（父侧需据此 steer）。
+		const runId = support.channelRunId ?? createRunId();
+		const channelDir = support.channelDir ?? createChannelDir(runId, agent.name, step ?? 0);
 
 		// 2.6.3: stderr accumulates unboundedly and floods failed-result messages.
 		// The global slot (subagent.json globalConcurrencyLimit) bounds in-flight
@@ -456,9 +461,13 @@ async function launchAsyncSingleJob(
 ): Promise<SubagentToolResult> {
 	const jobId = createJobId();
 	const controller = new AbortController();
+	// 异步作业的通道目录预创建并记入 job：父代理可用 subagent_steer 向
+	// 运行中的作业发指令（写入 channel 的 steer/ 目录，子侧轮询注入）。
+	const runId = createRunId();
+	const channelDir = createChannelDir(runId, params.agent, 0);
 	// The job outlives the parent turn: only the session-shutdown cancel
 	// (cancelRunningJobs) aborts it, never the parent's per-turn signal.
-	registerJob(extras.sessionKey, jobId, params.agent, params.task, () => controller.abort());
+	registerJob(extras.sessionKey, jobId, params.agent, params.task, () => controller.abort(), { channelDir, runId });
 
 	const resultPromise = runWithFallback(
 		{ agentName: params.agent, task: params.task, cwd: params.cwd },
@@ -474,6 +483,8 @@ async function launchAsyncSingleJob(
 			globalConcurrencyLimit: extras.globalConcurrencyLimit,
 			maxSpawnsPerSession: extras.maxSpawnsPerSession,
 			spawnProcess: ctx.spawnProcess,
+			channelRunId: runId,
+			channelDir,
 		},
 	);
 	resultPromise.then(

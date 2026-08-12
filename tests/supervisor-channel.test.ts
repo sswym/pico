@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { subagentChildEnv } from "../src/extensions/subagent/process.ts";
+import type { SingleResult } from "../src/extensions/subagent/results.ts";
 import {
   SUBAGENT_CHANNEL_DIR_ENV,
   SUBAGENT_CHILD_AGENT_ENV,
@@ -21,17 +22,37 @@ import {
   createRunId,
   createSupervisorChannel,
   readChildMetadata,
+  registerChildSteerWatcher,
   registerChildSupervisorTool,
+  writeSteer,
 } from "../src/extensions/subagent/supervisor-channel.ts";
+
+function makeSingleResult(overrides: Record<string, unknown> = {}): SingleResult {
+  return {
+    agent: "worker",
+    agentSource: "user",
+    task: "t",
+    exitCode: 0,
+    messages: [],
+    stderr: "",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+    ...overrides,
+  };
+}
 
 function makeFakePi(): any {
   const tools: Array<{ name: string; execute?: (...args: any[]) => any }> = [];
   const sent: Array<{ message: any; options?: any }> = [];
+  const handlers: Record<string, Array<(event: any) => void>> = {};
   return {
     tools,
     sent,
+    handlers,
     registerTool: (t: { name: string; execute?: (...args: any[]) => any }) => tools.push(t),
     sendMessage: (message: any, options?: any) => sent.push({ message, options }),
+    on: (event: string, handler: (event: any) => void) => {
+      (handlers[event] ??= []).push(handler);
+    },
   };
 }
 
@@ -332,4 +353,91 @@ test("subagentChildEnv merges supervisor channel overrides and bumps depth", () 
   const env = subagentChildEnv({ [SUBAGENT_CHANNEL_DIR_ENV]: "/tmp/ch" });
   expect(env[SUBAGENT_CHANNEL_DIR_ENV]).toBe("/tmp/ch");
   expect(env.PICO_SUBAGENT_DEPTH).toBe("1");
+});
+
+// ── steering（父→子中途纠偏）──────────────────────────────────────────────
+
+test("writeSteer writes a steer file with the instruction", () => {
+  setChildEnv();
+  const channelDir = createChannelDir("run-test", "worker", 0);
+  const id = writeSteer(channelDir, "change direction");
+  const files = readdirSync(join(channelDir, "steer"));
+  expect(files).toHaveLength(1);
+  const parsed = JSON.parse(readFileSync(join(channelDir, "steer", files[0]!), "utf-8"));
+  expect(parsed.type).toBe("pico.supervisor.steer");
+  expect(parsed.id).toBe(id);
+  expect(parsed.message).toBe("change direction");
+});
+
+test("subagent_steer delivers to running jobs and reports unknown/skipped ones", async () => {
+  const { __resetJobsForTests, registerJob, settleJob } = await import("../src/extensions/subagent/jobs.ts");
+  const pi = makeFakePi();
+  const channel = createSupervisorChannel(pi);
+  const tool = registerTool(pi, "subagent_steer");
+  const runId = createRunId();
+  const channelDir = createChannelDir(runId, "worker", 0);
+  const ctx = { sessionManager: { getSessionId: () => "session-1" } };
+  try {
+    registerJob("session-1", "subagent-job-1", "worker", "t", () => {}, { channelDir, runId });
+    const result = await tool.execute!("t", { jobs: ["subagent-job-1", "subagent-job-99"], message: "change direction" }, undefined, undefined, ctx);
+    expect(result.content[0].text).toContain("subagent-job-1: delivered");
+    expect(result.content[0].text).toContain("subagent-job-99: unknown");
+    const steerFiles = readdirSync(join(channelDir, "steer"));
+    expect(steerFiles).toHaveLength(1);
+    const parsed = JSON.parse(readFileSync(join(channelDir, "steer", steerFiles[0]!), "utf-8"));
+    expect(parsed.message).toBe("change direction");
+  } finally {
+    __resetJobsForTests();
+    channel.dispose();
+  }
+});
+
+test("subagent_steer skips settled jobs and other sessions", async () => {
+  const { __resetJobsForTests, registerJob, settleJob } = await import("../src/extensions/subagent/jobs.ts");
+  const pi = makeFakePi();
+  const channel = createSupervisorChannel(pi);
+  const tool = registerTool(pi, "subagent_steer");
+  const runId = createRunId();
+  const channelDir = createChannelDir(runId, "worker", 0);
+  const ctx = { sessionManager: { getSessionId: () => "session-1" } };
+  try {
+    registerJob("session-1", "subagent-job-1", "worker", "t", () => {}, { channelDir, runId });
+    settleJob("session-1", "subagent-job-1", makeSingleResult());
+    registerJob("session-2", "subagent-job-2", "worker", "t", () => {}, { channelDir, runId });
+    const result = await tool.execute!("t", { jobs: ["subagent-job-1", "subagent-job-2"], message: "x" }, undefined, undefined, ctx);
+    expect(result.content[0].text).toContain("subagent-job-1: not-runnable");
+    expect(result.content[0].text).toContain("subagent-job-2: unknown");
+  } finally {
+    __resetJobsForTests();
+    channel.dispose();
+  }
+});
+
+test("child steer watcher injects instructions at tool boundaries and dedupes", async () => {
+  setChildEnv();
+  const channelDir = process.env[SUBAGENT_CHANNEL_DIR_ENV]!;
+  createChannelDir("run-test", "worker", 0);
+  const pi = makeFakePi();
+  expect(registerChildSteerWatcher(pi)).toBe(true);
+
+  // 无指令：事件触发不投递。
+  pi.handlers["tool_result"]?.[0]?.({});
+  expect(pi.sent).toHaveLength(0);
+
+  writeSteer(channelDir, "switch to plan B");
+  pi.handlers["tool_result"]?.[0]?.({});
+  expect(pi.sent).toHaveLength(1);
+  expect(pi.sent[0]!.message.customType).toBe("subagent_steer");
+  expect(pi.sent[0]!.message.content).toContain("switch to plan B");
+  expect(pi.sent[0]!.options?.deliverAs).toBe("nextTurn");
+  // 文件已消费删除；再次触发（agent_start）不重复投递。
+  expect(readdirSync(join(channelDir, "steer"))).toHaveLength(0);
+  pi.handlers["agent_start"]?.[0]?.({});
+  expect(pi.sent).toHaveLength(1);
+});
+
+test("child steer watcher registers only with child env identity", () => {
+  const pi = makeFakePi();
+  expect(registerChildSteerWatcher(pi)).toBe(false);
+  expect(pi.handlers["tool_result"]).toBeUndefined();
 });

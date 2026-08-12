@@ -2325,6 +2325,38 @@ test("P2: globalConcurrencyLimit bounds in-flight children across async jobs", a
 
 // ── intercom: supervisor channel wiring ─────────────────────────────────────
 
+test("intercom: async launch records the channel dir on the job for steering", async () => {
+  const { __resetJobsForTests, getJob } = await import("../src/extensions/subagent/jobs.ts");
+  const { existsSync } = await import("node:fs");
+  await withSubagentHome(async () => {
+    const procs: FakeProcess[] = [];
+    const ctx = plainCtx(() => {
+      const p = new FakeProcess();
+      procs.push(p);
+      return p;
+    });
+    try {
+      const res = await runSubagentRequest({ agent: "worker", task: "bg", async: true }, undefined, undefined, ctx);
+      const match = /subagent-job-(\d+)/.exec(res.content.find((p) => p.type === "text")?.text ?? "");
+      expect(match).not.toBeNull();
+      const jobId = `subagent-job-${match![1]}`;
+      await tickUntil(() => procs.length === 1);
+      const job = getJob("default", jobId);
+      expect(job?.channelDir).toBeDefined();
+      expect(job?.runId).toBeDefined();
+      // steer/ 目录按需创建（writeSteer 时），此时不应存在。
+      expect(existsSync(join(job!.channelDir!, "steer"))).toBe(false);
+      procs[0]!.close(0);
+      await waitForJobs("default", [jobId]);
+    } finally {
+      for (const p of procs) if (!p.killed) p.close(0);
+      __resetJobsForTests();
+      __resetChildSlotsForTests();
+      __resetSessionSpawnCountsForTests();
+    }
+  });
+});
+
 test("intercom: spawning a subagent creates its supervisor channel dir", async () => {
   const { clearChannelRoot } = await import("../src/extensions/subagent/supervisor-channel.ts");
   const os = await import("node:os");

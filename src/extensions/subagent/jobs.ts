@@ -21,6 +21,10 @@ export interface AsyncJob {
 	/** Settled without a result (canceled at shutdown, launch error). */
 	errorMessage?: string;
 	createdAt: number;
+	/** Supervisor channel dir + run id (set at async launch) — lets the
+	 *  parent deliver steering instructions mid-run. */
+	channelDir?: string;
+	runId?: string;
 }
 
 export interface WaitOutcome {
@@ -61,6 +65,7 @@ export function registerJob(
 	agent: string,
 	task: string,
 	cancel: () => void,
+	meta?: { channelDir?: string; runId?: string },
 ): AsyncJob {
 	const job: InternalJob = {
 		id,
@@ -70,6 +75,7 @@ export function registerJob(
 		createdAt: Date.now(),
 		waiters: [],
 		cancel,
+		...meta,
 	};
 	const sessionJobs = jobsBySession.get(sessionKey) ?? new Map<string, InternalJob>();
 	sessionJobs.set(id, job);
