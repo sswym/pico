@@ -92,6 +92,18 @@ export function summarizeToolCall(toolName: string, args: unknown): string {
     return query ? quote(query) : file;
   }
 
+  if (toolName === "askUserQuestion") {
+    const questions = getObjectValue(args, "questions");
+    if (Array.isArray(questions) && questions.length > 0) {
+      const first = questions[0];
+      const question =
+        first && typeof first === "object" ? getObjectValue(first, "question") : undefined;
+      const text = typeof question === "string" && question ? shortString(question, 96) : `${questions.length} questions`;
+      return questions.length > 1 ? `${text} (${questions.length} questions)` : text;
+    }
+    return "";
+  }
+
   if (toolName === "visionAnalyze") {
     // Schema fields are image_path / image_base64 / image_url — a local path
     // is the most useful summary, base64 the noisiest, so prefer in that order.

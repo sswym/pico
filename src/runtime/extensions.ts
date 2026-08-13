@@ -1,5 +1,6 @@
 import type { ExtensionFactory, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { autoThinkingExtension } from "../extensions/auto-thinking/index.ts";
+import { ccstyleExtension } from "../extensions/ccstyle/index.ts";
 import { contextPrunerExtension } from "../extensions/context-pruner/index.ts";
 import { askExtension } from "../extensions/ask/index.ts";
 import automodeExtension from "../extensions/automode/index.ts";
@@ -98,6 +99,7 @@ export const defaultExtensions = [
   { name: "retro-theme", factory: retroThemeExtension, phase: "ui" },
   { name: "language", factory: languageExtension, phase: "prompt" },
   { name: "input-history", factory: inputHistoryExtension, phase: "ui" },
+  { name: "ccstyle", factory: ccstyleExtension, phase: "ui" },
   { name: "logo", factory: logoExtension, phase: "ui", dependsOn: ["retro-theme"] },
   {
     name: "memory",
