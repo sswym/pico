@@ -158,3 +158,51 @@ test("rtk skips long-running run commands (2.5.10)", () => {
   expect(shouldRewriteWithRtk("cargo build")).toBe(true);
   expect(shouldRewriteWithRtk("go run server.go")).toBe(false);
 });
+
+function makeRtkHarness(settings: Record<string, unknown>) {
+  const agentDir = join(testHome, "agent");
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(
+    join(agentDir, "settings.json"),
+    JSON.stringify(settings),
+    "utf8",
+  );
+  const handlers: Record<string, Array<(event: unknown, ctx: unknown) => void>> = {};
+  const notifies: Array<{ message: string; level: string }> = [];
+  const fakePi = {
+    on: (event: string, handler: (event: unknown, ctx: unknown) => void) => {
+      (handlers[event] ??= []).push(handler);
+    },
+  } as any;
+  rtkExtension(fakePi);
+  return {
+    sessionStart: handlers.session_start![0]!,
+    notifies,
+    ctx: {
+      hasUI: true,
+      ui: { notify: (message: string, level: string) => notifies.push({ message, level }) },
+    },
+  };
+}
+
+test("rtk notice is suppressed when quietStartup is enabled", () => {
+  const { sessionStart, notifies, ctx } = makeRtkHarness({
+    quietStartup: true,
+    integrations: { rtk: { enabled: true, command: "bun" } },
+  });
+
+  sessionStart({}, ctx);
+
+  expect(notifies).toEqual([]);
+});
+
+test("rtk notice still shows when quietStartup is unset", () => {
+  const { sessionStart, notifies, ctx } = makeRtkHarness({
+    integrations: { rtk: { enabled: true, command: "bun" } },
+  });
+
+  sessionStart({}, ctx);
+
+  expect(notifies).toHaveLength(1);
+  expect(notifies[0]!.message).toContain("rtk 输出压缩已启用");
+});

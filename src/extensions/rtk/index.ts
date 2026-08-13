@@ -9,7 +9,7 @@
  */
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { registerBashSpawnHook } from "../bash-hooks.ts";
-import { readSettingsObject } from "../settings.ts";
+import { readSettings, readSettingsObject } from "../settings.ts";
 
 export interface RtkConfig {
   enabled: boolean;
@@ -203,6 +203,9 @@ export const rtkExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   let noticeShown = false;
   pi.on("session_start", (_event, ctx) => {
     if (noticeShown || !ctx.hasUI) return;
+    // quietStartup 语义：安静启动不弹通知——上游启动面板/列表同样遵循该
+    // 开关（settings.json 顶层 quietStartup），rtk 提示对齐。
+    if (readSettings().quietStartup === true) return;
     noticeShown = true;
     try {
       if (isRtkAvailable(config.command)) {
