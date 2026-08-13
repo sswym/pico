@@ -2,7 +2,7 @@
 
 **带长期记忆、子代理委派、任务追踪、规划模式、网页搜索/抓取、MCP 服务器集成与 LSP 代码智能的 Vibe 编码代理。**
 
-基于 `@earendil-works/pi-coding-agent` 的薄封装：上游提供 agent loop、工具运行时与会话管理，pico 通过 28 个扩展注入产品化能力。技术栈：Bun + TypeScript，零外部运行时依赖。
+基于 `@earendil-works/pi-coding-agent` 的薄封装：上游提供 agent loop、工具运行时与会话管理，pico 通过 29 个扩展注入产品化能力。技术栈：Bun + TypeScript，零外部运行时依赖。
 
 ## 快速开始
 
@@ -35,6 +35,7 @@ bun run bin/pico.ts --help     # 查看所有上游标志
 | MCP 集成 | 兼容 Claude Code 配置格式，自动发现并注册外部服务器工具 |
 | 钩子系统 | PreToolUse / PostToolUse / PreSessionEnd / PostUserMessage 文件驱动 shell 钩子 |
 | 交互提问 | askUserQuestion 结构化选择题，自动追加"其他"选项 |
+| Claude Code 风格渲染 | 连续工具调用分组、单行摘要 + 状态图标、Input/Output 展开视图、edit/write 自动展开与 diff、fullscreen 鼠标点击展开/收起（`/ccstyle` 开关，settings.json `ccstyle.enabled`） |
 | /init | 多阶段引导生成/审计 AGENTS.md（绝不写 CLAUDE.md） |
 
 > 各功能完整用法（工具动作表、配置示例、命令参考）：见 [`docs/user-guide.md`](docs/user-guide.md)。

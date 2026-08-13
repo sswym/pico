@@ -678,6 +678,28 @@ flowchart TD
 
 **测试基线**：723 → 733 全绿（+10 undo-redo）。
 
+### 4.15 第十五轮整改（2026-08-13，集成 pi-cc-extensions Claude Code 风格渲染扩展，1268 用例全绿）
+
+**第 29 个扩展 `ccstyle`**（`src/extensions/ccstyle/`，phase: ui）——源码移植 pi-cc-extensions v0.8.54（MIT，minuque/pi-cc-extensions）并裁剪为 pico 需要的面：连续工具调用分组、单行摘要 + 状态图标、Input/Output 展开视图、edit/write 结果自动展开与着色 diff、fullscreen 鼠标点击展开/收起。配置 `settings.json ccstyle.enabled`（默认 true）+ `/ccstyle on|off|status`。
+
+**机制**：
+- **分组**：patch `Container.prototype.addChild/removeChild/clear`，连续 `ToolExecutionComponent` 归入 `ToolGroupComponent`（组头计数 + 每工具单行摘要，展开树形渲染 + `userMessageBg` 背景）。edit/write/apply_patch 不入组（渲染体量大），但渲染被接管。
+- **渲染**：patch `ToolExecutionComponent.prototype.getCallRenderer/getResultRenderer/getRenderShell/hasRendererDefinition/updateDisplay/setExpanded`（方法值快照 downstream），全部工具统一 ccstyle 卡片。折叠单行摘要 + `ctrl+o to show more`；展开 Input/Output 视图（80% 视口宽、40 行上限）。pico 定制工具（ask/lsp/memory/todo/subagent）折叠摘要复用 `summarizeToolCall`（`tool-render.ts` 新增 askUserQuestion 分支——参数是 `questions[]` 复数数组）。
+- **edit diff**：复用上游 `result.details.diff`（`+行号 内容` 格式，`generateDiffString` 生成），折叠显示 `+N -M` 统计、展开按 `toolDiffAdded/Removed/Context` 行级着色——**零新增依赖**（无 shiki/diff 库）。
+- **write/edit 自动展开**：结果落地（isPartial=false）首次渲染自动展开并**持久保持**（state `ccstyleToolExpanded`），用户显式折叠（`setExpanded(false)` 包装）后永久退出自动展开（`ccstyleUserCollapsed`）。
+- **鼠标**（fullscreen）：`ctx.ui.setWidget` factory 是扩展 API 唯一拿到 TUI（0.84+ 惰性 Proxy `createInteractiveTuiReference`）的通道；实例 own property 包装 `handleViewportInput`（constructor arrow 动态查找命中），SGR 包解析 → `tui.currentLayout` 布局树命中（`fullscreenLeafAt`/`componentAtLocalRow`）→ 折叠卡整卡点击展开（single-expand）/ 展开卡点击收起。官方 TuiAltScreen 已开 1000/1002/1006，无需补模式；OSC8 链接行与滚动条列放行。
+
+**坑点**：
+1. **prototype 补丁的 downstream 必须是方法值快照**：`downstream = prototype`（对象别名）再 `prototype.updateDisplay = installed` 会变异 downstream 引用的同一对象 → `installed` 调 `downstream` 即自递归爆栈。始终 `const current = { method: prototype.method }` 快照。
+2. **接管信号是 `builtInToolDefinition` 而非 `toolDefinition === undefined`**：undo-redo 为 read/bash/edit/write/grep/find/ls 全部注册同名 `toolDefinition`（沙箱执行包装），初版规则把上游内置全判成"pico 定制"而排除（实机表现为 bash 卡仍是上游原生 `Tool output: expanded`）。后放宽为**全部工具**接管（含 pico 定制工具），折叠摘要按工具补专用分支。
+3. **上游组件创建时调 `setExpanded(this.toolOutputExpanded)`（false）**：初版包装把 state 不存在的键设成 `false`，导致 `firstSettle` 的 `=== undefined` 检查永远失败（自动展开永不触发）。改为仅当 `ccstyleAutoExpanded === true` 时 `delete`（创建时 no-op）。
+4. **自动展开需持久标记**：仅"首次落地展开一帧"会被下一次自动重渲染（组件自身 `expanded=false`）折叠回去；`ccstyleToolExpanded` 持久 + `setExpanded` 包装区分"用户折叠"与"自动重渲染"。
+5. **`isPartial` 语义**：上游 `tool_execution_end` 走 `updateResult(result)`（isPartial 默认 false），`tool_execution_update` 走 `(partial, true)`；自动展开判定必须用 `options.isPartial` 而非组件字段。
+
+**测试**：`tests/ccstyle.test.ts` + `tests/ccstyle-mouse.test.ts` 共 37 条（真实组件 + 模拟惰性 Proxy TUI + 手搭布局树；含 downsteam 快照递归回归、undo-redo 包装接管回归、自动展开保持/折叠闭环）。真实验证：TUI 触发 bash/read/write/edit/askUserQuestion，分组动画、状态图标、自动展开 diff、鼠标点击展开/收起、ctrl+o 折叠后不复发均确认；`bun run verify` 1268 用例全绿。
+
+**v1 裁剪项**（相对上游）：无 rich diff 词级高亮（edit/write 为行级着色）、无 hover 高亮（1003 all-motion 在 tmux 下不可靠）、无 show-more 全量预览、无回到底部按钮、无 compact 回合摘要、无 regular 模式鼠标（仅 fullscreen）。
+
 ## 5. 当前版本现状与已知局限
 
 ### 5.1 现状
@@ -698,6 +720,7 @@ flowchart TD
   - 第 26 个扩展 `auto-thinking`（prompt 层，`src/extensions/auto-thinking/`）：`ultrathink` 关键词（正文独立词、跳过代码块/行内代码/XML）→ `setThinkingLevel("max")` + `<system-notice>` 多步推理提醒，agent_end 自动恢复原等级；`/thinking <level>` 命令（off|minimal|low|medium|high|xhigh|max，按模型 clamp）；`PICO_AUTO_THINKING_DISABLE` / `PICO_ULTRATHINK_NOTICE_ONLY` 开关；移植自 oh-my-pi `modes/ultrathink.ts` + `thinking.ts`。真实验证：print 模式会话 `thinking_level_change` 记录 `high → max → high`；
   - 第 27 个扩展 `context-pruner`（`src/extensions/context-pruner/`）：挂上游 `context` 事件（transformContext，每次 LLM 调用前），同一文件完整 read 被后续 read 取代时旧结果替换为 `[Superseded by a newer read of this file]`；分范围 read（offset/limit）永不裁剪；`PICO_CONTEXT_PRUNER_DISABLE` 开关；移植自 oh-my-pi `session-maintenance.ts #pruneStaleToolResults`。真实验证：读同一文件两次后第二次请求前裁剪 21934→12273 字节；
   - vibe-system.md 末尾新增"交付证据与硬约束"段（evidence-and-output + `<critical>` 收尾块，移植自 oh-my-pi DELIVERY CONTRACT）；759 用例全绿；
+- 第十五轮整改（2026-08-13，集成 pi-cc-extensions Claude Code 风格渲染）：第 29 个扩展 `ccstyle`（源码移植 + pico 化，见 §4.15）——连续工具调用分组、单行摘要 + 状态图标、Input/Output 展开视图、edit/write 结果自动展开与着色 diff（复用 `details.diff`，零新增依赖）、fullscreen 鼠标点击展开/收起；全部工具统一 ccstyle 渲染（含 undo-redo 沙箱包装与 pico 定制工具，摘要复用 `summarizeToolCall`）；1268 用例全绿；
 
 ### 5.2 已知局限（客观记录）
 
@@ -726,6 +749,9 @@ flowchart TD
 | L24 | **模型请求等待期间无超时倒计时/进度提示**：挂起时仅 `thinking Ns` 计时器；超时值 `settings.httpIdleTimeoutMs` 默认 300s（0=禁用），pico 已校验 + /doctor 展示，但等待期 UX 与倒计时受上游 TUI 约束 | 长等待期用户无感知 | 受上游约束；已文档化配置键 |
 | L25 | **全新 PICO_HOME 首启主题加载时序**：TUI 初始化先于 retro-theme 的 session_start 主题文件同步，首启报一次 `Failed to load theme "claude-code-dark"` 并回退 dark，次启恢复正常 | 首启一次噪音告警 | 已知；可在首启路径预写主题文件消除 |
 | L26 | **subagent toolResult `details.messages` 携带子代理完整会话**（实测单次 142KB/229KB）：主会话 JSONL 每次 subagent 调用 +150~250KB 存储膨胀 | 会话文件膨胀（磁盘/重放成本）；模型上下文仅收 content 摘要，无功能影响 | 渲染器依赖 messages 做工具轨迹展示与最终输出提取，截断会破坏功能；待改轻量 details 结构（如预聚合 DisplayItem）后落地 |
+| L27 | **ccstyle 无 rich diff 词级高亮**（edit/write diff 为行级着色，无 intra-line 反色）；无 hover 高亮（1003 all-motion 在 tmux 下不可靠）、无 show-more 全量预览、无回到底部按钮 | 展开 diff 可读性略逊上游、无 hover 提示 | v1 裁剪项（§4.15），可后续补 |
+| L28 | **ccstyle 全接管后 pico 定制工具折叠摘要统一为单行**：subagent 进度列表、memory 结果细节、todo 列表等定制多行反馈移入展开态（Input/Output） | 折叠态信息密度下降 | 全接管取舍；如需可单点放回定制渲染器 |
+| L29 | **`/ccstyle` 切换不重渲染已挂载工具**：分组/渲染补丁只对新挂载的工具生效，on/off 切换后旧工具卡保持原视图直至下次 updateDisplay | 切换后视觉不一致（新会话正常） | 扩展 API 无 TUI 句柄触发重渲染；v1 限制 |
 
 ### 5.3 待优化项与迭代规划（建议排序）
 
