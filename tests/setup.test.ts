@@ -1088,3 +1088,37 @@ test("integrations section preserves an existing custom rtk command", async () =
     shell,
   );
 });
+
+test("ui section persists quietStartup", async () => {
+  await withSection("ui", { yesNo: [true] }, ({ settings, asked }) => {
+    expect(settings().quietStartup).toBe(true);
+    expect(asked.yesNo.some((q) => q.question.includes("Quiet startup"))).toBe(true);
+  });
+});
+
+test("integrations section configures ponytail mode and quiet toast", async () => {
+  const { shell } = fakeShell();
+  await withSection(
+    "integrations",
+    // codegraph declined, rtk declined, ponytail enabled; ponytail mode = ultra
+    { yesNo: [false, false, true, true], choice: [3] },
+    ({ settings }) => {
+      expect(settings().ponytail).toMatchObject({ defaultMode: "ultra", quietStartup: true });
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations section can disable ponytail", async () => {
+  const { shell } = fakeShell();
+  await withSection(
+    "integrations",
+    { yesNo: [false, false, false] },
+    ({ settings }) => {
+      expect(settings().ponytail).toMatchObject({ defaultMode: "off" });
+    },
+    undefined,
+    shell,
+  );
+});

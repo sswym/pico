@@ -82,6 +82,9 @@ interface SetupSectionMeta {
 
 const SETUP_SECTIONS: SetupSection[] = ["model", "tools", "safety", "ui", "memory", "lsp", "hooks", "mcp", "integrations", "env"];
 
+/** Ponytail 内置扩展的运行时模式（与 src/extensions/ponytail/config.ts RUNTIME_MODES 对齐）。 */
+const PONYTAIL_MODES = ["off", "lite", "full", "ultra"];
+
 /**
  * Sections a first-time user needs before they can start chatting. Everything
  * else is advanced and gated behind a single yes/no prompt in the interactive
@@ -289,6 +292,7 @@ const TEXT = {
     unattendedPlan: "Allow non-interactive plan approvals? (automation only; keep off for normal use)",
     uiHeader: "UI",
     responseLanguage: "Response language",
+    uiQuietStartup: "Quiet startup (hide the resource listing and startup toasts)?",
     memoryHeader: "Memory",
     memoryBackend: "Memory backend",
     memoryDeny: "Memory deny patterns (comma-separated regex fragments, e.g. password,secret-.*; empty = no restriction)",
@@ -319,6 +323,10 @@ const TEXT = {
     rtkInstall: "rtk was not found on PATH. Install RTK CLI now?",
     rtkMode: "RTK integration mode",
     rtkModeChoices: ["spawnHook (auto-rewrite bash commands)", "instructionsOnly (settings only)"],
+    ponytailEnable: "Enable the Ponytail lazy-dev ruleset (built-in)?",
+    ponytailMode: "Ponytail intensity level",
+    ponytailModeChoices: ["off (disabled)", "lite", "full (recommended)", "ultra"],
+    ponytailQuiet: "Silence the Ponytail startup toast?",
     installSkipped: "install skipped; install the CLI manually before using this integration",
     installFailed: "install failed",
     envHeader: "Environment",
@@ -384,6 +392,7 @@ const TEXT = {
     unattendedPlan: "允许非交互模式自动批准计划？（仅自动化场景需要；日常使用保持关闭）",
     uiHeader: "界面",
     responseLanguage: "pico 回复语言",
+    uiQuietStartup: "安静启动（隐藏资源清单与启动提示）？",
     memoryHeader: "记忆",
     memoryBackend: "记忆 backend",
     memoryDeny: "记忆拒写模式（逗号分隔的正则片段，例：password,secret-.*；留空表示不限制）",
@@ -414,7 +423,11 @@ const TEXT = {
     rtkInstall: "PATH 中未找到 rtk。现在安装 RTK CLI？",
     rtkMode: "RTK 集成模式",
     rtkModeChoices: ["spawnHook（自动改写 bash 命令）", "instructionsOnly（只写设置）"],
-    installSkipped: "已跳过安装；使用该集成前请手动安装 CLI",
+    ponytailEnable: "启用内置 Ponytail 懒惰开发规则？",
+    ponytailMode: "Ponytail 强度级别",
+    ponytailModeChoices: ["off（关闭）", "lite", "full（推荐）", "ultra"],
+    ponytailQuiet: "静默 Ponytail 启动提示？",
+    installSkipped: "安装已跳过；使用该集成前请手动安装 CLI",
     installFailed: "安装失败",
     envHeader: "环境变量",
     envKey: "环境变量名",
@@ -1112,6 +1125,7 @@ async function runUiSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   const settings = readJson(picoSettingsPath()) as Settings;
   const defaultLanguage = prompt.language === "zh" ? "简体中文" : "English";
   settings.language = await prompt.text(text.responseLanguage, stringSetting(settings.language) ?? defaultLanguage);
+  settings.quietStartup = await prompt.yesNo(text.uiQuietStartup, booleanSetting(settings.quietStartup, false));
   writeJson(picoSettingsPath(), settings);
 }
 
@@ -1272,6 +1286,23 @@ async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo, shell: S
     rtk.enabled = false;
   }
 
+  const ponytail = objectSetting(settings.ponytail);
+  const ponytailEnabled = await prompt.yesNo(text.ponytailEnable, stringSetting(ponytail.defaultMode) !== "off");
+  if (ponytailEnabled) {
+    const current = stringSetting(ponytail.defaultMode) ?? "full";
+    const modeIndex = Math.max(0, PONYTAIL_MODES.indexOf(current));
+    const modeIndexChoice = await prompt.choice(
+      text.ponytailMode,
+      text.ponytailModeChoices.map((choice, i) => (i === 2 ? recommend(prompt.language, choice, true) : choice)),
+      modeIndex,
+    );
+    ponytail.defaultMode = PONYTAIL_MODES[modeIndexChoice]!;
+  } else {
+    ponytail.defaultMode = "off";
+  }
+  ponytail.quietStartup = await prompt.yesNo(text.ponytailQuiet, booleanSetting(ponytail.quietStartup, false));
+  settings.ponytail = ponytail;
+
   integrations.codegraph = codegraph;
   integrations.rtk = rtk;
   settings.integrations = integrations;
@@ -1341,11 +1372,15 @@ function summarizeSafetySection(settings: JsonObject): string | undefined {
 }
 
 function hasUiSection(settings: JsonObject): boolean {
-  return typeof settings.language === "string";
+  return typeof settings.language === "string" || typeof settings.quietStartup === "boolean";
 }
 
 function summarizeUiSection(settings: JsonObject): string | undefined {
-  return stringSetting(settings.language);
+  const bits: string[] = [];
+  const language = stringSetting(settings.language);
+  if (language) bits.push(language);
+  if (settings.quietStartup === true) bits.push("quiet");
+  return bits.length > 0 ? bits.join(", ") : undefined;
 }
 
 function hasMemorySection(settings: JsonObject): boolean {
@@ -1398,7 +1433,8 @@ function hasIntegrationsSection(settings: JsonObject): boolean {
   const integrations = objectSetting(settings.integrations);
   const codegraph = objectSetting(integrations.codegraph);
   const rtk = objectSetting(integrations.rtk);
-  return typeof codegraph.enabled === "boolean" || typeof rtk.enabled === "boolean";
+  const ponytail = objectSetting(settings.ponytail);
+  return typeof codegraph.enabled === "boolean" || typeof rtk.enabled === "boolean" || typeof ponytail.defaultMode === "string";
 }
 
 function summarizeIntegrationsSection(settings: JsonObject): string | undefined {
@@ -1410,6 +1446,8 @@ function summarizeIntegrationsSection(settings: JsonObject): string | undefined 
   if (typeof rtk.enabled === "boolean") {
     bits.push(`rtk=${rtk.enabled ? stringSetting(rtk.mode) ?? "on" : "off"}`);
   }
+  const ponytail = objectSetting(settings.ponytail);
+  if (typeof ponytail.defaultMode === "string") bits.push(`ponytail=${ponytail.defaultMode}`);
   return bits.length > 0 ? bits.join(", ") : undefined;
 }
 
