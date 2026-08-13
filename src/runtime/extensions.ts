@@ -6,6 +6,7 @@ import automodeExtension from "../extensions/automode/index.ts";
 import { cacheOptimizerExtension } from "../extensions/cache-optimizer/index.ts";
 import { doctorExtension } from "../extensions/doctor/index.ts";
 import { helpExtension } from "../extensions/help/index.ts";
+import { ponytailExtension } from "../extensions/ponytail/index.ts";
 import { hooksExtension } from "../extensions/hooks/index.ts";
 import { initExtension } from "../extensions/init/index.ts";
 import { inputHistoryExtension } from "../extensions/input-history/index.ts";
@@ -89,6 +90,9 @@ export class ExtensionRegistry {
 export const defaultExtensions = [
   { name: "vibe", factory: vibeExtension, phase: "prompt" },
   { name: "auto-thinking", factory: autoThinkingExtension, phase: "prompt" },
+  // ponytail 必须在 cache-optimizer 之前：before_agent_start 链上先注入规则，
+  // 再让 cache-optimizer 把 PICO_CACHE_STABLE 标记段提取进缓存前缀。
+  { name: "ponytail", factory: ponytailExtension, phase: "prompt" },
   { name: "cache-optimizer", factory: cacheOptimizerExtension, phase: "prompt" },
   { name: "todo", factory: todoExtension, phase: "tools" },
   { name: "retro-theme", factory: retroThemeExtension, phase: "ui" },

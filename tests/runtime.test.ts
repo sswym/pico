@@ -21,37 +21,40 @@ test("buildRuntimeArgs injects bundled prompts in source mode", () => {
     "fullscreen",
     "--prompt-template",
     resolve(import.meta.dir, "..", "src", "prompts"),
+    "--skill",
+    resolve(import.meta.dir, "..", "src", "skills"),
   ]);
 });
 
 test("buildRuntimeArgs defaults to fullscreen TUI only when interactive and unset", () => {
   const promptsDir = resolve(import.meta.dir, "..", "src", "prompts");
+  const skillsDir = resolve(import.meta.dir, "..", "src", "skills");
 
   // Explicit separated and equals forms are preserved, not duplicated.
   expect(buildRuntimeArgs({
     rawArgs: ["--tui-mode", "regular"],
     entryMetaUrl,
     isBunBinary: false,
-  })).toEqual(["--tui-mode", "regular", "--prompt-template", promptsDir]);
+  })).toEqual(["--tui-mode", "regular", "--prompt-template", promptsDir, "--skill", skillsDir]);
 
   expect(buildRuntimeArgs({
     rawArgs: ["--tui-mode=regular"],
     entryMetaUrl,
     isBunBinary: false,
-  })).toEqual(["--tui-mode=regular", "--prompt-template", promptsDir]);
+  })).toEqual(["--tui-mode=regular", "--prompt-template", promptsDir, "--skill", skillsDir]);
 
   // Non-TUI output modes never get the TUI flag.
   expect(buildRuntimeArgs({
     rawArgs: ["-p", "hi"],
     entryMetaUrl,
     isBunBinary: false,
-  })).toEqual(["-p", "hi", "--prompt-template", promptsDir]);
+  })).toEqual(["-p", "hi", "--prompt-template", promptsDir, "--skill", skillsDir]);
 
   expect(buildRuntimeArgs({
     rawArgs: ["--mode", "json"],
     entryMetaUrl,
     isBunBinary: false,
-  })).toEqual(["--mode", "json", "--prompt-template", promptsDir]);
+  })).toEqual(["--mode", "json", "--prompt-template", promptsDir, "--skill", skillsDir]);
 });
 
 test("buildRuntimeArgs respects opt-out and package-management commands", () => {
