@@ -214,3 +214,67 @@ test("extension registers prompt and provider hooks", () => {
   });
   expect(officialResult.prompt_cache_key).toBe("test-session-id");
 });
+
+const STABLE_START = "<!-- PICO_CACHE_STABLE:START -->";
+const STABLE_END = "<!-- PICO_CACHE_STABLE:END -->";
+
+test("lifts explicitly-marked stable sections into the prefix", () => {
+  const marked = `${STABLE_START}\nLazy senior dev ladder: does it need to exist? reuse it. stdlib. native. dependency. one line. minimum.\n${STABLE_END}`;
+  const prompt = [
+    "Dynamic user context changes every turn.",
+    marked,
+    "More dynamic context.",
+  ].join("\n\n");
+
+  const result = optimizeSystemPrompt(prompt, makeOpts());
+
+  expect(result.changed).toBe(true);
+  expect(result.systemPrompt.startsWith(marked)).toBe(true);
+  expect(result.systemPrompt).toContain("\n\n---\n\nDynamic user context");
+});
+
+test("keeps mode-dependent text outside markers in the dynamic remainder", () => {
+  const marked = `${STABLE_START}\nThe ladder is byte-identical in every mode.\n${STABLE_END}`;
+  const modeLine = "PONYTAIL MODE ACTIVE — level: ultra";
+  const prompt = [marked, modeLine, "Dynamic tail."].join("\n\n");
+
+  const result = optimizeSystemPrompt(prompt, makeOpts());
+
+  expect(result.changed).toBe(true);
+  expect(result.systemPrompt.startsWith(marked)).toBe(true);
+  const remainder = result.systemPrompt.slice(result.systemPrompt.indexOf("\n\n---\n\n"));
+  expect(remainder).toContain(modeLine);
+});
+
+test("ignores unterminated stable markers", () => {
+  const prompt = [
+    "Dynamic context.",
+    `${STABLE_START}\nThis block has no end marker.`,
+  ].join("\n\n");
+
+  const result = optimizeSystemPrompt(prompt, makeOpts());
+
+  expect(result.changed).toBe(false);
+  expect(result.systemPrompt).toBe(prompt);
+});
+
+test("does not lift a marked section shorter than the minimum length", () => {
+  const marked = `${STABLE_START}${STABLE_END}`;
+  const prompt = [marked, "Dynamic tail."].join("\n\n");
+
+  const result = optimizeSystemPrompt(prompt, makeOpts());
+
+  expect(result.changed).toBe(false);
+  expect(result.systemPrompt).toBe(prompt);
+});
+
+test("preserves structural markers when lifting marked sections", () => {
+  const marked = `${STABLE_START}\n<rules>same every turn</rules>\n${STABLE_END}`;
+  const prompt = [marked, "Dynamic."].join("\n\n");
+
+  const result = optimizeSystemPrompt(prompt, makeOpts());
+
+  expect(result.changed).toBe(true);
+  expect(result.systemPrompt.startsWith(marked)).toBe(true);
+  expect(result.systemPrompt).toContain("<rules>same every turn</rules>");
+});

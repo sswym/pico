@@ -10,6 +10,18 @@ const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
 const SKILL_COMPRESSION_MIN_COUNT = 3;
 const MIN_STABLE_CANDIDATE_LENGTH = 64;
 
+/**
+ * Extensions that inject always-on guidance into the system prompt can wrap
+ * the parts that are byte-identical across turns in these markers; the
+ * optimizer lifts them into the cacheable stable prefix. Mode-dependent
+ * fragments (a level line that changes on /ponytail lite|full|ultra) must
+ * stay OUTSIDE the markers — putting them inside invalidates the whole prefix
+ * cache on every mode switch. Both markers match the structural-marker safety
+ * net regex, so a lifted block keeps them verbatim.
+ */
+const STABLE_SECTION_START = "<!-- PICO_CACHE_STABLE:START -->";
+const STABLE_SECTION_END = "<!-- PICO_CACHE_STABLE:END -->";
+
 const DISABLE_ENV = "PICO_CACHE_OPTIMIZER_DISABLE";
 const NO_PROMPT_REWRITE_ENV = "PICO_CACHE_OPTIMIZER_NO_PROMPT_REWRITE";
 const NO_SKILL_COMPRESSION_ENV = "PICO_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION";
@@ -150,6 +162,28 @@ export function compressSkillsInSystemPrompt(prompt: string, opts: BuildSystemPr
   return prompt.replace(verbose, compressed);
 }
 
+/**
+ * Extract explicitly-marked stable sections from a prompt.
+ *
+ * A section is everything from a START marker to its first END marker
+ * (markers included), so the structural-marker safety net keeps both. A
+ * START without a following END is ignored and its content stays in place.
+ * Returns [] when no complete section exists.
+ */
+function extractMarkedStableSections(prompt: string): string[] {
+  const sections: string[] = [];
+  let searchFrom = 0;
+  while (true) {
+    const startIdx = prompt.indexOf(STABLE_SECTION_START, searchFrom);
+    if (startIdx < 0) break;
+    const endIdx = prompt.indexOf(STABLE_SECTION_END, startIdx + STABLE_SECTION_START.length);
+    if (endIdx < 0) break; // unterminated marker: leave everything from here as-is
+    sections.push(prompt.slice(startIdx, endIdx + STABLE_SECTION_END.length));
+    searchFrom = endIdx + STABLE_SECTION_END.length;
+  }
+  return sections;
+}
+
 function buildStableCandidates(opts: BuildSystemPromptOptions): string[] {
   const candidates: string[] = [];
   if (opts.customPrompt) candidates.push(opts.customPrompt);
@@ -201,7 +235,7 @@ export interface OptimizedSystemPrompt {
 export function optimizeSystemPrompt(original: string, opts: BuildSystemPromptOptions): OptimizedSystemPrompt {
   const candidates: string[] = [];
   const seen = new Set<string>();
-  for (const candidate of buildStableCandidates(opts)) {
+  for (const candidate of [...buildStableCandidates(opts), ...extractMarkedStableSections(original)]) {
     const part = candidate.trim();
     if (!part || part.length < MIN_STABLE_CANDIDATE_LENGTH || seen.has(part)) continue;
     seen.add(part);
