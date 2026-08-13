@@ -139,6 +139,8 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       recentDenials: [],
     };
     let loadedContext = "";
+    // 每会话首次"分类器降级"只提示一次（会话开始重置）。
+    let degradedNotified = false;
 
     function effectiveConfig(): EffectiveConfig {
       return {
@@ -235,6 +237,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       config = loadResult.config;
       configDiagnostics = loadResult.diagnostics;
       state = restoreState(ctx);
+      degradedNotified = false;
       updateUi(ctx);
     });
 
@@ -425,6 +428,15 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         }, logCtx);
       }
       logClassifierIo(decision, logCtx);
+      if (decision.degraded && !degradedNotified) {
+        degradedNotified = true;
+        if (ctx.hasUI) {
+          ctx.ui.notify(
+            "automode 分类器已降级：配置的模型不可用，正在使用当前会话模型分类（可用 /automode model 修复）",
+            "warning",
+          );
+        }
+      }
       if (decision.decision === "allow") {
         state.classifierAllowed += 1;
         return allow(

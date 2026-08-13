@@ -157,6 +157,8 @@ export type ClassifierIoAttempt = {
 /** Full classifier I/O for an action, surfaced for optional observability logging. */
 export type ClassifierIo = {
   model: string;
+  /** True when the configured classifier model was unavailable and the session model was used instead. */
+  degraded?: boolean;
   reasoning: ClassifierReasoning;
   prompt: {
     system: string;
@@ -172,6 +174,8 @@ export type ClassifierIo = {
 export type ClassifyResult = ClassificationDecision & {
   reasoning?: ClassifierReasoningLog;
   io?: ClassifierIo;
+  /** True when the configured classifier model was unavailable and the session model was used instead. */
+  degraded?: boolean;
 };
 
 export type SettingsSources = {

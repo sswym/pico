@@ -31,6 +31,7 @@ import {
   createClassifierCompletionPlan,
   defaultClassifyAction,
   parseClassifierDecision,
+  resolveClassifier,
 } from "../src/extensions/automode/classifier.ts";
 import { buildEffectiveConfigFromSources } from "../src/extensions/automode/config.ts";
 import { HOME } from "../src/extensions/automode/constants.ts";
@@ -119,7 +120,11 @@ function noticeCollector() {
   const notices: Array<[string, string]> = [];
   return {
     notices,
-    ui: { notify: (message: string, type: string) => notices.push([message, type]) },
+    ui: {
+      notify: (message: string, type: string) => notices.push([message, type]),
+      setStatus: () => {},
+      theme: { fg: (_color: string, text: string) => text },
+    },
   };
 }
 
@@ -1336,5 +1341,139 @@ describe("automode command", () => {
     };
     await handler("model p1/m1", ctx);
     expect(notices[0]).toEqual(["automode 分类器已全局保存: p1/m1", "info"]);
+  });
+});
+
+// ── classifier model fallback ─────────────────────────────────────────────
+
+describe("resolveClassifier falls back to the session model", () => {
+  const sessionModel = { provider: "p2", id: "m2" } as never;
+
+  test("configured model unresolvable degrades to session model", async () => {
+    const resolution = await resolveClassifier(
+      {
+        model: sessionModel,
+        modelRegistry: {
+          find: () => undefined, // p1/m1 cannot be resolved
+          getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {} }),
+        },
+        sessionManager: {},
+      } as never,
+      { ...baseConfig(), classifierModel: "p1/m1" },
+    );
+    expect(resolution.degraded).toBe(true);
+    expect(resolution.classifier?.model).toBe(sessionModel);
+  });
+
+  test("configured model auth failure degrades to session model", async () => {
+    const resolution = await resolveClassifier(
+      {
+        model: sessionModel,
+        modelRegistry: {
+          find: () => ({ provider: "p1", id: "m1" }),
+          getApiKeyAndHeaders: async (m: { id: string }) =>
+            m.id === "m1" ? { ok: false, error: "no key" } : { ok: true, apiKey: "k", headers: {} },
+        },
+        sessionManager: {},
+      } as never,
+      { ...baseConfig(), classifierModel: "p1/m1" },
+    );
+    expect(resolution.degraded).toBe(true);
+    expect(resolution.classifier?.model).toBe(sessionModel);
+  });
+
+  test("configured model usable: no degradation", async () => {
+    const resolution = await resolveClassifier(
+      {
+        model: sessionModel,
+        modelRegistry: {
+          find: () => ({ provider: "p1", id: "m1" }),
+          getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {} }),
+        },
+        sessionManager: {},
+      } as never,
+      { ...baseConfig(), classifierModel: "p1/m1" },
+    );
+    expect(resolution.degraded).toBeUndefined();
+    const used = resolution.classifier?.model;
+    expect(used && `${used.provider}/${used.id}`).toBe("p1/m1");
+  });
+
+  test("unconfigured: session model used without degradation", async () => {
+    const resolution = await resolveClassifier(
+      {
+        model: sessionModel,
+        modelRegistry: {
+          find: () => undefined,
+          getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {} }),
+        },
+        sessionManager: {},
+      } as never,
+      baseConfig(),
+    );
+    expect(resolution.degraded).toBeUndefined();
+    expect(resolution.classifier?.model).toBe(sessionModel);
+  });
+
+  test("all candidates fail: still fails closed", async () => {
+    const resolution = await resolveClassifier(
+      {
+        model: undefined,
+        modelRegistry: {
+          find: () => undefined,
+          getApiKeyAndHeaders: async () => ({ ok: false, error: "x" }),
+        },
+        sessionManager: {},
+      } as never,
+      { ...baseConfig(), classifierModel: "p1/m1" },
+    );
+    expect(resolution.classifier).toBeUndefined();
+    expect(resolution.completionPlan).toBeUndefined();
+  });
+});
+
+// ── degraded classifier notice ───────────────────────────────────────────
+
+describe("automode degraded classifier notice", () => {
+  test("notifies once per session, not per call", async () => {
+    const pi = makeFakePi();
+    const { notices, ui } = noticeCollector();
+    const ctx = makeFakeCtx({ hasUI: true, ui });
+    const ext = createPiAutomode({
+      loadConfig: () => baseConfig(),
+      classifyAction: async () => ({
+        decision: "allow" as const,
+        tier: "allow" as const,
+        reason: "safe",
+        degraded: true,
+      }),
+    });
+    ext(pi as any);
+
+    await pi.handlers.session_start?.[0]?.({}, ctx);
+    await pi.handlers.tool_call?.[0]?.({ toolName: "bash", input: { command: "curl https://x" } }, ctx);
+    await pi.handlers.tool_call?.[0]?.({ toolName: "bash", input: { command: "curl https://y" } }, ctx);
+
+    expect(notices.filter(([m]) => m.includes("降级"))).toHaveLength(1);
+  });
+
+  test("no notice when the configured classifier is healthy", async () => {
+    const pi = makeFakePi();
+    const { notices, ui } = noticeCollector();
+    const ctx = makeFakeCtx({ hasUI: true, ui });
+    const ext = createPiAutomode({
+      loadConfig: () => baseConfig(),
+      classifyAction: async () => ({
+        decision: "allow" as const,
+        tier: "allow" as const,
+        reason: "safe",
+      }),
+    });
+    ext(pi as any);
+
+    await pi.handlers.session_start?.[0]?.({}, ctx);
+    await pi.handlers.tool_call?.[0]?.({ toolName: "bash", input: { command: "curl https://x" } }, ctx);
+
+    expect(notices.filter(([m]) => m.includes("降级"))).toHaveLength(0);
   });
 });

@@ -52,6 +52,8 @@ export function buildClassifierPrompt(config: EffectiveConfig): string {
 
 type ClassifierResolution = {
   reasoning: ClassifierReasoningLog;
+  /** True when the configured classifier model was unavailable and the session model was used instead. */
+  degraded?: boolean;
   classifier?: {
     model: Model<any>;
     apiKey?: string;
@@ -68,40 +70,49 @@ export function classifierReasoningForConfig(
     : { mode: "explicit", requestedLevel };
 }
 
-async function resolveClassifier(
+/**
+ * Resolve the classifier model with a fallback chain: the configured
+ * `classifierModel` first, then the current session model. A configured model
+ * that cannot be resolved or authenticated degrades to the session model
+ * (still a model-gated decision, never an unconditional allow) and marks the
+ * resolution `degraded` so operators can notice. Only when every candidate
+ * fails does the caller fail closed.
+ */
+export async function resolveClassifier(
   ctx: ExtensionContext,
   config: EffectiveConfig,
 ): Promise<ClassifierResolution> {
   const configured = config.classifierModel;
-  const model = configured
-    ? (() => {
-      const parsed = parseModelSpec(configured);
-      return parsed
-        ? ctx.modelRegistry.find(parsed.provider, parsed.id)
-        : undefined;
-    })()
-    : ctx.model;
-  if (!model) {
+  const candidates: Array<{ model: Model<any>; degraded: boolean }> = [];
+  if (configured) {
+    const parsed = parseModelSpec(configured);
+    const configuredModel = parsed
+      ? ctx.modelRegistry.find(parsed.provider, parsed.id)
+      : undefined;
+    if (configuredModel) candidates.push({ model: configuredModel, degraded: false });
+  }
+  // 配置了 classifierModel 但候选不可用，或从未配置：当前会话模型兜底。
+  if (ctx.model) candidates.push({ model: ctx.model, degraded: configured !== undefined });
+
+  for (const candidate of candidates) {
+    const completionPlan = createClassifierCompletionPlan(
+      candidate.model,
+      config.classifierReasoningLevel,
+    );
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(candidate.model);
+    if (!auth.ok) continue;
     return {
-      reasoning: classifierReasoningForConfig(config.classifierReasoningLevel),
+      reasoning: completionPlan.reasoning,
+      degraded: candidate.degraded || undefined,
+      classifier: {
+        model: candidate.model,
+        apiKey: auth.apiKey,
+        headers: auth.headers,
+      },
+      completionPlan,
     };
   }
-
-  const completionPlan = createClassifierCompletionPlan(
-    model,
-    config.classifierReasoningLevel,
-  );
-  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-  if (!auth.ok) return { reasoning: completionPlan.reasoning };
-  return {
-    reasoning: completionPlan.reasoning,
-    classifier: {
-      model,
-      apiKey: auth.apiKey,
-      headers: auth.headers,
-    },
-    completionPlan,
-  };
+  return { reasoning: classifierReasoningForConfig(config.classifierReasoningLevel) };
 }
 
 export type ClassifierCompletionFn = (
@@ -533,8 +544,10 @@ export const defaultClassifyAction: ClassifyAction = async (
   return {
     ...decision,
     reasoning: completionPlan.reasoning,
+    degraded: resolution.degraded,
     io: {
       model: formatModelSpec(classifier.model),
+      degraded: resolution.degraded,
       reasoning: completionPlan.reasoning,
       prompt: {
         system: systemPrompt,
