@@ -40,7 +40,7 @@ bun run update-deps               # 升级 @earendil-works/pi-* 到最新版，�
 
 ## 架构
 
-pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 29 个 ExtensionFactory 插件注入功能。
+pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 30 个 ExtensionFactory 插件注入功能。
 
 ### 入口链
 
@@ -52,9 +52,9 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 
 ### 扩展注册顺序
 
-唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（**29 个扩展**）。每个带 `phase: "prompt" | "ui" | "tools" | "runtime" | "diagnostics"`、可选 `dependsOn` / `safety` 元数据；注册时校验**重名**与 **dependsOn 必须先于依赖者注册**。所有工厂以 `hidden: true` 注册，避免上游启动面板出现 `<inline:N>` 占位噪行。
+唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（**30 个扩展**）。每个带 `phase: "prompt" | "ui" | "tools" | "runtime" | "diagnostics"`、可选 `dependsOn` / `safety` 元数据；注册时校验**重名**与 **dependsOn 必须先于依赖者注册**。所有工厂以 `hidden: true` 注册，避免上游启动面板出现 `<inline:N>` 占位噪行。
 
-`vibe → auto-thinking → ponytail → cache-optimizer → todo → retro-theme → language → input-history → ccstyle → logo → memory → context-pruner → subagent → skill → vision → ask → init → automode → plan → undo-redo → web → lsp → rtk → hooks → mcp → observability → signals → doctor → help`
+`vibe → auto-thinking → ponytail → cache-optimizer → todo → retro-theme → language → input-history → ccstyle → logo → memory → context-pruner → subagent → skill → vision → ask → init → automode → plan → undo-redo → web → lsp → rtk → hooks → evolution → mcp → observability → signals → doctor → help`
 
 ### 双运行模式（源码 vs 编译二进制）
 
@@ -82,7 +82,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 ### 关键目录
 
 ```
-src/extensions/    — 29 个功能扩展（memory、subagent、lsp、plan、automode、undo-redo、signals、ponytail、ccstyle 等）
+src/extensions/    — 30 个功能扩展（memory、subagent、lsp、plan、automode、undo-redo、signals、ponytail、ccstyle、evolution 等）
 src/runtime/       — 启动链：参数构建、嵌入资源解包、setup 命令、扩展注册表
 src/setup/         — `pico setup` 向导
 src/prompts/       — 系统提示词模板（.md）
@@ -142,6 +142,9 @@ function makeFakePi() {
 | `PICO_VISION_PROVIDER` / `PICO_VISION_MODEL` | 覆盖辅助视觉模型的 provider/model（无 settings 对应项时也可用） |
 | `PICO_CACHE_OPTIMIZER_DISABLE` | 关闭 cache-optimizer（设为 `1`/`true`/`yes`/`on`；`0`/`false` 视为未禁用） |
 | `PICO_CACHE_OPTIMIZER_NO_PROMPT_REWRITE` / `PICO_CACHE_OPTIMIZER_NO_SKILL_COMPRESSION` / `PICO_CACHE_OPTIMIZER_NO_OPENAI_CACHE_KEY` / `PICO_CACHE_OPTIMIZER_ALLOW_PROXY_LONG_RETENTION` | cache-optimizer 分项开关 |
+| `PICO_EVOLUTION_ENABLED` | 启用自进化审查（会话后自动沉淀技能；默认关，settings `evolution.enabled` 或 env） |
+| `PICO_EVOLUTION_PROVIDER` / `PICO_EVOLUTION_MODEL` | 覆盖审查模型（默认跟随主模型） |
+| `PICO_EVOLUTION_DENY` | 审查输出门禁关键词（逗号分隔，命中拒写技能） |
 
 前五个安全开关也可长期写入 `~/.pico/agent/settings.json` 的 `safety` 字段；环境变量优先于 settings。**值必须是布尔**——字符串会被当作禁用并打印告警：
 
@@ -182,3 +185,4 @@ function makeFakePi() {
 - `cache-optimizer` 支持扩展用 `<!-- PICO_CACHE_STABLE:START -->…<!-- PICO_CACHE_STABLE:END -->` 标记把每轮字节不变的注入段标为稳定，`optimizeSystemPrompt` 会将其提取进缓存前缀；模式相关文本（如 ponytail 的 `lite/full/ultra` 级别行）必须留在标记外——进前缀后模式切换会整前缀缓存失效。标记会参与结构标记安全网校验（`extractStructuralMarkers`）
 - `ponytail`（`src/extensions/ponytail/` + `src/skills/ponytail*/`）是 vendored 自 https://github.com/DietrichGebert/ponytail（MIT，v4.9.0）的第 28 个内置扩展：规则注入 + 6 个 `/ponytail*` 命令 + 会话模式持久化。配置收敛在 settings.json `ponytail` 命名空间（defaultMode/quietStartup/hideStatus，env `PONYTAIL_*` 优先）；SKILL.md 走嵌入式资源（源码模式 `src/skills/`）。注入文本用 `PICO_CACHE_STABLE` 标记拆稳定/模式段（见上条）。同步上游时更新版本注释；已内置后不要再 `pico install` 外部 ponytail（技能会双份）
 - `ccstyle`（`src/extensions/ccstyle/`）是移植自 https://github.com/minuque/pi-cc-extensions（MIT，v0.8.54）的第 29 个内置扩展（phase: ui）：Claude Code 风格工具渲染——连续工具调用分组（`Container.prototype.addChild/removeChild/clear` 补丁 → `ToolGroupComponent`）、单行摘要 + 状态图标、Input/Output 展开视图、edit/write 结果自动展开与着色 diff（复用上游 `result.details.diff`，无 shiki 依赖）、fullscreen 鼠标点击展开/收起（实例级包装 `handleViewportInput` + `currentLayout` 布局树命中）。配置：settings.json `ccstyle.enabled`（默认 true）+ `/ccstyle on|off|status`。接管规则：**全部工具**统一 ccstyle 渲染（含 undo-redo 沙箱包装的上游内置与 pico 定制工具），渲染与执行解耦；pico 工具折叠摘要复用 `summarizeToolCall`（`tool-render.ts`）。改这里前先读 `render.ts`（原型补丁的 downstream 必须是方法值快照，别名会自递归）与 `grouping.ts`（edit/write/apply_patch 不入组但渲染被接管）
+- `evolution`（`src/extensions/evolution/`）是第 30 个内置扩展（phase: runtime）：自进化闭环——`agent_end` 回合末异步审查会话消息（辅助模型直调，`review.ts`），输出严格 JSON 经 `apply.ts` 校验（技能名消毒、路径穿越、注入特征 `PICO_EVOLUTION_DENY`、大小上限）后写入 `~/.pico/agent/skills/`，`.pico-evolved.json` 清单记录自产技能（用户手写技能永不触碰，mtime 比对新则跳过）。默认关（`evolution.enabled` / `PICO_EVOLUTION_ENABLED`）；设计文档 `docs/evolution-design.md`。改这里前先读 `apply.ts` 的安全校验清单与 `index.ts` 的触发/频率限制

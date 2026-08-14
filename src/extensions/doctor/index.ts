@@ -14,6 +14,8 @@ import { readSettings, readSettingsObject, writeSettings, isSettingsDamaged } fr
 import { validateCurrentSettings } from "../settings-schema.ts";
 import { ENV_SETTING_MAPPINGS, envSettingEffectiveValue } from "../envmap.ts";
 import { subscribeSessionExtensionEvent, type LspStatusEvent } from "../events.ts";
+import { readEvolutionConfig, getState } from "../evolution/state.ts";
+import { readManifest } from "../evolution/apply.ts";
 import {
   formatConfigYmlConflictLines,
   formatConfigYmlModelConflictLines,
@@ -60,6 +62,22 @@ function requestTimeoutSummary(): string[] {
 
 /** Latest lsp_status snapshot (published by the lsp extension). */
 let lspFailures: LspStatusEvent["failures"] = [];
+
+function evolutionSummary(): string[] {
+  const config = readEvolutionConfig();
+  const model = config.provider && config.model
+    ? `${config.provider}/${config.model}`
+    : "(follows current session model)";
+  const evolved = Object.keys(readManifest().skills);
+  return [
+    `  enabled: ${enabled(config.enabled)} (env PICO_EVOLUTION_ENABLED or settings evolution.enabled)`,
+    `  model: ${model}`,
+    `  reviewEveryTurns: ${config.reviewEveryTurns}, maxReviewsPerSession: ${config.maxReviewsPerSession}`,
+    `  reviews this session: ${getState().reviewsDone}`,
+    `  evolved skills: ${evolved.length > 0 ? evolved.join(", ") : "(none)"}`,
+    `  privacy: ${config.enabled ? "session content is sent to the review model" : "off"}`,
+  ];
+}
 
 function modelSummary(): string[] {
   const settings = readSettings();
@@ -112,6 +130,9 @@ export function buildDoctorReport(cwd: string): string {
     "",
     "Request timeout:",
     ...requestTimeoutSummary(),
+    "",
+    "Evolution:",
+    ...evolutionSummary(),
     "",
     "LSP:",
     ...lspLines,

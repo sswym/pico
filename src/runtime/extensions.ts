@@ -6,6 +6,7 @@ import { askExtension } from "../extensions/ask/index.ts";
 import automodeExtension from "../extensions/automode/index.ts";
 import { cacheOptimizerExtension } from "../extensions/cache-optimizer/index.ts";
 import { doctorExtension } from "../extensions/doctor/index.ts";
+import { evolutionExtension } from "../extensions/evolution/index.ts";
 import { helpExtension } from "../extensions/help/index.ts";
 import { ponytailExtension } from "../extensions/ponytail/index.ts";
 import { hooksExtension } from "../extensions/hooks/index.ts";
@@ -169,6 +170,12 @@ export const defaultExtensions = [
     factory: hooksExtension,
     phase: "runtime",
     safety: { touchesFilesystem: true, spawnsProcess: true },
+  },
+  {
+    name: "evolution",
+    factory: evolutionExtension,
+    phase: "runtime",
+    safety: { touchesFilesystem: true, usesNetwork: true },
   },
   {
     name: "mcp",

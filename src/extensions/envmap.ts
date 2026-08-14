@@ -57,6 +57,13 @@ export const ENV_SETTING_MAPPINGS: readonly EnvSettingMapping[] = [
   { env: "PICO_CONTEXT_PRUNER_DISABLE", settingsPath: null, precedence: "env-only", description: "关闭 context-pruner" },
   { env: "PICO_AUTOMODE_SETTINGS_JSON", settingsPath: null, precedence: "env-only", description: "automode 内联配置（JSON 字符串）" },
 
+  // ── 自进化（evolution 扩展）──────────────────────────────────────────
+  { env: "PICO_EVOLUTION_ENABLED", settingsPath: "evolution.enabled", precedence: "env-first", description: "启用自进化审查（会话后自动沉淀技能）" },
+  { env: "PICO_EVOLUTION_PROVIDER", settingsPath: "evolution.provider", precedence: "env-first", description: "审查模型 provider（默认跟随主模型）" },
+  { env: "PICO_EVOLUTION_MODEL", settingsPath: "evolution.model", precedence: "env-first", description: "审查模型 model（默认跟随主模型）" },
+  { env: "PICO_EVOLUTION_DENY", settingsPath: null, precedence: "env-only", description: "审查输出门禁关键词（逗号分隔，命中拒写技能）" },
+  { env: "PICO_EVOLUTION_REVIEW_EVERY_TURNS", settingsPath: "evolution.reviewEveryTurns", precedence: "env-first", description: "审查触发回合间隔（默认 6）" },
+
   // ── 内部护栏（勿手动设置）────────────────────────────────────────────
   { env: "PICO_HOOK_RECURSION_GUARD", settingsPath: null, precedence: "env-only", description: "hook 递归护栏（系统自动维护）", internal: true },
   { env: "PICO_SUBAGENT_DEPTH", settingsPath: null, precedence: "env-only", description: "子代理嵌套深度护栏（系统自动维护）", internal: true },
