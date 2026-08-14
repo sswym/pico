@@ -317,6 +317,37 @@ function toolSummary(tool: ToolComponent): { main: string; detail: string } {
   };
 }
 
+/**
+ * Memoized tool summaries keyed by toolCallId.
+ *
+ * toolSummary() runs regex/string work (humanizeToolName, oneLine,
+ * summarizeToolCall) that depends only on the tool's immutable name+args.
+ * The group renderer re-invokes it on every frame — the pending-animation
+ * path invalidates groups every 200ms — so a stalled tool would otherwise
+ * re-pay the same summary computation dozens of times. Tool call ids are
+ * unique per call and args never change after dispatch, so entries never
+ * need invalidation.
+ */
+const summaryCache = new Map<string, { main: string; detail: string }>();
+
+/** Test-only: clear the summary cache. */
+export function __resetToolSummaryCacheForTests(): void {
+  summaryCache.clear();
+}
+
+/** Test-only: number of cached summaries. */
+export function __toolSummaryCacheSize(): number {
+  return summaryCache.size;
+}
+
+function summaryOf(tool: ToolComponent): { main: string; detail: string } {
+  const cached = summaryCache.get(tool.toolCallId);
+  if (cached) return cached;
+  const summary = toolSummary(tool);
+  summaryCache.set(tool.toolCallId, summary);
+  return summary;
+}
+
 function toolNameList(tools: ToolComponent[]): string {
   const counts = new Map<string, number>();
   for (const tool of tools) counts.set(toolName(tool), (counts.get(toolName(tool)) ?? 0) + 1);
@@ -437,7 +468,7 @@ export class ToolGroupComponent extends Container {
       const branch = index === total - 1 ? "└" : "├";
       const continuation = index === total - 1 ? "  " : "│ ";
       if (!this._expanded) {
-        const summary = toolSummary(tool);
+        const summary = summaryOf(tool);
         lines.push(
           truncateToWidth(
             ` ${fg("dim", branch)} ${fg(color, statusIcon(toolStatus))} ${fg("toolTitle", summary.main)}${fg("dim", summary.detail)}`,
@@ -453,7 +484,7 @@ export class ToolGroupComponent extends Container {
           .replace(/^ +/, "")
           .replace(/^((?:\x1b\[[0-?]*[ -/]*[@-~])*) +/, "$1");
       }
-      const childLines = rendered.length ? rendered : [toolSummary(tool).main];
+      const childLines = rendered.length ? rendered : [summaryOf(tool).main];
       for (let lineIndex = 0; lineIndex < childLines.length; lineIndex++) {
         const content =
           // 续行只剥外层 Box 的 1 格 left pad，保留 Input/Output 相对缩进

@@ -11,6 +11,7 @@ import { tokenize, filterStopwords, cosineSimilarity, vectorFromJson, type Spars
 import { expandQuery, normalizeTerm } from "./synonyms.ts";
 import type { Scope } from "./schema.ts";
 import { scopeFilter, scoreScopeBoost } from "./query-scope.ts";
+import { FactTermCache } from "./term-cache.ts";
 
 /** FTS5 stopwords. */
 const FTS_STOPWORDS: Record<string, true> = {
@@ -126,6 +127,13 @@ export interface RetrieverOptions {
   tfidfWeight?: number;
   /** Temporal decay half-life in days. 0 = disabled. Default: 0. */
   temporalDecayHalfLife?: number;
+  /**
+   * Shared canonical-term cache for the substring fallback path. Stores pass
+   * their own write-through cache so fallback searches stop re-tokenizing
+   * every candidate fact per call; standalone retrievers (tests) get a
+   * private instance.
+   */
+  termCache?: FactTermCache;
 }
 
 export interface RetrievalQueryOptions {
@@ -142,6 +150,8 @@ export class FactRetriever {
   readonly jaccardWeight: number;
   readonly tfidfWeight: number;
   readonly temporalDecayHalfLife: number;
+  /** Shared with the owning MemoryStore (write-through) or private for standalone use. */
+  readonly termCache: FactTermCache;
 
   constructor(db: Database, opts: RetrieverOptions = {}) {
     this.db = db;
@@ -149,6 +159,7 @@ export class FactRetriever {
     this.jaccardWeight = opts.jaccardWeight ?? 0.3;
     this.tfidfWeight = opts.tfidfWeight ?? 0.3;
     this.temporalDecayHalfLife = opts.temporalDecayHalfLife ?? 0;
+    this.termCache = opts.termCache ?? new FactTermCache();
   }
 
   /**
@@ -482,9 +493,10 @@ export class FactRetriever {
 
     const scored: ScoredFact[] = [];
     for (const fact of rows) {
-      const raw = `${fact.content} ${fact.tags}`;
-      const content = raw.toLowerCase();
-      const canonical = new Set(filterStopwords(tokenize(raw)).map(normalizeTerm));
+      // Cached canonical terms + lowercased text (content+tags) — see
+      // FactTermCache: the tokenize/normalize pass is the dominant fallback
+      // cost and is memoized per fact. Scoring semantics are unchanged.
+      const { text: content, canonical } = this.termCache.get(fact.fact_id, fact.content, fact.tags);
       let score = 0;
       let negated = false;
       for (const term of canonicalTerms) {

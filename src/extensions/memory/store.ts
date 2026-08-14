@@ -31,6 +31,7 @@ import { tokenize, filterStopwords, computeTfIdf, vectorToJson } from "./tfidf.t
 import { FactRetriever } from "./retrieval.ts";
 import { normalizeTerm, expandQuery } from "./synonyms.ts";
 import { projectScopeKey } from "./query-scope.ts";
+import { FactTermCache } from "./term-cache.ts";
 
 /**
  * Distinguish real corruption (backup-and-rebuild) from transient open
@@ -154,6 +155,13 @@ export class MemoryStore {
   recoveryNotice: string | null = null;
   /** Throttle map for retrieval_count bumps: fact_id -> last bump epoch ms. */
   private readonly _lastBump = new Map<number, number>();
+  /**
+   * Shared canonical-term cache for the substring fallback retrieval paths.
+   * Write-through invalidated on add/update/remove/clear; shared with every
+   * FactRetriever created via retriever() so fallback searches stop paying
+   * the full 500-row regex re-tokenization per call.
+   */
+  readonly termCache = new FactTermCache();
 
   constructor(dbPath: string, opts: { defaultTrust?: number; temporalDecayHalfLifeDays?: number } = {}) {
     this.dbPath = dbPath;
@@ -404,6 +412,10 @@ export class MemoryStore {
       // Post-insert: compute TF-IDF vector
       this._computeTfIdf(factId, trimmed);
 
+      // New row has no cached term entry, but invalidating keeps the
+      // write-through invariant unconditional.
+      this.termCache.invalidate(factId);
+
       return factId;
     });
     return runAdd();
@@ -454,12 +466,17 @@ export class MemoryStore {
     });
     runUpdate();
 
+    // Content, tags, or trust changed — drop the cached term entry so the
+    // next fallback search recomputes against the updated row.
+    this.termCache.invalidate(fact_id);
+
     return true;
   }
 
   remove(fact_id: number): boolean {
     // fact_entities has ON DELETE CASCADE, so this cleans up automatically
     const res = this.db.query("DELETE FROM facts WHERE fact_id = ?").run(fact_id);
+    if (res.changes > 0) this.termCache.invalidate(fact_id);
     return res.changes > 0;
   }
 
@@ -782,16 +799,19 @@ export class MemoryStore {
     this.db.exec("DELETE FROM fact_entities");
     this.db.exec("DELETE FROM entities");
     this.db.exec("DELETE FROM facts");
+    this.termCache.invalidateAll();
   }
 
   /** Create a FactRetriever bound to this store's database. */
   retriever(opts?: { ftsWeight?: number; jaccardWeight?: number; tfidfWeight?: number }): FactRetriever {
     // Keep the hybrid retriever on the same temporal-decay schedule as the
     // FTS5 main path — otherwise related/reason/contradict would resurrect
-    // stale facts the search path ranks down.
+    // stale facts the search path ranks down. Shares this store's term cache
+    // so the retriever's fallback path stops re-tokenizing per call.
     return new FactRetriever(this.db, {
       ...opts,
       temporalDecayHalfLife: this.temporalDecayHalfLifeDays,
+      termCache: this.termCache,
     });
   }
 
@@ -884,12 +904,12 @@ export class MemoryStore {
 
     const scored = candidates
       .map((fact) => {
-        const raw = `${fact.content} ${fact.tags}`;
-        const content = raw.toLowerCase();
-        // Canonical term set: "TS" normalizes to "typescript", so a query for
-        // "typescript" recalls facts stored as "TS" (alias normalization was
-        // one-directional before: query side expanded, store side didn't).
-        const canonical = new Set(filterStopwords(tokenize(raw)).map(normalizeTerm));
+        // Cached canonical terms + lowercased text (content+tags): the
+        // tokenize/normalize pass is the dominant fallback cost and is
+        // fact-independent of the query — memoize it per fact (see
+        // FactTermCache). Scoring semantics are unchanged: exact canonical
+        // hit OR substring inclusion, negation guard, decay, trust.
+        const { text: content, canonical } = this.termCache.get(fact.fact_id, fact.content, fact.tags);
         let score = 0;
         let negatedHit = false;
         for (const token of tokens) {

@@ -30,7 +30,7 @@ import {
   READONLY_ACTIONS,
 } from "../src/extensions/lsp/executor.ts";
 import { ToolError } from "../src/extensions/errors.ts";
-import { isLspReadonlyToolCall, isLspWriteOrHighRiskToolCall, lspExtension, resolveSessionFilePath, waitForFreshDiagnostics } from "../src/extensions/lsp/index.ts";
+import { isLspReadonlyToolCall, isLspWriteOrHighRiskToolCall, lspExtension, resolveSessionFilePath, waitForFreshDiagnostics, __resetSlowServerTrackingForTests, resetSlowServerTracking } from "../src/extensions/lsp/index.ts";
 import {
   __checkInitBackoffForTests,
   __getUnsupportedServerCommandReasonForTests,
@@ -770,6 +770,7 @@ describe("LSP writethrough diagnostics freshness", () => {
   test("waitForFreshDiagnostics falls back to the deferred window only on timeout", async () => {
     const calls: number[] = [];
     const client = {
+      serverName: "test-server",
       waitForDiagnostics: async (_uri: string, ms: number, signal?: AbortSignal) => {
         calls.push(ms);
         if (calls.length === 1) return null; // inline window elapsed, no publish
@@ -780,6 +781,67 @@ describe("LSP writethrough diagnostics freshness", () => {
     const result = await waitForFreshDiagnostics(client as never, "file:///x");
     expect(calls).toEqual([500, 5000]);
     expect((result as Array<{ message: string }>)[0]!.message).toBe("late error");
+  });
+
+  test("a full deferred timeout marks the server slow; the next file gets a short window", async () => {
+    __resetSlowServerTrackingForTests();
+    const calls: number[] = [];
+    const client = {
+      serverName: "slow-server",
+      waitForDiagnostics: async (_uri: string, ms: number, signal?: AbortSignal) => {
+        calls.push(ms);
+        signal?.addEventListener("abort", () => {});
+        return null; // never publishes — stalls every window
+      },
+    };
+    // First file: full inline + full deferred (5s), both burn out.
+    const first = await waitForFreshDiagnostics(client as never, "file:///a.ts");
+    expect(first).toBeNull();
+    expect(calls).toEqual([500, 5000]);
+
+    // Second file on the same server: inline 500ms, then the SHORT deferred
+    // window instead of another 5s.
+    const second = await waitForFreshDiagnostics(client as never, "file:///b.ts");
+    expect(second).toBeNull();
+    expect(calls).toEqual([500, 5000, 500, 1000]);
+  });
+
+  test("slow-server marks are per-server and reset on session start", async () => {
+    __resetSlowServerTrackingForTests();
+    const calls: Array<Array<string | number>> = [];
+    const slowClient = {
+      serverName: "slow-server",
+      waitForDiagnostics: async (_uri: string, ms: number, signal?: AbortSignal) => {
+        calls.push(["slow", ms]);
+        signal?.addEventListener("abort", () => {});
+        return null;
+      },
+    };
+    const fastClient = {
+      serverName: "fast-server",
+      waitForDiagnostics: async (_uri: string, ms: number, signal?: AbortSignal) => {
+        calls.push(["fast", ms]);
+        signal?.addEventListener("abort", () => {});
+        return null;
+      },
+    };
+    // Slow server burns a full window once…
+    await waitForFreshDiagnostics(slowClient as never, "file:///a.ts");
+    expect(calls).toEqual([["slow", 500], ["slow", 5000]]);
+
+    // …a DIFFERENT server is unaffected (full 5s deferred)…
+    await waitForFreshDiagnostics(fastClient as never, "file:///b.ts");
+    expect(calls).toEqual([["slow", 500], ["slow", 5000], ["fast", 500], ["fast", 5000]]);
+
+    // …and the slow server itself gets the short window on its next file.
+    await waitForFreshDiagnostics(slowClient as never, "file:///c.ts");
+    expect(calls).toEqual([["slow", 500], ["slow", 5000], ["fast", 500], ["fast", 5000], ["slow", 500], ["slow", 1000]]);
+
+    // session_start resets: the slow server gets a full window again.
+    resetSlowServerTracking();
+    await waitForFreshDiagnostics(slowClient as never, "file:///d.ts");
+    expect(calls.at(-2)).toEqual(["slow", 500]);
+    expect(calls.at(-1)).toEqual(["slow", 5000]);
   });
 
   test("waitForDiagnostics returns post-didSave publishes, never the stale cache", async () => {

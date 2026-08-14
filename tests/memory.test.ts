@@ -28,6 +28,7 @@ import { ProviderManager } from "../src/extensions/memory/provider-manager.ts";
 import { memoryExtension } from "../src/extensions/memory/index.ts";
 import { systemPromptBlock } from "../src/extensions/memory/prompt.ts";
 import { formatRecallBlock, RECALL_BUDGET_CHARS } from "../src/extensions/memory/prompt.ts";
+import { FactTermCache } from "../src/extensions/memory/term-cache.ts";
 
 let dbPath: string;
 let store: MemoryStore;
@@ -2122,4 +2123,67 @@ test("renderMemoryResultText passes non-JSON results through unchanged", () => {
   ) as unknown as { render: (w: number) => string[] };
   const rendered = text.render(120).join("\n");
   expect(rendered).toContain("hello memory");
+});
+
+// --- FactTermCache (fallback term memoization) ------------------------------
+
+test("FactTermCache memoizes canonical terms and invalidates per fact", () => {
+  const cache = new FactTermCache();
+  const entry = cache.get(1, "prefer TS for type safety", "workflow");
+  expect(entry.canonical.has("typescript")).toBe(true); // TS → typescript alias applied
+  expect(entry.text).toContain("prefer ts for type safety");
+  expect(cache.size).toBe(1);
+
+  // Second get is memoized — same object identity, no recompute.
+  expect(cache.get(1, "prefer TS for type safety", "workflow")).toBe(entry);
+
+  cache.get(2, "bun runtime", "");
+  expect(cache.size).toBe(2);
+
+  cache.invalidate(1);
+  expect(cache.size).toBe(1);
+  cache.invalidateAll();
+  expect(cache.size).toBe(0);
+});
+
+test("fallback search reflects content updates (term cache invalidation)", () => {
+  const id = store.add("我们用bun做构建", {});
+  // 纯中文查询词：FTS5 run tokenizer 不命中，强制走 substring fallback 并填充 term cache。
+  expect(store.search("构建", { minTrust: 0 }).map((h) => h.fact_id)).toContain(id);
+  expect(store.termCache.size).toBeGreaterThan(0);
+
+  store.update(id, { content: "我们用rust做部署" });
+  // update 必须失效缓存：旧词不再命中，新词命中。
+  expect(store.search("构建", { minTrust: 0 }).map((h) => h.fact_id)).not.toContain(id);
+  expect(store.search("部署", { minTrust: 0 }).map((h) => h.fact_id)).toContain(id);
+});
+
+test("fallback search reflects tag updates (term cache invalidation)", () => {
+  const id = store.add("我们使用bun构建", { tags: "tools" });
+  store.search("数据库", { minTrust: 0 }); // 填充缓存
+  store.update(id, { tags: "database" });
+  // tags 变化后 canonical 集重算：新 tag 的规范化词（数据库→database）命中。
+  const hits = store.search("数据库", { minTrust: 0 });
+  expect(hits.map((h) => h.fact_id)).toContain(id);
+});
+
+test("fallback search drops removed facts (term cache invalidation)", () => {
+  const id = store.add("我们用bun做构建", {});
+  expect(store.search("构建", { minTrust: 0 }).map((h) => h.fact_id)).toContain(id);
+  expect(store.termCache.size).toBeGreaterThan(0);
+  expect(store.remove(id)).toBe(true);
+  expect(store.search("构建", { minTrust: 0 }).map((h) => h.fact_id)).not.toContain(id);
+  expect(store.termCache.size).toBe(0);
+});
+
+test("clear wipes the term cache", () => {
+  store.add("我们用bun做构建", {});
+  store.search("构建", { minTrust: 0 });
+  expect(store.termCache.size).toBeGreaterThan(0);
+  store.clear();
+  expect(store.termCache.size).toBe(0);
+});
+
+test("retriever shares the store's write-through term cache", () => {
+  expect(store.retriever().termCache).toBe(store.termCache);
 });

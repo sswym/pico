@@ -130,6 +130,7 @@ flowchart LR
 - **scope 隔离**：`global` 与 `project:<cwd>` 双 scope；所有读路径（search/probe/related/reason/list）统一经 `scopeFilter` 过滤；`contradict` 在整改前**漏加 scope 过滤**（跨项目事实泄漏，§4.4 已修复）。
 - **信任机制**：feedback ±0.05/-0.10 钳制 [0,1]；`correction_of` 惩罚原事实 -0.30 且新事实以 0.70 起步；检索排序乘信任分。
 - **时间衰减**：search 主路径（FTS5 SQL 与 substring fallback）与 FactRetriever 混合检索统一按 `updated_at` 乘半衰期衰减因子，默认 180 天（`settings.json` memory.temporalDecayHalfLifeDays 可覆盖，0 关闭）——旧事实降权但永不过滤；`/memory prune` 提供手动清理（trust<0.2 且从未检索）。
+- **中文 fallback 检索缓存**：FTS5 run-based tokenizer 对中文几乎不命中，每次 search/prefetch 未命中都走 500 行全量正则 tokenize（实测 500 条 ~15ms/次、随库线性增长且阻塞事件循环）。`FactTermCache`（`memory/term-cache.ts`）按 fact_id 缓存每条事实的规范化 canonical term 集 + 小写原文（content+tags），评分语义不变（canonical 命中 / 子串命中 / 否定降权 / 衰减 / 信任），单次检索降到 ~0.2ms（68x）；写路径（add/update/remove/clear）write-through 失效，`store.retriever()` 与 store 共享同一实例。
 - **会话生命周期沉淀**：`onSessionEnd` 写一条主题摘要 fact（source=session-summary，纯指令会话跳过）；`onPreCompress` 在上下文压缩丢弃前归档分支消息并返回 contribution 文本进压缩摘要。
 - **纠错检测**：`turn_end` 对用户消息跑 `CORRECTION_PATTERNS`，命中即写入 correction 类事实 + curated 笔记（截断 400 字符）。
 - **秘密扫描**：写前 `scanSecrets`（AWS/GitHub/SSH/Stripe/Google key 等模式），命中即拒绝入库；**读出侧**（recall 块）同样净化——含秘密模式的事实以 `[BLOCKED]` 占位进入 system prompt。
@@ -198,7 +199,7 @@ flowchart TD
 - 诊断管线（2026-08 第六轮）：`publishDiagnostics` 推送缓存 + 版本追踪（`waitForDiagnostics` 只认 ≥ 同步版本的 publish，丢弃 didSave 后到达的旧版本竞态）；服务器声明 `diagnosticProvider`（静态能力或 `client/registerCapability` 动态注册）时优先 `textDocument/diagnostic` 拉取快照，失败回退推送等待。
 - 服务器请求应答（2026-08 第六轮）：`workspace/configuration` 从 `ServerConfig.settings` 按 section 服务 + 初始化后 `workspace/didChangeConfiguration` 推送（此前 settings 解析后从未送达，属死配置）；`client/registerCapability`/`unregisterCapability` 动态追踪；`workspace/applyEdit` 仍应答 `{applied:false}` 拒绝应用。
 - `formatOnWrite` 受 `PICO_ALLOW_LSP_FORMAT_ON_WRITE` 双重管控（policy + 执行点）。
-- 已知残留：慢服务器多文件并发诊断仍无合并聚合（单文件窗口 + 缓存回退）；prewarm 已改用 `guessLanguageId` 规范映射（整改后）。
+- 已知残留：慢服务器多文件并发诊断窗口已合并缓解——完整 deferred 窗口（5s）超时后标记该服务器 slow，同服务器后续文件的 deferred 预算降为 1s（回退路径与超时一致：走缓存诊断），避免 N 文件串行 N×5.5s 等待；受上游 `emitToolResult` 逐工具串行派发约束，跨文件的 didSave 并行发出仍不可行（需 mux/批缓冲层，超出范围）；prewarm 已改用 `guessLanguageId` 规范映射（整改后）。
 
 ### 3.7 安全策略（policy）
 
@@ -755,7 +756,7 @@ flowchart TD
 
 ### 5.3 待优化项与迭代规划（建议排序）
 
-1. ~~事件驱动 LSP 诊断~~（L5/L13 已修：第六轮实现版本追踪 + 拉取式诊断 + 事件驱动等待）；慢服务器多文件并发诊断合并仍待迭代；
+1. ~~事件驱动 LSP 诊断~~（L5/L13 已修：第六轮实现版本追踪 + 拉取式诊断 + 事件驱动等待）；慢服务器多文件诊断等待已缓解（完整窗口超时 → slow 标记 → 同服务器后续文件 1s 窗口，回退路径不变）；跨文件 didSave 并行发出仍待迭代（受上游 tool_result 串行派发约束，需批缓冲层）；
 2. ~~记忆归档与衰减~~（L12 已落地：时间衰减 + `/memory prune`；自动合并/遗忘仍可迭代）；
 3. **acceptance 命名配对**（L3）——避免隐式下标契约；
 4. **子代理输出上限**（L6）——stderr 截断、sessionMessages 封顶；

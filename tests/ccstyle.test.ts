@@ -14,6 +14,8 @@ import {
 import {
   ToolGroupComponent,
   __resetCcstyleGroupingForTests,
+  __resetToolSummaryCacheForTests,
+  __toolSummaryCacheSize,
   asTool,
   installToolGrouping,
 } from "../src/extensions/ccstyle/grouping.ts";
@@ -103,6 +105,7 @@ function contentBoxOf(tool: ToolExecutionComponent): { paddingX: number; padding
 beforeEach(() => {
   __resetCcstyleGroupingForTests();
   __resetCcstyleRenderForTests();
+  __resetToolSummaryCacheForTests();
   toolId = 0;
 });
 
@@ -113,6 +116,7 @@ initTheme();
 afterEach(() => {
   __resetCcstyleGroupingForTests();
   __resetCcstyleRenderForTests();
+  __resetToolSummaryCacheForTests();
 });
 
 // ── grouping ─────────────────────────────────────────────────────────────────
@@ -219,6 +223,37 @@ test("collapsed group renders a header with status counts and per-tool summaries
   expect(lines).toContain("Bash npm test");
   expect(lines).toContain("Bash bun build");
   expect(lines).toContain("show more");
+});
+
+test("group render memoizes per-tool summaries across animation frames", () => {
+  const hooks = installToolGrouping(() => true);
+  hooks.setTheme(stubTheme);
+  const parent = new Container();
+  const first = makeTool("bash", { command: "npm test" });
+  const second = makeTool("read", { path: "src/a.ts" });
+  parent.addChild(first);
+  parent.addChild(second);
+  settle(first);
+  settle(second);
+  const group = parent.children[0] as ToolGroupComponent;
+
+  const firstRender = group.render(100).join("\n");
+  expect(firstRender).toContain("Bash npm test");
+  expect(firstRender).toContain("Read src/a.ts");
+  // One cached summary per grouped tool.
+  expect(__toolSummaryCacheSize()).toBe(2);
+
+  // Re-render (the 200ms pending-animation path) reuses the cache: same
+  // output, no additional computed entries.
+  const secondRender = group.render(100).join("\n");
+  expect(secondRender).toBe(firstRender);
+  expect(__toolSummaryCacheSize()).toBe(2);
+
+  // A new tool gets its own entry; existing ones stay cached.
+  parent.addChild(makeTool("grep", { pattern: "foo" }));
+  const thirdRender = group.render(100).join("\n");
+  expect(thirdRender).toContain("Grep \"foo\"");
+  expect(__toolSummaryCacheSize()).toBe(3);
 });
 
 test("expanded group renders each tool's full body", () => {

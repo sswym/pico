@@ -133,24 +133,72 @@ function describeServerStartFailures(state: LspManagerState, filePath: string): 
 }
 
 /**
+ * Slow-server tracking for deferred diagnostic waits.
+ *
+ * The writethrough path waits per file: 500ms inline, then a 5s deferred
+ * catch-up window. With a slow (or stalled) language server, a turn that
+ * writes N files pays N × ~5.5s serially — upstream dispatches tool_result
+ * events one at a time, so the windows cannot overlap.
+ *
+ * When a full 5s deferred window elapses without ANY publish, the server is
+ * almost certainly not going to answer faster for the next file. We record
+ * that and give subsequent files on the SAME server a short 1s window
+ * instead of another full 5s. The fallback is identical either way — the
+ * caller already resolves `null` to the cached diagnostics — so the only
+ * change is how long we wait before taking it. Reset on session_start so a
+ * restarted server starts fresh.
+ */
+
+/** A server that burned a full deferred window is "slow" for this long. */
+const SLOW_SERVER_WINDOW_MS = 30_000;
+/** Deferred budget for a known-slow server (vs the normal 5s). */
+const SLOW_SERVER_DEFERRED_MS = 1_000;
+
+const slowServerTimeouts = new Map<string, number>();
+
+/** Test-only: clear slow-server state between tests. */
+export function __resetSlowServerTrackingForTests(): void {
+  slowServerTimeouts.clear();
+}
+
+/** Reset slow-server state on session start. */
+export function resetSlowServerTracking(): void {
+  slowServerTimeouts.clear();
+}
+
+/**
  * Wait for post-save diagnostics: a short inline window, then a bounded
  * deferred window only when the inline window produced nothing (timed out).
  *
  * An explicit empty publish (`[]`) means the server responded — the turn must
  * not stall for a second publish that will never come. `null` means the
  * inline window elapsed without any publish (slow server), which is the only
- * case worth the deferred wait.
+ * case worth the deferred wait. Once a full deferred window burns with no
+ * publish, the server is marked slow and subsequent files get a short
+ * deferred budget instead — the null fallback (cached diagnostics) is
+ * identical either way.
  */
 export async function waitForFreshDiagnostics(
-  client: Pick<LspClient, "waitForDiagnostics">,
+  client: Pick<LspClient, "waitForDiagnostics" | "serverName">,
   uri: string,
   inlineMs = 500,
   deferredMs = 5_000,
 ): Promise<Diagnostic[] | null> {
   const diags = await client.waitForDiagnostics(uri, inlineMs);
   if (diags !== null) return diags;
-  const deferredSignal = AbortSignal.timeout(deferredMs);
-  return client.waitForDiagnostics(uri, deferredMs, deferredSignal);
+
+  const serverKey = client.serverName ?? "";
+  const lastFullTimeout = slowServerTimeouts.get(serverKey) ?? 0;
+  const knownSlow = Date.now() - lastFullTimeout < SLOW_SERVER_WINDOW_MS;
+  const budget = knownSlow ? SLOW_SERVER_DEFERRED_MS : deferredMs;
+
+  const deferredSignal = AbortSignal.timeout(budget);
+  const result = await client.waitForDiagnostics(uri, budget, deferredSignal);
+  if (result === null && !knownSlow) {
+    // Burned the full window with no publish — remember it for the next file.
+    slowServerTimeouts.set(serverKey, Date.now());
+  }
+  return result;
 }
 
 export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
@@ -629,6 +677,9 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
   pi.on("session_start", async (_event, ctx) => {
     ledger.clear();
+    // A new session may start a fresh server — clear the slow-server marker
+    // so a restarted process gets full deferred windows again.
+    resetSlowServerTracking();
     // A project LSP config that is silently ignored looks like a broken
     // tool — tell the user the safety switch is off and how to enable it
     // (mirrors the project MCP pattern).
