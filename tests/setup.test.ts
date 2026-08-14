@@ -1122,3 +1122,42 @@ test("integrations section can disable ponytail", async () => {
     shell,
   );
 });
+
+test("integrations section enables and disables evolution", async () => {
+  const { shell } = fakeShell();
+  await withSection(
+    "integrations",
+    // codegraph/rtk/ponytail declined, ponytail quiet declined, evolution enabled
+    { yesNo: [false, false, false, false, true] },
+    ({ settings }) => {
+      expect(settings().evolution).toEqual({ enabled: true });
+    },
+    undefined,
+    shell,
+  );
+  await withSection(
+    "integrations",
+    // codegraph/rtk/ponytail declined, ponytail quiet declined, evolution declined
+    { yesNo: [false, false, false, false, false] },
+    ({ settings }) => {
+      expect(settings().evolution).toEqual({ enabled: false });
+    },
+    undefined,
+    shell,
+  );
+});
+
+test("integrations summary reports evolution state", async () => {
+  const { shell } = fakeShell();
+  await withSection(
+    "integrations",
+    // codegraph/rtk/ponytail declined, ponytail quiet declined, evolution enabled
+    { yesNo: [false, false, false, false, true] },
+    ({ settings }) => {
+      const summary = buildSetupSummary(settings(), {}, "en");
+      expect(summary).toContain("evolution=on");
+    },
+    undefined,
+    shell,
+  );
+});

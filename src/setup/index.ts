@@ -327,6 +327,7 @@ const TEXT = {
     ponytailMode: "Ponytail intensity level",
     ponytailModeChoices: ["off (disabled)", "lite", "full (recommended)", "ultra"],
     ponytailQuiet: "Silence the Ponytail startup toast?",
+    evolutionEnable: "Enable self-evolution? (background-review sessions and distill reusable workflows into ~/.pico/agent/skills/; opt-in, default off)",
     installSkipped: "install skipped; install the CLI manually before using this integration",
     installFailed: "install failed",
     envHeader: "Environment",
@@ -427,6 +428,7 @@ const TEXT = {
     ponytailMode: "Ponytail 强度级别",
     ponytailModeChoices: ["off（关闭）", "lite", "full（推荐）", "ultra"],
     ponytailQuiet: "静默 Ponytail 启动提示？",
+    evolutionEnable: "启用自进化？（后台审查会话，把可复用流程沉淀为 ~/.pico/agent/skills/ 下的技能；默认关闭）",
     installSkipped: "安装已跳过；使用该集成前请手动安装 CLI",
     installFailed: "安装失败",
     envHeader: "环境变量",
@@ -1303,6 +1305,10 @@ async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo, shell: S
   ponytail.quietStartup = await prompt.yesNo(text.ponytailQuiet, booleanSetting(ponytail.quietStartup, false));
   settings.ponytail = ponytail;
 
+  const evolution = objectSetting(settings.evolution);
+  evolution.enabled = await prompt.yesNo(text.evolutionEnable, booleanSetting(evolution.enabled, false));
+  settings.evolution = evolution;
+
   integrations.codegraph = codegraph;
   integrations.rtk = rtk;
   settings.integrations = integrations;
@@ -1448,6 +1454,8 @@ function summarizeIntegrationsSection(settings: JsonObject): string | undefined 
   }
   const ponytail = objectSetting(settings.ponytail);
   if (typeof ponytail.defaultMode === "string") bits.push(`ponytail=${ponytail.defaultMode}`);
+  const evolution = objectSetting(settings.evolution);
+  if (typeof evolution.enabled === "boolean") bits.push(`evolution=${evolution.enabled ? "on" : "off"}`);
   return bits.length > 0 ? bits.join(", ") : undefined;
 }
 
@@ -1477,7 +1485,7 @@ export function applyNonInteractiveDefaults(): void {
 
 export function resetSetupConfig(): void {
   const settings = readJson(picoSettingsPath()) as Settings;
-  for (const key of ["defaultProvider", "defaultModel", "defaultThinkingLevel", "language", "auxiliary", "safety", "memory", "integrations", "hooks", "mcpServers", "lsp", "subagent", "automode"]) {
+  for (const key of ["defaultProvider", "defaultModel", "defaultThinkingLevel", "language", "auxiliary", "safety", "memory", "integrations", "hooks", "mcpServers", "lsp", "subagent", "automode", "evolution"]) {
     delete settings[key];
   }
   const env = readSettingsEnv(settings);

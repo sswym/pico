@@ -1,8 +1,8 @@
 # pico
 
-**带长期记忆、子代理委派、任务追踪、规划模式、网页搜索/抓取、MCP 服务器集成与 LSP 代码智能的 Vibe 编码代理。**
+**带长期记忆、子代理委派、任务追踪、规划模式、网页搜索/抓取、MCP 服务器集成、LSP 代码智能与自进化技能沉淀的 Vibe 编码代理。**
 
-基于 `@earendil-works/pi-coding-agent` 的薄封装：上游提供 agent loop、工具运行时与会话管理，pico 通过 29 个扩展注入产品化能力。技术栈：Bun + TypeScript，零外部运行时依赖。
+基于 `@earendil-works/pi-coding-agent` 的薄封装：上游提供 agent loop、工具运行时与会话管理，pico 通过 30 个扩展注入产品化能力。技术栈：Bun + TypeScript，零外部运行时依赖。
 
 ## 快速开始
 
@@ -25,6 +25,7 @@ bun run bin/pico.ts --help     # 查看所有上游标志
 | 能力 | 说明 |
 | --- | --- |
 | 长期记忆 | SQLite + 全文检索 + 语义相似度的事实库，自动提取偏好/决策/纠错，跨会话回忆；另有人工策展笔记（MEMORY.md / USER.md） |
+| 自进化 | 会话末后台审查（默认 6 回合触发、每会话 ≤2 次），把可复用方法论自动沉淀为 `~/.pico/agent/skills/` 下的技能，下一会话生效（默认关闭：`evolution.enabled` / `PICO_EVOLUTION_ENABLED`；详见 `docs/evolution-design.md`） |
 | 子代理 | 16 个内置角色（侦察/规划/实现/审查/咨询/研究等），支持单发、并行（≤8，并发 4，可配置）、链式三种编排，可配置验收门、回退模型、结构化输出 schema 与请求预算 |
 | 任务清单 | 会话级 todoWrite 工具 + 实时面板（F7 折叠），多步任务进度可视 |
 | 规划模式 | 先只读调研、提交计划、用户批准后才解锁写工具 |

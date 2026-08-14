@@ -36,7 +36,7 @@
 | `pico setup <section>` | 只跑指定节（共 10 节：`model` `tools` `safety` `ui` `memory` `lsp` `hooks` `mcp` `integrations` `env`）；显式指定时关闭"已配置跳过门"，总是重跑 |
 | `pico setup --quick` | 已配置的节只打印摘要并跳过 |
 | `pico setup --reconfigure` | 所有节强制重跑，高级选项门槛默认"是" |
-| `pico setup --reset` | 删除向导管理的配置（settings.json 的 13 个键 + 12 个托管 env 键，及 lsp.json/hooks.json/mcp-servers.json/subagent.json/automode.json 遗留文件）；不删 models.json 自定义提供商 |
+| `pico setup --reset` | 删除向导管理的配置（settings.json 的 14 个键 + 12 个托管 env 键，及 lsp.json/hooks.json/mcp-servers.json/subagent.json/automode.json 遗留文件）；不删 models.json 自定义提供商 |
 | `pico setup --non-interactive` | 非 TTY 路径：写安全默认值 + 导入既有环境变量，打印汇总后退出 |
 
 非 TTY 且未加 `--non-interactive` 时报错退出；settings.json/models.json 损坏时拒绝运行（防止覆盖丢失的 API key）。退出码：0 成功、1 参数/未知 section 错误、130 Ctrl+C 取消。
@@ -59,7 +59,7 @@
 | `~/.pico/agent/models.json` | 自定义提供商 |
 | ~~`~/.pico/hooks.json`~~ 等 | 已并入 settings.json 命名空间：`hooks`（事件 + 命令 + 可选 tool/blocking）、`lsp`（formatOnWrite 默认 false、idleTimeoutMs 默认 600000）、`mcpServers`（mcp、integrations 的 CodeGraph MCP）。旧独立文件（`~/.pico/hooks.json`、`~/.pico/lsp.json`、`~/.pico/mcp-servers.json`、`~/.pico/subagent.json`、`~/.pico/agent/automode.json`）在 `pico setup` 运行时自动迁入 settings.json 对应键并删除；未迁移时读取侧自动回退旧文件，零破坏 |
 
-不写 AGENTS.md、不初始化记忆库。integrations 节可选用 `curl | sh` 安装 codegraph/rtk CLI、对当前项目执行 `codegraph init` 建索引、注册 CodeGraph MCP。
+不写 AGENTS.md、不初始化记忆库。integrations 节可选用 `curl | sh` 安装 codegraph/rtk CLI、对当前项目执行 `codegraph init` 建索引、注册 CodeGraph MCP，并可开关自进化（evolution）扩展。
 
 ---
 
@@ -432,6 +432,18 @@ subagent(chain=[
 | 显式注入 | `--skill <path>` | 可重复；接受目录或单个 `SKILL.md` 文件 |
 
 同名冲突 **first-wins：user > project > `--skill` 路径**。`--no-skills`（`-ns`）关闭自动发现，但显式 `--skill` 路径仍会加载。
+
+---
+
+## 11.5 自进化（`evolution` 扩展）
+
+会话末自动沉淀技能：`agent_end` 时若满足条件（启用 + 新鲜回合 ≥ `reviewEveryTurns`（默认 6）+ 本会话审查 < `maxReviewsPerSession`（默认 2））则异步发起一次后台审查，由审查模型（默认跟随主模型，可用 `evolution.provider/model` 或 `PICO_EVOLUTION_PROVIDER`/`PICO_EVOLUTION_MODEL` 覆盖）判断会话中是否有值得沉淀的类级可复用方法论，输出严格 JSON，经安全校验后写入 `~/.pico/agent/skills/`，下一会话自动生效。简单问答/一次性任务通常不产出技能（宁缺毋滥）。
+
+**开启**：`pico setup` 的 integrations 节、或 settings.json `"evolution": { "enabled": true }`、或环境变量 `PICO_EVOLUTION_ENABLED=1`。**默认关闭**。
+
+**安全与保护**：只写 `.pico-evolved.json` 清单内（pico 自产）的技能，用户手写技能永不触碰；update 前比对磁盘 mtime（用户改过即跳过）；输出经注入特征扫描（内置模式 + `PICO_EVOLUTION_DENY` 门禁关键词）；技能名消毒、大小上限（64KB）、description 截断（200 字符）。审查输入标注不可信数据边界，审查内容只经 JSON 落盘。设计文档：`docs/evolution-design.md`。
+
+**观察**：`/doctor` 的 `Evolution:` 段展示生效状态（enabled/模型/阈值/本次会话审查次数/已沉淀技能）。
 
 ---
 

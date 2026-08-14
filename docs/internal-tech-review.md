@@ -702,6 +702,17 @@ flowchart TD
 
 **v1 裁剪项**（相对上游）：无 rich diff 词级高亮（edit/write 为行级着色）、无 hover 高亮（1003 all-motion 在 tmux 下不可靠）、无 show-more 全量预览、无回到底部按钮、无 compact 回合摘要、无 regular 模式鼠标（仅 fullscreen）。
 
+### 4.16 第十六轮整改（2026-08-14，自进化闭环 evolution 扩展，1321 用例全绿）
+
+**第 30 个扩展 `evolution`**（`src/extensions/evolution/`，phase: runtime）——会话末自动沉淀技能（经验→技能闭环）。骨架抄 hermes（回合末异步后台审查 + 类级技能纪律），机制抄 oh-my-pi（严格 JSON 输出 + 隔离目录/消毒/上限落盘）；设计文档 `docs/evolution-design.md`（含自审记录与实现期真实场景测试记录）。
+
+- **触发**：`agent_end` 回合末检查（启用 + 新鲜回合 ≥ `reviewEveryTurns` 默认 6 + 本会话 < `maxReviewsPerSession` 默认 2 + 无 in-flight）→ fire-and-forget 异步审查（不阻塞主响应）；`session_shutdown` 交互模式限时等 in-flight（默认 20s，非交互/reload 不等）；失败也推进水位（同 hermes 清零语义，防模型不可用时每回合重试）。
+- **审查**：辅助模型直调（`ctx.model` 默认 / `evolution.provider|model` / env 覆盖，vision 同款 `modelRegistry + completeSimple`）；输入 30K 字符摘录 + 不可信数据边界标注（防网页/MCP 内容注入审查）；输出严格 JSON，`stopReason=length` 整体丢弃；`maxTokens 8192` 对齐 3000 字符 content 约束。
+- **落盘**（`apply.ts` 六重校验）：技能名消毒（kebab 3–40）、路径穿越拦截、注入特征 + `PICO_EVOLUTION_DENY` 门禁、64KB 上限、description 200 字符截断、content 不得自带 frontmatter（apply 生成 `x-pico-evolved: true` 标记，上游 yaml 解析容忍未知字段已验证）；`.pico-evolved.json` 清单记录自产技能——用户手写技能永不触碰（create 撞名拒绝、update 仅清单内）、update 前 mtime 比对（用户改过即跳过）。
+- **踩坑**：① 审查模型自然产出 ~500 字符 description 触发 200 上限导致整条 create 静默拒写——改为截断而非拒绝（索引展示本就截断，超长无害）；② 写入后立即 update 被 mtime 同毫秒误判 user-modified（ISO 毫秒截断 vs 文件 mtime 浮点）——清单 `updatedAt` 改存写入后文件 mtime + 1ms 容差；③ -p 模式实测确认 `await main()` 自然退出时 Bun 等待 pending fetch，回合末触发的审查会完成落盘；空 JSON（模型判断无技能）是设计预期（宁缺毋滥），三次真实会话中两次空结果、一次产出 `debug-mismatched-runtime` 方法论技能。
+- **配置**：`evolution.enabled`（默认关）+ `provider/model` + `reviewEveryTurns` + `maxReviewsPerSession` + `maxSkillBytes`；env `PICO_EVOLUTION_ENABLED/PROVIDER/MODEL/DENY/REVIEW_EVERY_TURNS` 全部登记 envmap；/doctor 新增 `Evolution:` 段；`pico setup` integrations 节可开关 + summary 展示；`setup --reset` 键列表含 evolution。
+- **测试**：`tests/evolution.test.ts`（fakePi 集成：触发/落盘/频率限制/回合阈值/失败推进/shutdown 等待/resume 去重）+ `evolution-apply.test.ts`（消毒/注入/用户技能保护/mtime）+ `evolution-review.test.ts`（提示词/JSON 容错）共 35 条；setup 新增 3 条（启用/禁用/summary）。真实场景（pico -p + deepseek-v4-flash）验证链路全通。
+
 ## 5. 当前版本现状与已知局限
 
 ### 5.1 现状
@@ -754,6 +765,8 @@ flowchart TD
 | L27 | **ccstyle 无 rich diff 词级高亮**（edit/write diff 为行级着色，无 intra-line 反色）；无 hover 高亮（1003 all-motion 在 tmux 下不可靠）、无 show-more 全量预览、无回到底部按钮 | 展开 diff 可读性略逊上游、无 hover 提示 | v1 裁剪项（§4.15），可后续补 |
 | L28 | **ccstyle 全接管后 pico 定制工具折叠摘要统一为单行**：subagent 进度列表、memory 结果细节、todo 列表等定制多行反馈移入展开态（Input/Output） | 折叠态信息密度下降 | 全接管取舍；如需可单点放回定制渲染器 |
 | L29 | **`/ccstyle` 切换不重渲染已挂载工具**：分组/渲染补丁只对新挂载的工具生效，on/off 切换后旧工具卡保持原视图直至下次 updateDisplay | 切换后视觉不一致（新会话正常） | 扩展 API 无 TUI 句柄触发重渲染；v1 限制 |
+| L30 | **evolution 技能库无 curator 整理**：无自动合并重叠技能/淘汰长期未用技能（hermes curator 对应物）；技能只增不整理 | 技能库可能缓慢膨胀 | Phase 2 规划（见 docs/evolution-design.md §9）；当前靠审查纪律（类级技能、create≤1/会话）与手动清理 |
+| L31 | **evolution 审查质量依赖模型判断**：审查模型对"可复用方法论"的判定影响沉淀密度；技能内容未经人工审阅直接进入下一会话系统提示词 | 低质/重复技能可能沉淀 | 默认关闭 + 注入特征门禁 + 用户可随时删除技能/清清单（`/doctor` Evolution 段可见全量）；如不满意可换更强审查模型 |
 
 ### 5.3 待优化项与迭代规划（建议排序）
 
