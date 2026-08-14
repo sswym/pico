@@ -1176,3 +1176,33 @@ test("/memory command handler surfaces a pico.memory custom message", async () =
 
   await pi.handlers["session_shutdown"]![0]!({ reason: "quit" }, {});
 });
+
+test("memory.retrievalFrequencyWeight setting flows to the builtin store", () => {
+  const env = makeEnv();
+  try {
+    mkdirSync(join(env.home, "agent"), { recursive: true });
+    writeFileSync(
+      join(env.home, "agent", "settings.json"),
+      JSON.stringify({ memory: { retrievalFrequencyWeight: 0.2 } }),
+    );
+    const manager = new ProviderManager({ backend: "builtin" });
+    const provider = manager.provider as BuiltinMemoryProvider;
+    expect((provider.getRawStore() as MemoryStore).retrievalFrequencyWeight).toBe(0.2);
+  } finally {
+    env.restore();
+  }
+});
+
+test("builtin store defaults retrieval-frequency weight to 0.05", () => {
+  const env = makeEnv();
+  try {
+    mkdirSync(join(env.home, "agent"), { recursive: true });
+    // No memory section: the factory falls back to the store default.
+    writeFileSync(join(env.home, "agent", "settings.json"), JSON.stringify({}));
+    const manager = new ProviderManager({ backend: "builtin" });
+    const provider = manager.provider as BuiltinMemoryProvider;
+    expect((provider.getRawStore() as MemoryStore).retrievalFrequencyWeight).toBe(0.05);
+  } finally {
+    env.restore();
+  }
+});

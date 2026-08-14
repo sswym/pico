@@ -131,6 +131,7 @@ flowchart LR
 - **信任机制**：feedback ±0.05/-0.10 钳制 [0,1]；`correction_of` 惩罚原事实 -0.30 且新事实以 0.70 起步；检索排序乘信任分。
 - **时间衰减**：search 主路径（FTS5 SQL 与 substring fallback）与 FactRetriever 混合检索统一按 `updated_at` 乘半衰期衰减因子，默认 180 天（`settings.json` memory.temporalDecayHalfLifeDays 可覆盖，0 关闭）——旧事实降权但永不过滤；`/memory prune` 提供手动清理（trust<0.2 且从未检索）。
 - **中文 fallback 检索缓存**：FTS5 run-based tokenizer 对中文几乎不命中，每次 search/prefetch 未命中都走 500 行全量正则 tokenize（实测 500 条 ~15ms/次、随库线性增长且阻塞事件循环）。`FactTermCache`（`memory/term-cache.ts`）按 fact_id 缓存每条事实的规范化 canonical term 集 + 小写原文（content+tags），评分语义不变（canonical 命中 / 子串命中 / 否定降权 / 衰减 / 信任），单次检索降到 ~0.2ms（68x）；写路径（add/update/remove/clear）write-through 失效，`store.retriever()` 与 store 共享同一实例。
+- **使用频率加权（间隔重复信号）**：排序分 × `1 + retrievalFrequencyWeight × min(retrieval_count, 10)`（默认权重 0.05，`settings.json` memory.retrievalFrequencyWeight 可覆盖，0 关闭）。被实际使用过的事实比同等相关但从未被召回的事实排位更高——`retrieval_count` 从仅用于 `/memory prune` 判低值升级为排序信号，配合时间衰减形成"老但常用抗降权 / 新但未验证平权"的动态；三处排序路径（`_ftsRows` SQL、`_applyNegationPenalty` JS 重排、`_fallbackSearch`、`FactRetriever.search`）公式一致。`MIN(·,10)` 上限防高频事实指数放大（马太效应控制）。
 - **会话生命周期沉淀**：`onSessionEnd` 写一条主题摘要 fact（source=session-summary，纯指令会话跳过）；`onPreCompress` 在上下文压缩丢弃前归档分支消息并返回 contribution 文本进压缩摘要。
 - **纠错检测**：`turn_end` 对用户消息跑 `CORRECTION_PATTERNS`，命中即写入 correction 类事实 + curated 笔记（截断 400 字符）。
 - **秘密扫描**：写前 `scanSecrets`（AWS/GitHub/SSH/Stripe/Google key 等模式），命中即拒绝入库；**读出侧**（recall 块）同样净化——含秘密模式的事实以 `[BLOCKED]` 占位进入 system prompt。

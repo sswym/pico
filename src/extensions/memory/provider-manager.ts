@@ -31,6 +31,10 @@ export interface MemorySettings {
   /** Temporal decay half-life in days for search ranking. 0 disables decay
    *  entirely; absent means the store default (180 days). */
   temporalDecayHalfLifeDays?: number;
+  /** Retrieval-frequency boost weight (spaced-repetition signal): ranked
+   *  score × `1 + weight * min(retrieval_count, 10)`. 0 disables. Default
+   *  0.05. */
+  retrievalFrequencyWeight?: number;
 }
 
 export interface ProviderInfo {
@@ -61,6 +65,7 @@ registerMemoryProviderFactory("builtin", () => {
   const settings = readMemorySettings();
   return new BuiltinMemoryProvider(resolveDbPath(), {
     temporalDecayHalfLifeDays: settings.temporalDecayHalfLifeDays,
+    retrievalFrequencyWeight: settings.retrievalFrequencyWeight,
   });
 });
 registerMemoryProviderFactory("holographic", () => new HolographicMemoryProvider());

@@ -62,8 +62,11 @@ export class BuiltinMemoryProvider implements MemoryProvider {
   /** Project cwd of the current session — project-scopes onSessionEnd/onPreCompress writes. */
   private sessionCwd: string | undefined;
 
-  constructor(dbPath: string, opts: { temporalDecayHalfLifeDays?: number } = {}) {
-    this.store = new MemoryStore(dbPath, { temporalDecayHalfLifeDays: opts.temporalDecayHalfLifeDays });
+  constructor(dbPath: string, opts: { temporalDecayHalfLifeDays?: number; retrievalFrequencyWeight?: number } = {}) {
+    this.store = new MemoryStore(dbPath, {
+      temporalDecayHalfLifeDays: opts.temporalDecayHalfLifeDays,
+      retrievalFrequencyWeight: opts.retrievalFrequencyWeight,
+    });
     this.retriever = this.store.retriever();
   }
 

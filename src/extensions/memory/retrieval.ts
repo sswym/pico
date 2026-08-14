@@ -128,6 +128,13 @@ export interface RetrieverOptions {
   /** Temporal decay half-life in days. 0 = disabled. Default: 0. */
   temporalDecayHalfLife?: number;
   /**
+   * Retrieval-frequency boost weight (spaced-repetition signal): score is
+   * multiplied by `1 + weight * min(retrieval_count, 10)`. Mirrors the
+   * store's FTS/fallback ranking so related/reason/contradict agree.
+   * Default 0 (off) for standalone retrievers; stores pass their own value.
+   */
+  retrievalFrequencyWeight?: number;
+  /**
    * Shared canonical-term cache for the substring fallback path. Stores pass
    * their own write-through cache so fallback searches stop re-tokenizing
    * every candidate fact per call; standalone retrievers (tests) get a
@@ -150,6 +157,8 @@ export class FactRetriever {
   readonly jaccardWeight: number;
   readonly tfidfWeight: number;
   readonly temporalDecayHalfLife: number;
+  /** Retrieval-frequency boost weight; see RetrieverOptions. */
+  readonly retrievalFrequencyWeight: number;
   /** Shared with the owning MemoryStore (write-through) or private for standalone use. */
   readonly termCache: FactTermCache;
 
@@ -159,6 +168,7 @@ export class FactRetriever {
     this.jaccardWeight = opts.jaccardWeight ?? 0.3;
     this.tfidfWeight = opts.tfidfWeight ?? 0.3;
     this.temporalDecayHalfLife = opts.temporalDecayHalfLife ?? 0;
+    this.retrievalFrequencyWeight = opts.retrievalFrequencyWeight ?? 0;
     this.termCache = opts.termCache ?? new FactTermCache();
   }
 
@@ -215,6 +225,9 @@ export class FactRetriever {
         this.tfidfWeight * tfidfSim;
       let score = scoreScopeBoost(relevance * fact.trust_score, fact.scope, scopeFilter(opts).projectScope);
       score *= this._temporalDecay(fact.updated_at);
+      // Retrieval-frequency boost — same spaced-repetition formula as the
+      // store's FTS/fallback paths so all ranking surfaces agree.
+      score *= 1 + this.retrievalFrequencyWeight * Math.min(fact.retrieval_count, 10);
       scored.push({ ...fact, score });
     }
 

@@ -2187,3 +2187,49 @@ test("clear wipes the term cache", () => {
 test("retriever shares the store's write-through term cache", () => {
   expect(store.retriever().termCache).toBe(store.termCache);
 });
+
+// --- retrieval-frequency boost (spaced-repetition signal) --------------------
+
+test("retrieval-frequency boost ranks reused facts above equally-relevant ones (fallback path)", () => {
+  const high = store.add("我们用bun做构建", {});
+  const low = store.add("我们用rust做构建", {});
+  // 中文查询 "构建" 走 substring fallback，两条事实的命中分相同（+1 each）——
+  // 唯一差异是 retrieval_count。
+  store.db.query("UPDATE facts SET retrieval_count = 10 WHERE fact_id = ?").run(high);
+  const hits = store.search("构建", { minTrust: 0, limit: 5 });
+  expect(hits[0]!.fact_id).toBe(high);
+  expect(hits.map((h) => h.fact_id)).toContain(low);
+});
+
+test("retrieval-frequency boost caps at 10 retrievals (no runaway advantage)", () => {
+  const capped = store.add("我们用bun做构建", {});
+  const ten = store.add("我们用rust做构建", {});
+  store.db.query("UPDATE facts SET retrieval_count = 100 WHERE fact_id = ?").run(capped);
+  store.db.query("UPDATE facts SET retrieval_count = 10 WHERE fact_id = ?").run(ten);
+  // min(·, 10) 使 100 次与 10 次的 boost 相同（1.5 vs 1.5）→ 平局按 fact_id DESC。
+  const hits = store.search("构建", { minTrust: 0, limit: 5 });
+  expect(hits[0]!.fact_id).toBe(ten); // 后插入，id 更大
+});
+
+test("retrieval-frequency boost disabled at weight 0", () => {
+  const zero = new MemoryStore(":memory:", { retrievalFrequencyWeight: 0 });
+  try {
+    const high = zero.add("我们用bun做构建", {});
+    const low = zero.add("我们用rust做构建", {});
+    zero.db.query("UPDATE facts SET retrieval_count = 10 WHERE fact_id = ?").run(high);
+    // 权重 0 → boost 恒 1.0 → 平局按 fact_id DESC（low 后插入）。
+    const hits = zero.search("构建", { minTrust: 0, limit: 5 });
+    expect(hits[0]!.fact_id).toBe(low);
+  } finally {
+    zero.close();
+  }
+});
+
+test("retrieval-frequency boost applies on the FTS path too", () => {
+  // 短内容 FTS rank 高 + boost，必排前；长内容即使 rank 略低也不受影响。
+  const high = store.add("bun", {});
+  const low = store.add("bun runtime for building systems in production", {});
+  store.db.query("UPDATE facts SET retrieval_count = 100 WHERE fact_id = ?").run(high);
+  const hits = store.search("bun", { minTrust: 0, limit: 5 });
+  expect(hits[0]!.fact_id).toBe(high);
+});

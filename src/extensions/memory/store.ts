@@ -151,6 +151,13 @@ export class MemoryStore {
   /** Temporal decay half-life in days applied to search ranking. 0 disables.
    *  Default 180: stale facts rank lower without ever being hidden. */
   readonly temporalDecayHalfLifeDays: number;
+  /**
+   * Retrieval-frequency boost weight (spaced-repetition signal). Ranked score
+   * is multiplied by `1 + weight * min(retrieval_count, 10)`, so facts the
+   * agent actually re-used rank above equally-relevant ones that never were.
+   * 0 disables. Default 0.05 (boost 1.0–1.5 at the cap).
+   */
+  readonly retrievalFrequencyWeight: number;
   /** Set when the DB was corrupt and had to be rebuilt from a backup. */
   recoveryNotice: string | null = null;
   /** Throttle map for retrieval_count bumps: fact_id -> last bump epoch ms. */
@@ -163,10 +170,11 @@ export class MemoryStore {
    */
   readonly termCache = new FactTermCache();
 
-  constructor(dbPath: string, opts: { defaultTrust?: number; temporalDecayHalfLifeDays?: number } = {}) {
+  constructor(dbPath: string, opts: { defaultTrust?: number; temporalDecayHalfLifeDays?: number; retrievalFrequencyWeight?: number } = {}) {
     this.dbPath = dbPath;
     this.defaultTrust = clampTrust(opts.defaultTrust ?? 0.5);
     this.temporalDecayHalfLifeDays = opts.temporalDecayHalfLifeDays ?? 180;
+    this.retrievalFrequencyWeight = opts.retrievalFrequencyWeight ?? 0.05;
     mkdirSync(dirname(dbPath), { recursive: true });
     try {
       this.db = new Database(dbPath);
@@ -600,18 +608,26 @@ export class MemoryStore {
       : "";
     const decayOrder = this.temporalDecayHalfLifeDays > 0 ? " * _decay" : "";
     const decayParam = this.temporalDecayHalfLifeDays > 0 ? [Math.LN2 / this.temporalDecayHalfLifeDays] : [];
+    // Retrieval-frequency boost (spaced-repetition signal): `1 + weight *
+    // min(retrieval_count, 10)` in ORDER BY. MIN is a core SQLite scalar
+    // function — safe without SQLITE_ENABLE_MATH_FUNCTIONS. Mirrored in
+    // _applyNegationPenalty and _fallbackSearch so all ranking paths agree.
+    const freqOrder = this.retrievalFrequencyWeight > 0
+      ? ` * (1 + ? * MIN(f.retrieval_count, 10))`
+      : "";
+    const freqParam = this.retrievalFrequencyWeight > 0 ? [this.retrievalFrequencyWeight] : [];
 
     const rows = this.db
       .query<Fact & { _rank: number; _decay?: number }, Array<string | number>>(
         `SELECT f.*, (-bm25(facts_fts)) AS _rank${decaySelect} FROM facts_fts m JOIN facts f ON f.fact_id = m.rowid
          WHERE facts_fts MATCH ? AND f.trust_score >= ?
          AND ${scopeClause} ${catClause}
-         ORDER BY ${scopeBoost} * (-bm25(facts_fts)) * f.trust_score${decayOrder} DESC, f.fact_id DESC
+         ORDER BY ${scopeBoost} * (-bm25(facts_fts)) * f.trust_score${decayOrder}${freqOrder} DESC, f.fact_id DESC
          LIMIT ?`,
       )
       // Decay's ? binds first — it appears in the SELECT list, before the
       // MATCH ? in WHERE. Binding order must follow SQL text order.
-      .all(...decayParam, fts, minTrust, ...scopeParams, ...catParams, ...boostParams, limit) as Array<Fact & { _rank: number; _decay?: number }>;
+      .all(...decayParam, fts, minTrust, ...scopeParams, ...catParams, ...boostParams, ...freqParam, limit) as Array<Fact & { _rank: number; _decay?: number }>;
     return rows;
   }
 
@@ -637,7 +653,10 @@ export class MemoryStore {
         }
         const boost = projectKey && row.scope === projectKey ? 1.5 : 1.0;
         const decay = row._decay ?? 1;
-        const score = row._rank * row.trust_score * boost * decay * (negated ? 0.2 : 1);
+        // Same retrieval-frequency boost as the SQL ORDER BY — the negation
+        // re-rank must not drop it.
+        const freq = 1 + this.retrievalFrequencyWeight * Math.min(row.retrieval_count, 10);
+        const score = row._rank * row.trust_score * boost * decay * freq * (negated ? 0.2 : 1);
         return { row, score, negated };
       })
       .sort((a, b) => b.score - a.score || b.row.fact_id - a.row.fact_id);
@@ -811,6 +830,7 @@ export class MemoryStore {
     return new FactRetriever(this.db, {
       ...opts,
       temporalDecayHalfLife: this.temporalDecayHalfLifeDays,
+      retrievalFrequencyWeight: this.retrievalFrequencyWeight,
       termCache: this.termCache,
     });
   }
@@ -933,6 +953,8 @@ export class MemoryStore {
         if (score === 0) return null;
         if (negatedHit) score *= 0.2;
         score *= this._decayFactor(fact.updated_at);
+        // Retrieval-frequency boost — same formula as the FTS path.
+        score *= 1 + this.retrievalFrequencyWeight * Math.min(fact.retrieval_count, 10);
         return { fact, score: score * fact.trust_score };
       })
       .filter((row): row is { fact: Fact; score: number } => row !== null)
