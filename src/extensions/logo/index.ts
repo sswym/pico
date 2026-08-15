@@ -143,6 +143,11 @@ export function cachedSessionInfo(now = Date.now()): { firstRun: boolean; recent
 /**
  * Build the rendered header string. Exposed for testing — the live
  * extension wraps this in a Text component via setHeader().
+ *
+ * `rows` is the terminal height (tui.terminal.rows). On terminals too short
+ * for the ~16-row box, the upstream header container clips the top rows, so
+ * we fall back to the 2-line compact form instead of letting the welcome
+ * line get cut off (P2).
  */
 export function renderLogoHeader(
   theme: {
@@ -152,11 +157,16 @@ export function renderLogoHeader(
   width = 96,
   ctx?: { model?: { id?: string; provider?: string } },
   options: { firstRun?: boolean; recent?: SessionSummary[] } = {},
+  rows?: number,
 ): string {
   const picoVersion = (pkg as { version?: string }).version ?? "0.0.0";
   const firstRun = options.firstRun ?? false;
   const recent = options.recent ?? [];
-  if (width < 72) {
+  // The full box needs ~16 rows (welcome + 6-line logo + model + tips +
+  // recent sessions); below ~38 terminal rows the header container starts
+  // clipping its top. Switch to the compact form instead (matches the
+  // <72-column behavior at 36/37 rows where the box loses its top).
+  if (width < 72 || (rows !== undefined && rows < 38)) {
     const brand =
       theme.fg("accent", "✻ ") +
       theme.bold(theme.fg("accent", "pico")) +
@@ -165,7 +175,13 @@ export function renderLogoHeader(
     return `${brand}\n${hints}`;
   }
 
-  const boxWidth = Math.min(width, 98);
+  // fullscreen mode reserves the last terminal column for the scrollbar, so
+  // a box sized to the full width wraps its right border onto a new line
+  // (doubling the box height and clipping the top). Stay one column under
+  // the available width (M1). The header Text is paddingX=0 (the surrounding
+  // headerContainer Spacers provide the inset), so a box of this width
+  // exactly fits the renderable width without wrapping.
+  const boxWidth = Math.min(Math.max(0, width - 1), 98);
   const innerWidth = boxWidth - 2;
   const leftWidth = Math.max(24, Math.min(30, Math.floor(innerWidth * 0.32)));
   const rightWidth = innerWidth - leftWidth - 1;
@@ -223,14 +239,16 @@ export const logoExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       return {
         render(width: number): string[] {
           const container = new Container();
-          const effectiveWidth =
-            (tui as { terminal?: { columns?: number } } | undefined)?.terminal?.columns ?? width;
+          const terminal =
+            (tui as { terminal?: { columns?: number; rows?: number } } | undefined)?.terminal ?? undefined;
+          const effectiveWidth = terminal?.columns ?? width;
+          const effectiveRows = terminal?.rows;
           // 2.1.2: Ctrl+O collapse protocol — a collapsed header renders as
           // a single "pico" line instead of the full logo block.
           const header = collapsed
             ? theme.fg("accent", "✻ ") + theme.bold(theme.fg("accent", "pico")) + theme.fg("dim", ` v${(pkg as { version?: string }).version ?? "0.0.0"}`)
-            : renderLogoHeader(theme, effectiveWidth, currentCtx, cachedSessionInfo());
-          container.addChild(new Text(header, 1, 0));
+            : renderLogoHeader(theme, effectiveWidth, currentCtx, cachedSessionInfo(), effectiveRows);
+          container.addChild(new Text(header, 0, 0));
           if (!collapsed) container.addChild(new Spacer(1));
           return container.render(effectiveWidth);
         },

@@ -68,6 +68,13 @@ interface WrappedTool {
     theme: Theme,
     context: RenderContext,
   ): Component;
+  /**
+   * The tool's own renderResult, re-resolved on every updateDisplay (see the
+   * getResultRenderer patch). Partial (isPartial) renders pass through to it
+   * so live views — subagent's running panel, bash's elapsed timer — keep
+   * updating instead of being frozen to "↳ Pending…".
+   */
+  originalRenderResult?: WrappedTool["renderResult"];
 }
 
 export function toolViewportWidth(width: number): number {
@@ -749,7 +756,7 @@ function createCcstyleTool(originalTool: { name: string; label?: string }): Wrap
   const toolName = originalTool.name;
   const label = originalTool.label || toolName;
 
-  return {
+  const wrapped: WrappedTool = {
     name: toolName,
     label,
     renderShell: "self",
@@ -807,7 +814,24 @@ function createCcstyleTool(originalTool: { name: string; label?: string }): Wrap
       }
       const expanded = isToolExpanded(options, context);
       if (options.isPartial) {
+        // 运行中（isPartial）透传原工具 renderResult：subagent 的运行中面板
+        // （● agent (user) · 运行中… + turns/usage 实时增长）与 bash 的实时
+        // 计时器不被折叠摘要吞掉。仅注册了 renderCall 的工具退回 Pending…。
+        // getResultRenderer 补丁在每次 updateDisplay 时刷新 wrapped 上的
+        // originalRenderResult（renderResult 以裸函数调用，不能依赖 this）。
+        const original = wrapped.originalRenderResult;
+        if (original) {
+          return original(result, options, theme, context);
+        }
         return new Text(theme.fg("muted", expanded ? "↳ Pending…" : "   ↳ Pending…"), 0, 0);
+      }
+      // 落地：清理 partial 透传期间原渲染器可能启动的计时器。上游 bash
+      // renderResult 在 rendererState.interval 放 1s invalidate interval，
+      // 只在 isPartial=false 调用时 clearInterval——ccstyle 接管后落地不再
+      // 调用原渲染器，须在此兜底清理，避免组件永久每秒重渲染。
+      if (context.state.interval !== undefined) {
+        clearInterval(context.state.interval as ReturnType<typeof setInterval>);
+        delete context.state.interval;
       }
       const isError = context.isError;
       setToolVisualState(context, isError ? "error" : "success");
@@ -854,6 +878,7 @@ function createCcstyleTool(originalTool: { name: string; label?: string }): Wrap
       };
     },
   };
+  return wrapped;
 }
 
 // ── global tool rendering patch ──────────────────────────────────────────────
@@ -942,7 +967,7 @@ function disconnectPatch(patch: GlobalToolRenderPatch | undefined): void {
   patch.byName.clear();
 }
 
-function installGlobalToolRendering(): GlobalToolRenderPatch {
+function installGlobalToolRendering(enabled: () => boolean): GlobalToolRenderPatch {
   const prototype = ToolExecutionComponent.prototype as unknown as PatchedMethods;
   const previous = currentPatch;
   // Snapshot method VALUES, not the prototype object: assigning
@@ -988,7 +1013,7 @@ function installGlobalToolRendering(): GlobalToolRenderPatch {
 
   const patch: GlobalToolRenderPatch = {
     active: true,
-    enabled: () => true,
+    enabled,
     wrap: (tool) => createCcstyleTool(tool),
     byName: new Map(),
     downstream,
@@ -1021,7 +1046,14 @@ function installGlobalToolRendering(): GlobalToolRenderPatch {
     getResultRenderer: function (this: ToolExecutionComponent, ...args: unknown[]): unknown {
       const tool = asTool(this);
       if (tool !== undefined && shouldGloballyStyleTool(tool)) {
-        return getGloballyStyledTool(tool.toolName, patch).renderResult;
+        const wrapped = getGloballyStyledTool(tool.toolName, patch);
+        // 每次 updateDisplay 都会先解析再调用：把原渲染器挂到缓存的 wrapper
+        // 上，供 renderResult 的 isPartial 分支透传（同一次 updateDisplay 内
+        // 即时读取；无 renderResult 的工具为 undefined，退回 Pending…）。
+        const original = patch.downstream.getResultRenderer.apply(this, args);
+        wrapped.originalRenderResult =
+          typeof original === "function" ? (original as WrappedTool["renderResult"]) : undefined;
+        return wrapped.renderResult;
       }
       return patch.downstream.getResultRenderer.apply(this, args);
     },
@@ -1077,8 +1109,8 @@ export type DefaultModeHooks = {
   shutdown(): void;
 };
 
-export function installDefaultMode(): DefaultModeHooks {
-  const patch = installGlobalToolRendering();
+export function installDefaultMode(enabled: () => boolean = () => true): DefaultModeHooks {
+  const patch = installGlobalToolRendering(enabled);
   const hooks: DefaultModeHooks = {
     isOwner() {
       return currentPatch === patch && patch.active;

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,8 +12,11 @@ import {
   renderClaudeLikeFooterLine,
   renderPrimaryStatusLine,
 } from "../src/extensions/retro-theme/footer.ts";
-import { retroThemeExtension } from "../src/extensions/retro-theme/index.ts";
+import { ensureBundledThemeFile, retroThemeExtension } from "../src/extensions/retro-theme/index.ts";
 import claudeCodeDarkTheme from "../src/theme/claude-code-dark.json" with { type: "json" };
+// Upstream agent-dir resolver — the L25 test pins the pre-write to exactly
+// where upstream's theme loader reads custom themes from.
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 const plainTheme = {
   fg: (_color: string, text: string) => text,
@@ -106,7 +109,7 @@ test("renderPrimaryStatusLine matches the editor-above status direction", () => 
   expect(line).toContain("◫ 0/200k (0.0%) AC");
 });
 
-test("renderExtensionStatusLine keeps footer extension statuses focused", () => {
+test("renderExtensionStatusLine keeps extension statuses focused", () => {
   const line = renderExtensionStatusLine(120, plainTheme as any, {
     getExtensionStatuses: () => [
       "DS cache 21/22",
@@ -117,6 +120,44 @@ test("renderExtensionStatusLine keeps footer extension statuses focused", () => 
 
   expect(line).toContain("LSP: typescript");
   expect(line).toContain("DS cache 21/22");
+});
+
+test("failed MCP status is never dropped from the status line (P4)", () => {
+  // "MCP 1 ok 1!" (10 chars) is longer than the non-failed "MCP 1 ok"
+  // (9 chars) — the failure used to be the first segment sacrificed on a
+  // tight footer. A failure must displace non-failure segments instead of
+  // vanishing.
+  const line = renderExtensionStatusLine(20, plainTheme as any, {
+    getExtensionStatuses: () => ["todo 2/3", "MCP: 1 ok, 1 failed"],
+  });
+  expect(line).toContain("MCP");
+  expect(line).toContain("!");
+  expect(line).not.toContain("todo");
+
+  // Even when nothing else can fit, the failure is ellipsis-truncated, not
+  // dropped entirely.
+  const tiny = renderExtensionStatusLine(9, plainTheme as any, {
+    getExtensionStatuses: () => ["MCP: 1 ok, 1 failed"],
+  });
+  expect(tiny).toContain("MCP");
+  expect(visibleWidth(tiny)).toBeLessThanOrEqual(9);
+
+  // A healthy MCP status is a normal segment: it still yields to earlier
+  // segments when space runs out.
+  const healthy = renderExtensionStatusLine(12, plainTheme as any, {
+    getExtensionStatuses: () => ["todo 2/3", "MCP: 1 connected"],
+  });
+  expect(healthy).toContain("todo");
+  expect(healthy).not.toContain("MCP");
+});
+
+test("footer still surfaces a failed MCP server on narrow terminals (P4)", () => {
+  const line = renderClaudeLikeFooterLine(64, fakeCtx(), plainTheme as any, {
+    getGitBranch: () => "main",
+    getExtensionStatuses: () => ["MCP: 1 ok, 1 failed", "LSP: typescript-language-server"],
+  });
+  expect(line).toContain("MCP 1 ok 1!");
+  expect(visibleWidth(line)).toBeLessThanOrEqual(64);
 });
 
 test("renderClaudeLikeFooterLine shows placeholders when usage is unavailable", () => {
@@ -185,7 +226,9 @@ test("footer git helpers parse and format dirty status", () => {
   });
   expect(__test.compactStatus("LSP: typescript-language-server")).toBe("LSP: typescript");
   expect(__test.compactStatus("MCP: 1 connected")).toBe("MCP 1 ok");
-  expect(__test.compactStatus("MCP: 2 ok, 1 failed")).toBe("MCP 2 ok 1 failed");
+  // Failed state compresses to the shortest unambiguous form (P4): the old
+  // 12-char "MCP 2 ok 1 failed" lost the footer slot on narrow terminals.
+  expect(__test.compactStatus("MCP: 2 ok, 1 failed")).toBe("MCP 2 ok 1!");
   expect(__test.compactThinkingLevel("medium")).toBe("think:med");
 });
 
@@ -544,4 +587,54 @@ test("retroThemeExtension does not render user-initiated cancels as failures", a
   await handlers.get("agent_settled")!({ type: "agent_settled" }, { ui: fakeUi });
   expect(notifications).toHaveLength(0);
   expect(statuses).toHaveLength(0);
+});
+
+// ---- first-run theme materialization (L25) ------------------------------
+
+test("ensureBundledThemeFile materializes the theme on a pristine home (L25)", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-theme-l25-"));
+  const agentDir = join(home, "agent");
+  try {
+    expect(ensureBundledThemeFile(agentDir)).toBe(true);
+    const target = join(agentDir, "themes", "claude-code-dark.json");
+    expect(existsSync(target)).toBe(true);
+    expect(JSON.parse(readFileSync(target, "utf-8"))).toEqual(claudeCodeDarkTheme);
+    // Idempotent: a second call does not rewrite the file.
+    writeFileSync(target, JSON.stringify({ name: "claude-code-dark", edited: true }), "utf-8");
+    expect(ensureBundledThemeFile(agentDir)).toBe(true);
+    expect(JSON.parse(readFileSync(target, "utf-8"))).toEqual({ name: "claude-code-dark", edited: true });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("fresh home theme resolves through upstream discovery after pre-write (L25)", () => {
+  // Upstream's loadThemeJson resolves custom themes at
+  // <agentDir>/themes/<name>.json (getCustomThemesDir → getAgentDir). Before
+  // the pre-write that file is absent — which is exactly what surfaces the
+  // first-launch "Failed to load theme ... Theme not found" warning — and
+  // after ensureBundledThemeFile it exists with the bundled content at the
+  // path upstream will read on TUI startup.
+  const home = mkdtempSync(join(tmpdir(), "pico-theme-e2e-"));
+  const agentDir = join(home, "agent");
+  mkdirSync(agentDir, { recursive: true });
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const prevPicoAgentDir = process.env.PICO_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  process.env.PICO_CODING_AGENT_DIR = agentDir;
+  try {
+    expect(getAgentDir()).toBe(agentDir);
+    const target = join(getAgentDir(), "themes", "claude-code-dark.json");
+    expect(existsSync(target)).toBe(false);
+
+    expect(ensureBundledThemeFile(agentDir)).toBe(true);
+    expect(existsSync(target)).toBe(true);
+    expect(JSON.parse(readFileSync(target, "utf-8"))).toEqual(claudeCodeDarkTheme);
+  } finally {
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+    if (prevPicoAgentDir === undefined) delete process.env.PICO_CODING_AGENT_DIR;
+    else process.env.PICO_CODING_AGENT_DIR = prevPicoAgentDir;
+    rmSync(home, { recursive: true, force: true });
+  }
 });

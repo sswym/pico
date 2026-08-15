@@ -26,6 +26,7 @@ import {
   setCcstyleTheme,
 } from "../src/extensions/ccstyle/render.ts";
 import { ccstyleExtension } from "../src/extensions/ccstyle/index.ts";
+import { renderSubagentResult } from "../src/extensions/subagent/renderer.ts";
 
 /**
  * ccstyle extension tests: tool grouping (Container.prototype patch),
@@ -422,6 +423,58 @@ test("error renderResult shows a condensed error summary", () => {
   hooks.shutdown();
 });
 
+test("isPartial results pass through to the original renderer (subagent running panel)", () => {
+  // M8 回归：ccstyle 折叠态不得吞掉 subagent 运行中面板——isPartial 渲染必须
+  // 透传原工具 renderResult（● worker (user) · 运行中… + turns/usage 实时增长），
+  // 而不是固定显示 "↳ Pending…"。
+  const hooks = installDefaultMode();
+  const subagentDefinition = {
+    name: "subagent",
+    label: "Subagent",
+    description: "Run a subagent",
+    parameters: {},
+    renderShell: "default",
+    renderCall: () => new Text("call", 0, 0),
+    renderResult: (
+      result: unknown,
+      options: { expanded: boolean },
+      theme: Theme,
+      context: { isPartial?: boolean },
+    ) => renderSubagentResult(result, options.expanded, theme, context),
+  } as unknown as ToolDefinition<any, any, any>;
+  const tool = makeTool("subagent", { task: "sleep 60" }, subagentDefinition);
+
+  // 子代理运行中：single 模式 + isPartial=true（exitCode 0 = 运行中信号）。
+  tool.updateResult(
+    {
+      content: [{ type: "text", text: "(running...)" }],
+      details: {
+        mode: "single",
+        results: [
+          {
+            agent: "worker",
+            agentSource: "user",
+            task: "sleep 60",
+            step: 1,
+            exitCode: 0,
+            messages: [],
+            stderr: "",
+            usage: { input: 1200, output: 340, cacheRead: 0, cacheWrite: 0, cost: 0.001, contextTokens: 1500, turns: 3 },
+            model: "test-model",
+          },
+        ],
+      },
+    } as never,
+    true,
+  );
+  const plain = tool.render(100).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  expect(plain).toContain("worker (user)");
+  expect(plain).toContain("运行中");
+  expect(plain).toContain("3 turns");
+  expect(plain).not.toContain("Pending");
+  hooks.shutdown();
+});
+
 test("extension-wrapped built-in tools (undo-redo style) are still taken over", () => {
   // undo-redo 的 buildDeferredTool 保留上游 template 的渲染器、只换 execute —
   // toolDefinition 存在但 builtInToolDefinition 也有 → ccstyle 必须接管。
@@ -757,6 +810,103 @@ test("ccstyle extension registers the command and session_start handler", async 
       ccstyle?: { enabled?: boolean };
     };
     expect(saved.ccstyle?.enabled).toBe(true);
+  } finally {
+    if (previousHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = previousHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("/ccstyle off fully disables the render patch — new and mounted tools render natively", async () => {
+  // D1 问题 4 回归：off 不只关分组，单行摘要渲染补丁也必须失效（命令描述
+  // "Use Pi's native tool rendering"）。
+  const home = mkdtempSync(join(tmpdir(), "pico-ccstyle-"));
+  const previousHome = process.env.PICO_HOME;
+  process.env.PICO_HOME = home;
+  mkdirSync(join(home, "agent"), { recursive: true });
+  writeFileSync(join(home, "agent", "settings.json"), JSON.stringify({ ccstyle: { enabled: true } }), "utf-8");
+  try {
+    const pi = makeFakePi();
+    ccstyleExtension(pi as unknown as ExtensionAPI);
+    const ui = {
+      notify: () => {},
+      theme: stubTheme,
+      setWidget: (_key: string, _content?: unknown) => undefined,
+    };
+    const sessionCtx = { mode: "tui", hasUI: true, ui } as never;
+    await pi.handlers["session_start"]![0]!({}, sessionCtx);
+
+    const renderCall = () => new Text("NATIVE CALL", 0, 0);
+    const renderResult = () => new Text("NATIVE RESULT", 0, 0);
+    const definition = {
+      name: "custom",
+      renderCall,
+      renderResult,
+    } as unknown as ToolDefinition<any, any, any>;
+
+    // on：ccstyle 接管（renderers 被包装，不是原函数）
+    const on = makeTool("custom", {}, definition);
+    expect(renderersOf(on).renderCall).not.toBe(renderCall);
+    expect(renderersOf(on).renderResult).not.toBe(renderResult);
+
+    // /ccstyle off：新工具渲染恢复上游原生 renderers
+    await pi.commands.get("ccstyle")!.handler("off", sessionCtx);
+    const off = makeTool("custom", {}, definition);
+    expect(renderersOf(off).renderCall).toBe(renderCall);
+    expect(renderersOf(off).renderResult).toBe(renderResult);
+
+    // 已挂载工具的下一次 updateDisplay 也回退到原生渲染（不残留 ccstyle 摘要）
+    on.updateResult({ content: [{ type: "text", text: "done" }], details: undefined, isError: false }, false);
+    const lines = on.render(100).join("\n");
+    expect(lines).toContain("NATIVE CALL");
+    expect(lines).toContain("NATIVE RESULT");
+
+    await pi.handlers["session_shutdown"]![0]!({}, {});
+  } finally {
+    if (previousHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = previousHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("ccstyle.enabled=false at startup leaves tool rendering native until /ccstyle on", async () => {
+  // D5 P2 / D1 问题 4 回归：settings.json ccstyle.enabled=false 时渲染补丁
+  // 必须完全失效（全新会话不再显示 ccstyle 单行摘要 / "↳ Pending…"）。
+  const home = mkdtempSync(join(tmpdir(), "pico-ccstyle-"));
+  const previousHome = process.env.PICO_HOME;
+  process.env.PICO_HOME = home;
+  mkdirSync(join(home, "agent"), { recursive: true });
+  writeFileSync(join(home, "agent", "settings.json"), JSON.stringify({ ccstyle: { enabled: false } }), "utf-8");
+  try {
+    const pi = makeFakePi();
+    ccstyleExtension(pi as unknown as ExtensionAPI);
+    const ui = {
+      notify: () => {},
+      theme: stubTheme,
+      setWidget: (_key: string, _content?: unknown) => undefined,
+    };
+    const sessionCtx = { mode: "tui", hasUI: true, ui } as never;
+    await pi.handlers["session_start"]![0]!({}, sessionCtx);
+
+    const renderCall = () => new Text("NATIVE CALL", 0, 0);
+    const renderResult = () => new Text("NATIVE RESULT", 0, 0);
+    const definition = {
+      name: "custom",
+      renderCall,
+      renderResult,
+    } as unknown as ToolDefinition<any, any, any>;
+
+    const tool = makeTool("custom", {}, definition);
+    expect(renderersOf(tool).renderCall).toBe(renderCall);
+    expect(renderersOf(tool).renderResult).toBe(renderResult);
+
+    // /ccstyle on 之后新工具被接管
+    await pi.commands.get("ccstyle")!.handler("on", sessionCtx);
+    const on = makeTool("custom", {}, definition);
+    expect(renderersOf(on).renderCall).not.toBe(renderCall);
+    expect(renderersOf(on).renderResult).not.toBe(renderResult);
+
+    await pi.handlers["session_shutdown"]![0]!({}, {});
   } finally {
     if (previousHome === undefined) delete process.env.PICO_HOME;
     else process.env.PICO_HOME = previousHome;

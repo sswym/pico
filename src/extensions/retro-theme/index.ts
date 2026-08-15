@@ -45,6 +45,40 @@ function userConfiguredTheme(agentDir: string): boolean {
   }
 }
 
+/**
+ * Materialize the bundled claude-code-dark theme into the custom themes dir
+ * BEFORE pi's TUI initializes (L25). pi's theme controller resolves the
+ * configured theme during TUI startup — before extension session_start
+ * events fire — so on a pristine home the first launch fails with
+ * "Failed to load theme ... Theme not found: claude-code-dark" and falls
+ * back to dark; the theme only appears on the second launch once the
+ * session_start sync below has run. bin/pico.ts calls this at startup.
+ *
+ * Only writes when the target is missing: a hand-edited claude-code-dark.json
+ * is left alone here — the session_start sync below (2.1.1) is the single
+ * owner that may refresh our file on a real session.
+ *
+ * Returns false when the themes dir is unwritable; the caller can degrade
+ * silently (upstream falls back to its builtin dark theme either way).
+ */
+export function ensureBundledThemeFile(
+  agentDir: string = process.env.PI_CODING_AGENT_DIR ?? picoAgentHome(),
+): boolean {
+  const themeDir = join(agentDir, "themes");
+  const target = join(themeDir, "claude-code-dark.json");
+  try {
+    if (!existsSync(target)) {
+      mkdirSync(themeDir, { recursive: true });
+      writeFileSync(target, JSON.stringify(claudeCodeDarkTheme, null, 2), "utf-8");
+    }
+    return true;
+  } catch {
+    // Unwritable themes dir (permissions / read-only mount / disk full):
+    // the session_start sync retries later; do not abort startup.
+    return false;
+  }
+}
+
 export const retroThemeExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // Generation-phase feedback: replace the bare "Working..." row with a
   // live status (thinking Ns / streaming Ns / tool <name> Ns). Driven by

@@ -49,7 +49,10 @@ export const ccstyleExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   const ensureTuiInstallation = (ctx: { mode: string; hasUI: boolean }): boolean => {
     if (ctx.mode !== "tui" || !ctx.hasUI) return false;
     if (installation) return true;
-    const render = installDefaultMode();
+    // 渲染补丁与分组共用同一个 enabled 闭包：/ccstyle off 或
+    // settings.json ccstyle.enabled=false 时补丁完全失效（shouldGloballyStyleTool
+    // 与 grouping 的 maybeGroup 都读它），恢复上游原生渲染。
+    const render = installDefaultMode(() => enabled);
     const grouping = installToolGrouping(() => enabled);
     installation = { render, grouping };
     return true;

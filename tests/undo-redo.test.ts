@@ -252,6 +252,22 @@ describe("UndoRedoEditor keybindings", () => {
     expect(submitted).toEqual(["/undo", "/redo", "/undo"]);
   });
 
+  test("plain ctrl+y (0x19) triggers redo by default alongside ctrl+shift+y", () => {
+    const submitted: string[] = [];
+    // treeRedo unset → normalizeKeys falls back to DEFAULT_REDO_KEYS.
+    const editor = new UndoRedoEditor(
+      makeFakeTui(),
+      stubTheme,
+      makeKeybindings({ treeRedo: undefined }),
+    );
+    editor.onSubmit = (text) => submitted.push(text);
+
+    editor.handleInput("\x19"); // plain ctrl+y (0x19)
+    editor.handleInput(CTRL_SHIFT_Y);
+
+    expect(submitted).toEqual(["/redo", "/redo"]);
+  });
+
   test("custom treeUndo/treeRedo keybindings override the defaults", () => {
     const submitted: string[] = [];
     const editor = new UndoRedoEditor(

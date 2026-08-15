@@ -2,7 +2,7 @@ import { PersistentHistoryEditor } from "../persistent-editor.ts";
 import { type KeyId, matchesKey } from "@earendil-works/pi-tui";
 
 const DEFAULT_UNDO_KEYS: KeyId[] = ["ctrl+shift+z"];
-const DEFAULT_REDO_KEYS: KeyId[] = ["ctrl+shift+y"];
+const DEFAULT_REDO_KEYS: KeyId[] = ["ctrl+shift+y", "ctrl+y"];
 
 function normalizeKeys(
 	keys: KeyId | KeyId[] | undefined,

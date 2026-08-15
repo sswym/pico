@@ -183,7 +183,10 @@ function compactStatus(status: string): string {
   return cleanStatus(status)
     .replace(/^LSP:\s*typescript-language-server\b/i, "LSP: typescript")
     .replace(/^MCP:\s*(\d+)\s+connected\b/i, "MCP $1 ok")
-    .replace(/^MCP:\s*(\d+)\s+ok,\s*(\d+)\s+failed\b/i, "MCP $1 ok $2 failed")
+    // Failed state in the shortest unambiguous form ("!" flags the failure
+    // to fitStatuses so it is never silently dropped): "MCP 1 ok 1!" instead
+    // of the 12-char "MCP 1 ok 1 failed".
+    .replace(/^MCP:\s*(\d+)\s+ok,\s*(\d+)\s+failed\b/i, "MCP $1 ok $2!")
     .replace(/^todos\s+/i, "todo ");
 }
 
@@ -253,25 +256,58 @@ function fitSegments(theme: Theme, segments: string[], maxWidth: number): string
   return truncateToWidth(theme.fg("accent", segments[0] ?? ""), Math.max(0, maxWidth));
 }
 
+/**
+ * True when a status segment signals a failure. Failure indicators carry the
+ * highest information value — a hidden failure looks like all-clear — so
+ * fitStatuses must not drop them silently.
+ */
+function isFailureStatus(status: string): boolean {
+  return /failed|fail|!/i.test(status);
+}
+
+/**
+ * Fit status segments into maxWidth, preserving order (the last segment is
+ * the accent-highlighted most-recent one). Non-failure segments are dropped
+ * first when space runs out; a failure segment is kept over any number of
+ * non-failure ones and ellipsis-truncated rather than dropped (P4:
+ * "MCP 1 ok 1 failed" is longer than "MCP 1 ok", so a failed MCP status
+ * used to vanish exactly when it mattered most).
+ */
 function fitStatuses(theme: Theme, statuses: string[], maxWidth: number): string {
-  const fitted: string[] = [];
-
-  for (const status of statuses) {
-    const candidate = [...fitted, status]
-      .map((item, index, array) => index === array.length - 1 ? theme.fg("accent", item) : theme.fg("dim", item))
+  if (statuses.length === 0 || maxWidth <= 0) return "";
+  const render = (items: string[]) =>
+    items
+      .map((item, index, array) => (index === array.length - 1 ? theme.fg("accent", item) : theme.fg("dim", item)))
       .join(theme.fg("muted", DOT));
-    if (visibleWidth(candidate) <= maxWidth) {
+  const fits = (items: string[]) => visibleWidth(render(items)) <= maxWidth;
+
+  const fitted: string[] = [];
+  for (const status of statuses) {
+    if (fits([...fitted, status])) {
       fitted.push(status);
+      continue;
     }
+    if (!isFailureStatus(status)) {
+      // The candidate list only grows from here, so later segments can't
+      // fit either — keep what fit so far.
+      break;
+    }
+    // A failure segment that does not fit with the current prefix: drop the
+    // non-failure segments before it to make room.
+    const failures = fitted.filter(isFailureStatus);
+    if (fits([...failures, status])) {
+      fitted.length = 0;
+      fitted.push(...failures, status);
+      continue;
+    }
+    // Even with only failures it still overflows: ellipsis-truncate the
+    // failure itself instead of dropping it.
+    const remaining = Math.max(0, maxWidth - visibleWidth(render(failures)) - visibleWidth(theme.fg("muted", DOT)));
+    fitted.length = 0;
+    fitted.push(...failures, truncateToWidth(theme.fg("accent", status), remaining));
+    return render(fitted);
   }
-
-  if (fitted.length === 0 && statuses[0]) {
-    return truncateToWidth(theme.fg("accent", statuses[0]), maxWidth);
-  }
-
-  return fitted
-    .map((status, index) => index === fitted.length - 1 ? theme.fg("accent", status) : theme.fg("dim", status))
-    .join(theme.fg("muted", DOT));
+  return render(fitted);
 }
 
 export function renderClaudeLikeFooterLine(
