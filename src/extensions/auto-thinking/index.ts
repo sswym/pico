@@ -21,6 +21,7 @@
  */
 
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { isSettingsDamaged, readSettings, writeSettings } from "../settings.ts";
 import { buildUltrathinkNotice, containsUltrathink } from "./ultrathink.ts";
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -50,6 +51,29 @@ function isThinkingLevel(value: string): value is ThinkingLevel {
 export const autoThinkingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // Session-scoped: the level we raised for an ultrathink turn, restored on agent_end.
   let raisedFrom: ThinkingLevel | undefined;
+  // Persisted settings.json defaultThinkingLevel before the raise. Upstream
+  // setThinkingLevel persists every change; without this the keyword-triggered
+  // temporary raise silently rewrites the user's default config (F2).
+  let settingsDefaultThinkingLevel: unknown = undefined;
+
+  /**
+   * Undo whatever defaultThinkingLevel upstream persisted during the
+   * ultrathink raise/restore, putting the user's original value back. Only
+   * writes when upstream actually changed the file (differs from the
+   * snapshot), so extension unit tests with a non-persisting fake pi never
+   * touch the real settings.json.
+   */
+  function restorePersistedThinkingLevel(snapshot: unknown): void {
+    if (isSettingsDamaged()) return; // never overwrite a damaged settings.json
+    const settings = readSettings();
+    if (settings.defaultThinkingLevel === snapshot) return;
+    if (snapshot === undefined) {
+      delete settings.defaultThinkingLevel;
+    } else {
+      settings.defaultThinkingLevel = snapshot;
+    }
+    writeSettings(settings);
+  }
 
   pi.on("before_agent_start", (event) => {
     if (disabled()) return {};
@@ -62,6 +86,8 @@ export const autoThinkingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     if (!noticeOnly()) {
       if (current !== "max") {
         raisedFrom = current;
+        // Snapshot before upstream setThinkingLevel persists the raise.
+        settingsDefaultThinkingLevel = readSettings().defaultThinkingLevel;
         pi.setThinkingLevel("max");
       } else {
         raisedFrom = undefined;
@@ -75,7 +101,11 @@ export const autoThinkingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.on("agent_end", () => {
     if (raisedFrom !== undefined) {
       pi.setThinkingLevel(raisedFrom);
+      // Upstream persisted the restored (clamped) level over the user's
+      // default; put the original persisted value back.
+      restorePersistedThinkingLevel(settingsDefaultThinkingLevel);
       raisedFrom = undefined;
+      settingsDefaultThinkingLevel = undefined;
     }
   });
 
@@ -83,7 +113,8 @@ export const autoThinkingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     description: "Show or set the thinking level: off|minimal|low|medium|high|xhigh|max",
     handler: async (args, ctx) => {
       const level = args.trim().toLowerCase();
-      if (!level) {
+      // `status` is accepted like /ponytail status: report the current level.
+      if (!level || level === "status") {
         const current = pi.getThinkingLevel();
         ctx.ui.notify(`Thinking level: ${current ?? "unknown"}`, "info");
         return;
@@ -94,7 +125,16 @@ export const autoThinkingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       }
       pi.setThinkingLevel(level);
       raisedFrom = undefined; // user-set levels are not auto-restored
-      ctx.ui.notify(`Thinking level set to ${level}`, "info");
+      // Report the level that actually took effect: upstream clamps
+      // unsupported levels (e.g. minimal on a model that only supports
+      // off/high/max), so the notification must match real session state.
+      const effective = pi.getThinkingLevel() ?? level;
+      ctx.ui.notify(
+        effective === level
+          ? `Thinking level set to ${level}`
+          : `Thinking level set to ${effective} (${level} not supported by the current model; clamped to nearest supported level)`,
+        "info",
+      );
     },
   });
 };

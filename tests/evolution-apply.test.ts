@@ -21,6 +21,7 @@ import {
 } from "../src/extensions/evolution/apply.ts";
 import type { ReviewOutput } from "../src/extensions/evolution/review.ts";
 import { DEFAULT_MAX_SKILL_BYTES, type EvolutionConfig } from "../src/extensions/evolution/state.ts";
+import { parse as parseYaml } from "yaml";
 
 let homeDir: string;
 let oldPicoHome: string | undefined;
@@ -52,6 +53,14 @@ afterEach(() => {
 
 function readSkill(name: string): string {
   return readFileSync(join(userSkillsDir(), name, "SKILL.md"), "utf-8");
+}
+
+/** 用上游同款 yaml.parse 解析落盘 SKILL.md 的 frontmatter（D15 问题 1 回归锚点）。 */
+function frontmatterOf(name: string): Record<string, unknown> {
+  const content = readSkill(name);
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
+  if (!m) throw new Error(`missing frontmatter in ${name}`);
+  return parseYaml(m[1]!) as Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +167,7 @@ test("applyReview creates skill with frontmatter and updates manifest", () => {
 
   const content = readSkill("my-skill");
   expect(content).toContain("name: my-skill");
-  expect(content).toContain("description: Does things");
+  expect(content).toContain('description: "Does things"');
   expect(content).toContain("x-pico-evolved: true");
   expect(content).toContain("1. Step one");
 
@@ -198,6 +207,41 @@ test("applyReview refuses path traversal names even if sanitized passes (defense
 });
 
 // ---------------------------------------------------------------------------
+// description YAML 安全序列化（D15 问题 1：含 ": " 的 description 破坏 frontmatter，
+// 导致下一会话 loadSkillFromFile 抛错 → 技能被跳过）
+// ---------------------------------------------------------------------------
+
+test("create with ': ' in description writes parseable frontmatter and preserves value", () => {
+  // 审查模型自然产出的 "X: Y" 式概括（报告复现用例原文）。
+  const description = "Class-level debugging workbooks: port conflict, disk full, high CPU";
+  const result = applyReview({
+    create: [{ name: "troubleshooting-recipes", description, content: "1. Check ports\n2. Check disk" }],
+    update: [],
+  });
+  expect(result.created).toEqual(["troubleshooting-recipes"]);
+  const fm = frontmatterOf("troubleshooting-recipes");
+  expect(fm.description).toBe(description);
+  expect(fm.name).toBe("troubleshooting-recipes");
+  expect(fm["x-pico-evolved"]).toBe(true);
+});
+
+test("create with quotes and backslashes in description escapes them (round-trip fidelity)", () => {
+  const description = 'say "hi": C:\\temp\\files\\new';
+  const result = applyReview({ create: [{ name: "quoted-desc", description, content: "body" }], update: [] });
+  expect(result.created).toEqual(["quoted-desc"]);
+  expect(frontmatterOf("quoted-desc").description).toBe(description);
+});
+
+test("update round-trips a quote/backslash-containing description without degradation", () => {
+  const description = 'rule "A: B": keep \\\\ literal';
+  applyReview({ create: [{ name: "roundtrip", description, content: "v1" }], update: [] });
+  const result = applyReview({ create: [], update: [{ name: "roundtrip", content: "v2" }] });
+  expect(result.updated).toEqual(["roundtrip"]);
+  expect(frontmatterOf("roundtrip").description).toBe(description);
+  expect(readSkill("roundtrip")).toContain("v2");
+});
+
+// ---------------------------------------------------------------------------
 // applyReview — update
 // ---------------------------------------------------------------------------
 
@@ -211,7 +255,7 @@ test("applyReview updates an evolved skill and preserves its description", () =>
   expect(result.updated).toEqual(["upd"]);
   expect(result.skipped).toEqual([]);
   const content = readSkill("upd");
-  expect(content).toContain("description: original desc");
+  expect(content).toContain('description: "original desc"');
   expect(content).toContain("new body content");
   expect(content).not.toContain("original body");
 });

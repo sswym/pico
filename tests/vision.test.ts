@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ImageContent } from "@earendil-works/pi-ai/compat";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createVisionExtension } from "../src/extensions/vision/index.ts";
 import {
   __resetVisionCacheForTests,
@@ -141,6 +142,25 @@ test("loadImageFromInput refuses private-network image URLs", async () => {
   await expect(
     loadImageFromInput({ image_url: "http://localhost/img.png" }, "/repo"),
   ).rejects.toThrow(/private network/i);
+});
+
+test("visionAnalyze tool guidance bans shell-download SSRF bypass", () => {
+  // D16-M16 regression: the private-network guard only protects the tool's own
+  // fetch — the agent loop can otherwise curl the URL and hand the file to
+  // visionAnalyze via image_path. The tool guidance must forbid that bypass.
+  const fakePi = makeFakePi();
+  // Structural stand-in for ExtensionAPI; the fake only covers the surface the
+  // extension under test touches.
+  createVisionExtension()(fakePi as unknown as ExtensionAPI);
+  const tool = fakePi.tools.get("visionAnalyze") as
+    | { promptGuidelines?: string[] }
+    | undefined;
+  expect(tool).toBeDefined();
+  const guidelines = (tool?.promptGuidelines ?? []).join("\n");
+  expect(guidelines).toMatch(/禁止|严禁|不得/);
+  expect(guidelines).toMatch(/curl|wget|bash/);
+  expect(guidelines).toMatch(/私网|内网/);
+  expect(guidelines).toMatch(/拒绝/);
 });
 
 test("loadImageFromInput re-checks the private-network guard on every redirect hop", async () => {

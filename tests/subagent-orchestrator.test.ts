@@ -63,14 +63,19 @@ function writeUserAgent(name: string, frontmatterLines: string[], body = "body")
 // ── single mode: pre-spawn branches ─────────────────────────────────────────
 
 test("single: unknown agent is rejected without any spawn", async () => {
-  await expect(
-    runSubagentRequest(
-      { agent: "no-such-agent", task: "x" },
-      undefined,
-      undefined,
-      makeCtx(process.cwd()),
-    ),
-  ).rejects.toThrow(/Unknown agent/);
+  const result = await runSubagentRequest(
+    { agent: "no-such-agent", task: "x" },
+    undefined,
+    undefined,
+    makeCtx(process.cwd()),
+  );
+  // M9: single-mode failures return a structured result (details preserved
+  // for JSONL replay/rendering) instead of throwing — the failure is
+  // conveyed via content text plus details.results[0].
+  const text = makeText(result);
+  expect(text).toContain("Unknown agent");
+  expect(text).toContain("no-such-agent");
+  expect(result.details.results[0]?.exitCode).toBe(1);
 });
 
 test("single: output schema is parsed from frontmatter and failure marks schema_violation", async () => {

@@ -165,6 +165,29 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       );
     }
 
+    /**
+     * Surface config-shape diagnostics where the user can actually see them.
+     * `/automode config` already lists them, but a wrong shape (e.g. top-level
+     * `automode.enabled`) silently keeps the guardrail off — warn at session
+     * start and on every `/automode status` so the misconfiguration is visible
+     * on the paths the user checks first.
+     */
+    function notifyConfigDiagnostics(ctx: {
+      hasUI: boolean;
+      ui: {
+        notify: (message: string, type?: "info" | "warning" | "error") => void;
+      };
+    }): void {
+      if (!ctx.hasUI || configDiagnostics.length === 0) return;
+      ctx.ui.notify(
+        [
+          "automode 配置存在错误，护栏未按预期生效（/automode config 可查看详情）:",
+          ...configDiagnostics,
+        ].join("\n"),
+        "warning",
+      );
+    }
+
     function block(
       ctx: ExtensionContext,
       denial: DenialRecord,
@@ -239,6 +262,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       state = restoreState(ctx);
       degradedNotified = false;
       updateUi(ctx);
+      notifyConfigDiagnostics(ctx);
     });
 
     pi.on("before_agent_start", (event) => {
@@ -471,6 +495,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
 
       if (command === "status") {
         ctx.ui.notify(statusText(effectiveConfig(), state), "info");
+        notifyConfigDiagnostics(ctx);
         return;
       }
       if (command === "on") {

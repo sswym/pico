@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -17,17 +17,62 @@ export function isBunBinaryRuntime(metaUrl: string): boolean {
   return metaUrl.includes("$bunfs") || metaUrl.includes("~BUN") || metaUrl.includes("%7EBUN");
 }
 
+// Legacy dirs (`pico-<12hex>`, no owner marker) cannot be attributed to a
+// process and are left alone; PID-marked dirs are only removed when their
+// owner PID is provably gone.
+const EMBEDDED_DIR_PATTERN = /^pico-(\d+)-[0-9a-f]{12}$/;
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // ESRCH → no such process; EPERM → alive but owned by someone else.
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Remove embedded-runtime temp dirs abandoned by SIGKILLed processes. Normal
+ * exits remove their own dir via the "exit" handler below; SIGKILL skips it
+ * and leaves ~1MB behind per kill. Every dir is named
+ * `pico-<pid>-<random>` so a later startup can verify the owning process is
+ * gone before deleting — live processes (including concurrent subagents)
+ * are never touched. Called at every startup (binary and source mode) so
+ * residue cannot accumulate indefinitely.
+ */
+export function cleanupStaleEmbeddedDirs(): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(tmpdir());
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const match = EMBEDDED_DIR_PATTERN.exec(entry);
+    if (!match) continue;
+    const pid = Number.parseInt(match[1]!, 10);
+    if (!Number.isInteger(pid) || pid <= 0 || isPidAlive(pid)) continue;
+    try {
+      rmSync(resolve(tmpdir(), entry), { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
+}
+
 /**
  * Extract embedded runtime assets to a temporary directory so pi-coding-agent
  * can keep resolving prompts, skills, themes, and export-html assets via files.
  */
 export function prepareEmbeddedRuntime(isBunBinary: boolean): EmbeddedRuntimeDirs | null {
+  cleanupStaleEmbeddedDirs();
   if (!isBunBinary) return null;
 
   const allKeys = getEmbeddedKeys("");
   if (allKeys.length === 0) return null;
 
-  const tmpDir = resolve(tmpdir(), `pico-${randomBytes(6).toString("hex")}`);
+  const tmpDir = resolve(tmpdir(), `pico-${process.pid}-${randomBytes(6).toString("hex")}`);
   try {
     mkdirSync(tmpDir, { recursive: true });
   } catch (err) {

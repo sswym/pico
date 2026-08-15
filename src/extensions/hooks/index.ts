@@ -14,17 +14,24 @@
  * from `event.toolName`, and $TURN from `turn_end.turnIndex`.
  *
  * Errors inside hook execution never escape. On runner failure we either
- * block the tool (PreToolUse + blocking) or emit a `pico.hook.warn`
- * custom message.
+ * block the tool (PreToolUse + blocking) or surface a warning to the TUI via
+ * ctx.ui.notify — deliberately NOT a session custom message: pi projects
+ * every custom_message into the model context (display only controls TUI
+ * rendering), so hook internals (command text, file paths) would reach the
+ * model and read as "sandbox injection" (D13-F2).
  */
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type {
   ExtensionAPI,
+  ExtensionContext,
   ExtensionFactory,
   ToolCallEvent,
   ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
 import { type Hook, loadHooks, drainHookConfigErrors } from "./config.ts";
 import { type HookVars, runHook } from "./runner.ts";
+import { allowProjectHooks } from "../policy.ts";
 
 export { loadHooks, type Hook } from "./config.ts";
 export { runHook, substitute } from "./runner.ts";
@@ -74,32 +81,63 @@ export function createHooksExtension(deps: {
       return cached.hooks;
     }
 
-    function warn(content: string): void {
+    /**
+     * Surface a hook notice to the user only — never into the model context.
+     * pi injects every `custom_message` (sendMessage) into the LLM context;
+     * the `display` flag only controls TUI rendering. `ctx.ui.notify` is
+     * TUI-only and creates no session entry, so hook internals (command
+     * text, paths) stay out of the model's view. Headless runs fall back to
+     * stderr so CI/batch logs remain informative.
+     */
+    function notice(
+      ctx: ExtensionContext | undefined,
+      content: string,
+      level: "info" | "warning" | "error" = "warning",
+    ): void {
       try {
-        pi.sendMessage({
-          customType: "pico.hook.warn",
-          content,
-          display: true,
-        });
+        if (ctx?.hasUI) {
+          ctx.ui.notify(content, level);
+        } else {
+          // Config-error lines already carry the prefix; avoid doubling it.
+          const prefix = content.startsWith("[pico hooks] ") ? "" : "[pico hooks] ";
+          console.warn(`${prefix}${content}`);
+        }
       } catch {
-        // non-TUI mode may drop custom messages
+        // non-TUI mode may drop notify
       }
-      // Surface to stderr too — useful for non-interactive runs / CI.
-      try {
-        console.warn(`[pico hooks] ${content}`);
-      } catch {}
     }
 
-    pi.on("session_start", () => {
-      // 2.5.8: config parse errors are invisible in the TUI (console.warn
-      // goes to stderr). Surface them via the same channel hook failures use.
-      const errors = drainHookConfigErrors();
-      for (const message of errors) {
-        warn(message);
+    pi.on("session_start", async (_event, ctx) => {
+      try {
+        // hooks() is otherwise lazy (first tool call), so a session_start
+        // drain would find nothing (D13-F1). Load eagerly — this warms the
+        // cache and lets the drain actually surface malformed-config errors
+        // through the TUI channel instead of raw stderr.
+        hooks();
+        for (const message of drainHookConfigErrors()) {
+          notice(ctx, message, "warning");
+        }
+      } catch {
+        // best-effort
+      }
+      // 2.2.3: a project hooks.json that is silently ignored looks like a
+      // broken security setup — tell the user the safety switch is off and
+      // how to enable it (mirrors the project MCP/LSP pattern).
+      try {
+        const projectPath = join(ctx.cwd ?? cwdFn(), ".pico", "hooks.json");
+        if (existsSync(projectPath) && !allowProjectHooks()) {
+          notice(
+            ctx,
+            "检测到项目 hooks 配置（.pico/hooks.json），但当前被安全策略禁用。运行 /doctor 查看如何开启（PICO_ENABLE_PROJECT_HOOKS）。",
+            "warning",
+          );
+        }
+      } catch {
+        // best-effort hint
       }
     });
 
-    pi.on("tool_call", async (event: ToolCallEvent) => {
+    pi.on("tool_call", async (event: ToolCallEvent, ctx: ExtensionContext) => {
       const matching = hooks().filter((h) => matches(h, "PreToolUse", event.toolName));
       if (matching.length === 0) return {};
 
@@ -111,17 +149,14 @@ export function createHooksExtension(deps: {
       for (const hook of matching) {
         const blocking = hook.blocking ?? true;
         // 2.5.8: a blocking hook with a long timeout looks like a dead tool
-        // call — say it is running before the subprocess spins up.
+        // call — say it is running before the subprocess spins up. notify is
+        // TUI-only: the message must not enter the model context (D13-F2).
         if (blocking && (hook.timeoutMs ?? 30_000) >= 10_000) {
-          try {
-            pi.sendMessage({
-              customType: "pico.hook.progress",
-              content: `Waiting for PreToolUse hook \`${hook.command}\` (timeout ${(hook.timeoutMs ?? 30_000) / 1000}s)…`,
-              display: true,
-            });
-          } catch {
-            // non-TUI mode may drop custom messages
-          }
+          notice(
+            ctx,
+            `Waiting for PreToolUse hook \`${hook.command}\` (timeout ${(hook.timeoutMs ?? 30_000) / 1000}s)…`,
+            "info",
+          );
         }
         const res = await run(hook, vars, cwdFn());
         const failed = res.timedOut || res.exitCode !== 0;
@@ -136,13 +171,13 @@ export function createHooksExtension(deps: {
           return { block: true, reason };
         }
         if (failed) {
-          warn(`PreToolUse hook \`${hook.command}\` failed (${res.timedOut ? "timeout" : `exit ${res.exitCode}`}); not blocking (blocking=false)`);
+          notice(ctx, `PreToolUse hook \`${hook.command}\` failed (${res.timedOut ? "timeout" : `exit ${res.exitCode}`}); not blocking (blocking=false)`);
         }
       }
       return {};
     });
 
-    pi.on("tool_result", async (event: ToolResultEvent) => {
+    pi.on("tool_result", async (event: ToolResultEvent, ctx: ExtensionContext) => {
       const matching = hooks().filter((h) => matches(h, "PostToolUse", event.toolName));
       if (matching.length === 0) return {};
 
@@ -155,13 +190,13 @@ export function createHooksExtension(deps: {
         const res = await run(hook, vars, cwdFn());
         if (res.timedOut || res.exitCode !== 0) {
           const why = res.timedOut ? "timeout" : `exit ${res.exitCode}`;
-          warn(`PostToolUse hook \`${hook.command}\` ${why}`);
+          notice(ctx, `PostToolUse hook \`${hook.command}\` ${why}`);
         }
       }
       return {};
     });
 
-    pi.on("turn_end", async (event) => {
+    pi.on("turn_end", async (event, ctx: ExtensionContext) => {
       const matching = hooks().filter((h) => h.event === "PostUserMessage");
       if (matching.length === 0) return;
 
@@ -175,10 +210,10 @@ export function createHooksExtension(deps: {
         void run(hook, vars, cwdFn()).then((res) => {
           if (res.timedOut || res.exitCode !== 0) {
             const why = res.timedOut ? "timeout" : `exit ${res.exitCode}`;
-            warn(`PostUserMessage hook \`${hook.command}\` ${why}`);
+            notice(ctx, `PostUserMessage hook \`${hook.command}\` ${why}`);
           }
         }).catch((err) => {
-          warn(`PostUserMessage hook \`${hook.command}\` failed: ${err instanceof Error ? err.message : String(err)}`);
+          notice(ctx, `PostUserMessage hook \`${hook.command}\` failed: ${err instanceof Error ? err.message : String(err)}`);
         });
       }
     });
@@ -194,8 +229,8 @@ export function createHooksExtension(deps: {
         matching.map(async (hook) => {
           const res = await run(hook, {}, cwdFn());
           if (res.timedOut || res.exitCode !== 0) {
-            // Session is going away — sendMessage may not deliver anywhere
-            // useful, so just log to stderr.
+            // Session is going away — the notify channel may not deliver
+            // anywhere useful, so just log to stderr.
             const why = res.timedOut ? "timeout" : `exit ${res.exitCode}`;
             try {
               console.warn(`[pico hooks] PreSessionEnd hook \`${hook.command}\` ${why}`);

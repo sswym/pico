@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { randomBytes } from "node:crypto";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { buildRuntimeArgs, isNonTuiArg } from "../src/runtime/args.ts";
-import { prepareEmbeddedRuntime } from "../src/runtime/embedded-runtime.ts";
+import { cleanupStaleEmbeddedDirs, prepareEmbeddedRuntime } from "../src/runtime/embedded-runtime.ts";
 import { ExtensionRegistry } from "../src/runtime/extensions.ts";
 
 const entryMetaUrl = pathToFileURL(resolve(import.meta.dir, "..", "bin", "pico.ts")).href;
@@ -95,6 +97,129 @@ test("buildRuntimeArgs does not duplicate existing bundled paths", () => {
     entryMetaUrl,
     isBunBinary: false,
   })).toEqual(["--prompt-template", promptsDir, "--skill", skillsDir, "--tui-mode", "fullscreen"]);
+});
+
+test("buildRuntimeArgs resolves --theme names to theme files (M2)", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-args-theme-"));
+  const agentDir = join(home, "agent");
+  mkdirSync(join(agentDir, "themes"), { recursive: true });
+  writeFileSync(
+    join(agentDir, "themes", "claude-code-dark.json"),
+    JSON.stringify({ name: "claude-code-dark", colors: {} }),
+    "utf-8",
+  );
+  const prevHome = process.env.PICO_HOME;
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PICO_HOME = home;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  try {
+    const args = buildRuntimeArgs({
+      rawArgs: ["--theme", "claude-code-dark"],
+      entryMetaUrl,
+      isBunBinary: false,
+    });
+    // The bare name must be rewritten to the custom theme file's absolute
+    // path so upstream does not treat it as a cwd-relative path.
+    expect(args[0]).toBe("--theme");
+    expect(args[1]).toBe(join(agentDir, "themes", "claude-code-dark.json"));
+  } finally {
+    if (prevHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = prevHome;
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("buildRuntimeArgs resolves builtin theme names via PI_PACKAGE_DIR (M2)", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-args-theme-"));
+  const agentDir = join(home, "agent");
+  mkdirSync(agentDir, { recursive: true });
+  const upstream = resolve(import.meta.dir, "..", "node_modules", "@earendil-works", "pi-coding-agent");
+  const builtinTheme = join(upstream, "dist", "modes", "interactive", "theme", "light.json");
+  const prevHome = process.env.PICO_HOME;
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const prevPkgDir = process.env.PI_PACKAGE_DIR;
+  process.env.PICO_HOME = home;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  process.env.PI_PACKAGE_DIR = upstream;
+  try {
+    const args = buildRuntimeArgs({
+      rawArgs: ["--theme", "light"],
+      entryMetaUrl,
+      isBunBinary: false,
+    });
+    expect(args[1]).toBe(builtinTheme);
+  } finally {
+    if (prevHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = prevHome;
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+    if (prevPkgDir === undefined) delete process.env.PI_PACKAGE_DIR;
+    else process.env.PI_PACKAGE_DIR = prevPkgDir;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("buildRuntimeArgs leaves theme paths and unknown names untouched (M2)", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-args-theme-"));
+  const agentDir = join(home, "agent");
+  mkdirSync(agentDir, { recursive: true });
+  const prevHome = process.env.PICO_HOME;
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PICO_HOME = home;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  try {
+    // Absolute paths are the user's own files — passed through verbatim.
+    const absolute = buildRuntimeArgs({
+      rawArgs: ["--theme", "/abs/path/theme.json"],
+      entryMetaUrl,
+      isBunBinary: false,
+    });
+    expect(absolute[1]).toBe("/abs/path/theme.json");
+
+    // Unknown names resolve to nothing — upstream reports its own
+    // "theme path does not exist" diagnostic instead.
+    const unknown = buildRuntimeArgs({
+      rawArgs: ["--theme", "no-such-theme"],
+      entryMetaUrl,
+      isBunBinary: false,
+    });
+    expect(unknown[1]).toBe("no-such-theme");
+  } finally {
+    if (prevHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = prevHome;
+    if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("cleanupStaleEmbeddedDirs removes SIGKILLed residue but keeps live and legacy dirs", () => {
+  // Beyond pid_max → provably no such process (ESRCH), simulating a
+  // SIGKILLed pico whose exit cleanup never ran.
+  const deadPid = 2147483647;
+  const staleName = `pico-${deadPid}-${randomBytes(6).toString("hex")}`;
+  const liveName = `pico-${process.pid}-${randomBytes(6).toString("hex")}`;
+  const legacyName = `pico-${randomBytes(6).toString("hex")}`;
+  const staleDir = join(tmpdir(), staleName);
+  const liveDir = join(tmpdir(), liveName);
+  const legacyDir = join(tmpdir(), legacyName);
+  mkdirSync(staleDir, { recursive: true });
+  mkdirSync(liveDir, { recursive: true });
+  mkdirSync(legacyDir, { recursive: true });
+  try {
+    cleanupStaleEmbeddedDirs();
+    expect(existsSync(staleDir)).toBe(false);
+    // A live process (our own pid) must never be touched.
+    expect(existsSync(liveDir)).toBe(true);
+    // Legacy pre-PID dirs carry no owner marker — left alone.
+    expect(existsSync(legacyDir)).toBe(true);
+  } finally {
+    rmSync(staleDir, { recursive: true, force: true });
+    rmSync(liveDir, { recursive: true, force: true });
+    rmSync(legacyDir, { recursive: true, force: true });
+  }
 });
 
 test("isNonTuiArg catches separated AND equals-form non-TUI flags", () => {

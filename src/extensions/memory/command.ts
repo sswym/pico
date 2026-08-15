@@ -138,6 +138,13 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
 
   const scopedCwd = (scope: "global" | "project" | undefined): string | undefined =>
     scope === "project" ? (currentCwd ?? undefined) : undefined;
+  // 2.3.1: reads with no explicit --scope default to the CURRENT PROJECT
+  // scope (project + global) when a session cwd is known. A cwd alone is not
+  // enough — the store only unions project+global when scope="project" AND
+  // cwd, otherwise an undefined scope degrades to global-only and project
+  // facts stay invisible to every default read/command.
+  const readScope = (scope: "global" | "project" | undefined): "global" | "project" | undefined =>
+    scope ?? (currentCwd ? "project" : undefined);
 
   try {
     switch (cmd) {
@@ -180,7 +187,7 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
         const { limit, rest: catRest } = parseLimit(filterRest);
         const cat = asCategory(catRest) || undefined;
         renderFacts(
-          manager.list({ limit: limit ?? 50, scope, cwd: scopedCwd(scope), category: cat }),
+          manager.list({ limit: limit ?? 50, scope: readScope(scope), cwd: scopedCwd(readScope(scope)), category: cat }),
           `Memory — ${manager.count()} facts:`,
         );
         if (limit === undefined && manager.count() > 50) {
@@ -189,7 +196,7 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
         break;
       }
       case "count": {
-        const facts = manager.list({ limit: 10_000, minTrust: 0 });
+        const facts = manager.list({ limit: 10_000, minTrust: 0, scope: readScope(undefined), cwd: scopedCwd(readScope(undefined)) });
         const global = facts.filter((f) => f.scope === "global").length;
         const project = facts.length - global;
         announce(`Memory: ${manager.count()} facts (${global} global, ${project} project) at ${resolveDbPath()}; ${curated.count()} curated notes`);
@@ -202,7 +209,7 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
           break;
         }
         renderFacts(
-          manager.search(queryRest, { limit: 20, minTrust: 0, scope, cwd: scopedCwd(scope) }),
+          manager.search(queryRest, { limit: 20, minTrust: 0, scope: readScope(scope), cwd: scopedCwd(readScope(scope)) }),
           `Search: ${queryRest}`,
         );
         break;
@@ -244,8 +251,8 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
         const results = manager.related(entityRest, {
           limit: 20,
           minTrust: 0,
-          scope,
-          cwd: scopedCwd(scope) ?? (scope === undefined ? (currentCwd ?? undefined) : undefined),
+          scope: readScope(scope),
+          cwd: scopedCwd(readScope(scope)),
         });
         renderFacts(results, `Related to "${entityRest}":`);
         break;
@@ -260,8 +267,8 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
         const results = manager.reason(entities, {
           limit: 20,
           minTrust: 0,
-          scope,
-          cwd: scopedCwd(scope) ?? (scope === undefined ? (currentCwd ?? undefined) : undefined),
+          scope: readScope(scope),
+          cwd: scopedCwd(readScope(scope)),
         });
         renderFacts(results, `Reason over [${entities.join(", ")}]:`);
         break;
@@ -269,7 +276,7 @@ export async function executeMemoryCommand(args: string, deps: MemoryCommandDeps
       case "contradict": {
         const { scope, rest: filterRest } = parseScope(rest);
         const cat = asCategory(filterRest) || undefined;
-        const results = manager.contradict({ category: cat, limit: 10, scope, cwd: scopedCwd(scope) });
+        const results = manager.contradict({ category: cat, limit: 10, scope: readScope(scope), cwd: scopedCwd(readScope(scope)) });
         if (results.length === 0) {
           announce("No contradictions found.");
         } else {

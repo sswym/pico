@@ -557,8 +557,10 @@ describe("memory session_before_compact event", () => {
 
       const result = await handlers["session_before_compact"]![0]!({
         branchEntries: [
-          { role: "user", content: "remember: we prefer bun over node" },
-          { role: "assistant", content: "noted" },
+          // Real upstream payload: SESSION entries ({type:'message',
+          // message:{role,content}}) — not bare messages.
+          { type: "message", message: { role: "user", content: "remember: we prefer bun over node" } },
+          { type: "message", message: { role: "assistant", content: "noted" } },
         ],
         preparation: { firstKeptEntryId: "e1", tokensBefore: 1000 },
       });

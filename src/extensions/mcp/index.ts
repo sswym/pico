@@ -32,7 +32,7 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
-import { loadMcpConfig } from "./config.ts";
+import { loadMcpConfig, loadInvalidMcpServers } from "./config.ts";
 import { allowProjectMcp } from "../policy.ts";
 import {
   spawnMcpServer,
@@ -64,11 +64,19 @@ const MCP_STATUS_KEY = "mcp";
 
 export interface McpExtensionDeps {
   load: (cwd: string) => Record<string, McpServerConfig>;
+  /** Optional: config-level validation failures for `cwd` — malformed entries
+   *  that `load` silently skips (non-string command, bad args/env, ...).
+   *  Surfaced as FAILED entries in /mcp instead of vanishing (P5). */
+  loadInvalid?: (cwd: string) => Array<{ id: string; error: string }>;
   spawn: (id: string, config: McpServerConfig) => McpServerHandle;
   initialize: (handle: McpServerHandle) => Promise<McpInitializeResult>;
   listTools: (handle: McpServerHandle) => Promise<McpTool[]>;
   callTool: (handle: McpServerHandle, toolName: string, params: Record<string, unknown>) => Promise<McpToolCallResult>;
   close: (handle: McpServerHandle) => void;
+  /** Optional: reconnect timing overrides (tests inject a fake clock). */
+  reconnect?: {
+    now?: () => number;
+  };
 }
 
 function connectedEntries(entries: ServerEntry[]): ServerStatus[] {
@@ -129,21 +137,6 @@ interface ActiveTool {
   toolName: string;
 }
 
-/** Handles whose process has exited — detected for auto-reconnect (2.5.7). */
-const deadHandles = new WeakSet<McpServerHandle>();
-const reconnectState = new Map<string, { nextAttemptAt: number; backoffMs: number }>();
-
-/** Mark a handle dead once its process exits. */
-function watchHandleDeath(handle: McpServerHandle): void {
-  handle.proc.exited
-    .then(() => deadHandles.add(handle))
-    .catch(() => deadHandles.add(handle));
-}
-
-function isHandleDead(handle: McpServerHandle): boolean {
-  return deadHandles.has(handle);
-}
-
 /** Sanitize a server id for use inside a tool name (2.5.7): ids containing
  *  `__` or spaces would make `mcp__<id>__<tool>` ambiguous. */
 function toolNameFor(serverId: string, toolName: string): string {
@@ -174,6 +167,45 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
     /** Bumped per connect; stale generations close their own handles and stop. */
     let connectGeneration = 0;
 
+    /**
+     * Reconnect state machine (2.5.7). Per-server exponential backoff so a
+     * crashing server is not cold-restarted on every call. The state survives
+     * a SUCCESSFUL reconnect — only the backoff ladder resets — so a server
+     * that dies again inside the current window actually waits ("retry in
+     * Ns") instead of being re-spawned immediately; resetting nextAttemptAt
+     * on success made that branch unreachable dead code.
+     */
+    const reconnectState = new Map<string, { nextAttemptAt: number; backoffMs: number }>();
+    /** Single-flight reconnect attempts: parallel callers of the same dead
+     *  handle share one reconnect result instead of racing each other. */
+    const reconnectInFlight = new Map<string, Promise<void>>();
+    /** Handles whose process has exited — detected for auto-reconnect (2.5.7). */
+    const deadHandles = new WeakSet<McpServerHandle>();
+    const initialBackoffMs = 5_000;
+    const maxBackoffMs = 60_000;
+    const nowMs = deps.reconnect?.now ?? Date.now;
+
+    /** Mark a handle dead once its process exits. */
+    function watchHandleDeath(handle: McpServerHandle): void {
+      handle.proc.exited
+        .then(() => deadHandles.add(handle))
+        .catch(() => deadHandles.add(handle));
+    }
+
+    function isHandleDead(handle: McpServerHandle): boolean {
+      return deadHandles.has(handle);
+    }
+
+    /** Observable backoff-wait error: the server is unavailable and the next
+     *  reconnect attempt is scheduled — the caller must wait, not retry now. */
+    function reconnectRetryError(id: string, state: { nextAttemptAt: number }): Error {
+      const wait = Math.max(1, Math.ceil((state.nextAttemptAt - nowMs()) / 1000));
+      return new Error(
+        `MCP server "${id}" is unavailable (will retry in ${wait}s). ` +
+        `Note: a timed-out MCP call does NOT cancel server-side execution — avoid blind retries of mutating calls.`,
+      );
+    }
+
   // ── Register /mcp command BEFORE async server connections ──────────────
 
     pi.registerCommand("mcp", {
@@ -198,6 +230,8 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
         }
         entries.length = 0;
         activeTools.clear();
+        reconnectState.clear();
+        reconnectInFlight.clear();
         connectedCwd = cwd;
         failedServerIds.clear();
         connectedServerIds.clear();
@@ -205,13 +239,26 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
 
       const servers = deps.load(cwd);
 
+      // Config-level validation failures (non-string command, malformed args,
+      // ...) are user-visible status: surface them as FAILED entries in /mcp
+      // instead of silently dropping the server (P5).
+      const invalid = deps.loadInvalid?.(cwd) ?? [];
+      for (const { id, error } of invalid) {
+        if (!entries.some((e) => e.id === id)) {
+          entries.push({ id, error: `配置无效：${error}` });
+        }
+      }
+
       // Only servers not yet connected for this cwd are attempted; previously
       // failed ones are retried on every later session_start instead of being
       // given up silently for the rest of the session.
       const targets = Object.entries(servers).filter(
         ([id]) => !connectedServerIds.has(id),
       );
-      if (targets.length === 0) return;
+      if (targets.length === 0) {
+        updateMcpStatus(lastCtx, entries);
+        return;
+      }
 
       // Connect servers in parallel: a slow/hung server must not delay the
       // healthy ones (previously serial, one 30s timeout per server).
@@ -278,23 +325,46 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
                 },
                 async execute(_tcId, params, _signal) {
                   const current = holder!.ref;
+                  const state = reconnectState.get(id);
+                  const inFlight = reconnectInFlight.get(id);
+
                   // 2.5.7: a server that crashed mid-session must recover
                   // without a /reload — detect the dead process and reconnect
-                  // (with backoff) instead of failing permanently.
-                  if (current?.handle && isHandleDead(current.handle)) {
-                    const state = reconnectState.get(id) ?? { nextAttemptAt: 0, backoffMs: 5_000 };
-                    if (Date.now() >= state.nextAttemptAt) {
-                      await reconnectServer(id, state);
-                    } else {
-                      const wait = Math.ceil((state.nextAttemptAt - Date.now()) / 1000);
-                      throw new Error(
-                        `MCP server "${id}" crashed and is reconnecting (retry in ${wait}s). ` +
-                        `Note: a timed-out MCP call does NOT cancel server-side execution — avoid blind retries of mutating calls.`,
-                      );
+                  // (with backoff) instead of failing permanently. Parallel
+                  // callers of the same dead handle share ONE reconnect
+                  // attempt (single-flight) and all observe its outcome
+                  // instead of racing and seeing a misleading "not active".
+                  if (inFlight) {
+                    // Another call is already reconnecting this server: wait
+                    // for the shared attempt, then use its resulting handle.
+                    await inFlight;
+                  } else if (current?.handle && isHandleDead(current.handle)) {
+                    if (state && nowMs() < state.nextAttemptAt) {
+                      throw reconnectRetryError(id, state);
                     }
+                    await reconnectServer(id);
+                  } else if (!current?.handle && state) {
+                    // A previous reconnect attempt failed and left no usable
+                    // handle; keep retrying on the backoff schedule instead of
+                    // giving up for the rest of the session (previously only
+                    // /reload recovered it).
+                    if (nowMs() < state.nextAttemptAt) {
+                      throw reconnectRetryError(id, state);
+                    }
+                    await reconnectServer(id);
+                  } else if (!current?.handle) {
+                    // Throw so the failure is marked as an error upstream (a
+                    // returned isError flag is dropped by the agent loop).
+                    throw new Error(
+                      `MCP tool "${tool.name}" is not active (server disconnected or reconnecting)`,
+                    );
                   }
                   const currentAfterReconnect = holder!.ref;
                   if (!currentAfterReconnect || currentAfterReconnect.handle === null) {
+                    const st = reconnectState.get(id);
+                    if (st && nowMs() < st.nextAttemptAt) {
+                      throw reconnectRetryError(id, st);
+                    }
                     // Throw so the failure is marked as an error upstream (a
                     // returned isError flag is dropped by the agent loop).
                     throw new Error(
@@ -343,6 +413,11 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
             );
           }
 
+          // Replace any prior entry for this server (a stale failure or an
+          // invalid-config entry from an earlier pass) rather than
+          // accumulating duplicates in /mcp.
+          const prevIdx = entries.findIndex((entry) => entry.id === id);
+          if (prevIdx !== -1) entries.splice(prevIdx, 1);
           entries.push({ id, serverName, serverVersion, toolCount: tools.length, toolNames, handle });
           connectedServerIds.add(id);
         } catch (e) {
@@ -357,6 +432,11 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
             toolRefHolders.delete(name);
           }
           failedServerIds.add(id);
+          // Replace any prior entry for this server (a stale failure from an
+          // earlier attempt, or a dead-handle status removed by the reconnect
+          // path) rather than accumulating duplicates in /mcp.
+          const prevIdx = entries.findIndex((entry) => entry.id === id);
+          if (prevIdx !== -1) entries.splice(prevIdx, 1);
           entries.push({ id, error: msg });
         }
       }));
@@ -368,25 +448,47 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
     /**
      * Drop a dead server and reconnect it with exponential backoff (2.5.7).
      * The tool that triggered this is retried transparently by the caller.
+     * Concurrent triggers for the same server share a single in-flight
+     * attempt. After a SUCCESSFUL reconnect only the backoff ladder resets —
+     * the current window stays in force, so a server that dies again inside
+     * it is throttled ("retry in Ns") instead of being cold-restarted per
+     * call. A FAILED reconnect keeps the (doubled) window and leaves the
+     * holder nulled; the next call past the window retries automatically, so
+     * a transient respawn failure self-heals without /reload.
      */
-    async function reconnectServer(id: string, state: { nextAttemptAt: number; backoffMs: number }): Promise<void> {
-      state.nextAttemptAt = Date.now() + state.backoffMs;
-      state.backoffMs = Math.min(state.backoffMs * 2, 60_000);
-      reconnectState.set(id, state);
+    async function reconnectServer(id: string): Promise<void> {
+      const inFlight = reconnectInFlight.get(id);
+      if (inFlight) return inFlight;
 
-      const idx = entries.findIndex((e) => e.id === id);
-      const entry = entries[idx];
-      if (entry?.handle) {
-        for (const ref of activeTools.values()) {
-          if (ref.handle === entry.handle) ref.handle = null;
+      const attempt = (async () => {
+        const state = reconnectState.get(id) ?? { nextAttemptAt: 0, backoffMs: initialBackoffMs };
+        state.nextAttemptAt = nowMs() + state.backoffMs;
+        state.backoffMs = Math.min(state.backoffMs * 2, maxBackoffMs);
+        reconnectState.set(id, state);
+
+        const idx = entries.findIndex((e) => e.id === id);
+        const entry = entries[idx];
+        if (entry?.handle) {
+          for (const ref of activeTools.values()) {
+            if (ref.handle === entry.handle) ref.handle = null;
+          }
+          connectedServerIds.delete(id);
         }
-        entries.splice(idx, 1);
-        connectedServerIds.delete(id);
-      }
-      if (!connectedCwd) return;
-      await connect(connectedCwd);
-      if (connectedServerIds.has(id)) {
-        reconnectState.set(id, { nextAttemptAt: 0, backoffMs: 5_000 });
+        // Drop the previous entry (a dead-handle status or a stale failure)
+        // so the next connect() publishes a fresh one for this server.
+        if (idx !== -1) entries.splice(idx, 1);
+        if (!connectedCwd) return;
+        await connect(connectedCwd);
+        if (connectedServerIds.has(id)) {
+          state.backoffMs = initialBackoffMs;
+        }
+      })();
+
+      reconnectInFlight.set(id, attempt);
+      try {
+        await attempt;
+      } finally {
+        reconnectInFlight.delete(id);
       }
     }
 
@@ -424,6 +526,7 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
       connectedServerIds.clear();
       failedServerIds.clear();
       reconnectState.clear();
+      reconnectInFlight.clear();
       updateMcpStatus(lastCtx, entries);
       lastCtx = undefined;
     });
@@ -432,6 +535,7 @@ export function createMcpExtension(deps: McpExtensionDeps): ExtensionFactory {
 
 export const mcpExtension: ExtensionFactory = createMcpExtension({
   load: loadMcpConfig,
+  loadInvalid: loadInvalidMcpServers,
   spawn: spawnMcpServer,
   initialize: mcpInitialize,
   listTools: mcpListTools,

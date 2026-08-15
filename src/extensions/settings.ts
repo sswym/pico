@@ -5,7 +5,7 @@
  * (or $PICO_HOME/agent/settings.json). Callers should tolerate malformed
  * or missing settings and fall back to safe defaults.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { picoSettingsPath } from "./paths.ts";
 
@@ -44,6 +44,15 @@ export function writeSettings(settings: Settings): void {
   const settingsPath = picoSettingsPath();
   mkdirSync(dirname(settingsPath), { recursive: true });
   // settings.json may hold API keys (env stanza) — never world-readable.
+  // { mode: 0o600 } only applies on first creation; a file left at 0644/0664
+  // by an older version or a concurrent writer keeps its wide mode, so repair
+  // it here (same explicit fix as events.jsonl / input-history.jsonl).
+  try {
+    const mode = statSync(settingsPath).mode & 0o777;
+    if ((mode & 0o077) !== 0) chmodSync(settingsPath, 0o600);
+  } catch {
+    // File does not exist yet — writeFileSync below creates it with 0o600.
+  }
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
 }
 

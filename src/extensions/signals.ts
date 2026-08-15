@@ -16,10 +16,14 @@
  *     graceful "shutdown pi and exit" path, which flushes the session and
  *     lets MCP/session_shutdown cleanup run).
  *
- * The handlers are registered once per process (a `/reload` re-runs the
- * factory; re-adding the same listener would stack duplicates). The ctx
- * reference is refreshed on every session_start so a reloaded session still
- * cancels the right runtime.
+ * The process handlers are registered once per process (a `/reload` re-runs
+ * the factory; re-adding the same listener would stack duplicates). The
+ * session subscriptions are per factory run: `/reload` builds a fresh
+ * ExtensionAPI and discards the old runner, so the old subscriptions die with
+ * it — the new api must be subscribed again, or currentCtx is never refreshed
+ * and every SIGINT falls through to an immediate exit(130). The ctx reference
+ * is refreshed on every session_start so a reloaded session still cancels the
+ * right runtime.
  */
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 
@@ -85,21 +89,28 @@ export const signalsExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     handlersRegistered = true;
     process.on("SIGINT", () => handleSignal("SIGINT", currentCtx));
     process.on("SIGTERM", () => handleSignal("SIGTERM", currentCtx));
-
-    // Handlers close over the module-level `currentCtx`, so a `/reload` that
-    // re-runs this factory does not need to re-subscribe — the new session's
-    // session_start refreshes the reference.
-    pi.on("session_start", (_event, ctx) => {
-      currentCtx = ctx;
-    });
-    pi.on("session_shutdown", () => {
-      // Never cancel against a dead session after shutdown.
-      currentCtx = null;
-    });
   }
+
+  // Per-run subscriptions, NOT gated by the process-level guard: /reload
+  // re-runs this factory against a fresh ExtensionAPI (the old runner and its
+  // subscriptions are discarded), so skipping these on the second run leaves
+  // currentCtx permanently stale — any SIGINT then exits(130) instead of
+  // cancelling the running task.
+  pi.on("session_start", (_event, ctx) => {
+    currentCtx = ctx;
+  });
+  pi.on("session_shutdown", () => {
+    // Never cancel against a dead session after shutdown.
+    currentCtx = null;
+  });
 };
 
 export function __resetSignalsForTests(): void {
   currentCtx = null;
   lastSigintAt = 0;
+}
+
+/** Test-only: expose the module-level ctx the process handlers close over. */
+export function __getCurrentCtxForTests(): ExtensionContext | null {
+  return currentCtx;
 }

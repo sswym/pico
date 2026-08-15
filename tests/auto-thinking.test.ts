@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { autoThinkingExtension, THINKING_LEVELS } from "../src/extensions/auto-thinking/index.ts";
 import { buildUltrathinkNotice, containsUltrathink } from "../src/extensions/auto-thinking/ultrathink.ts";
+import { isSettingsDamaged, readSettings, writeSettings } from "../src/extensions/settings.ts";
 
 type FakeHandler = (event: any, ctx: any) => any;
 
@@ -175,4 +179,85 @@ test("registers thinking command with level validation", async () => {
 
 test("THINKING_LEVELS covers all seven upstream levels", () => {
   expect(THINKING_LEVELS).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+});
+
+// --- /thinking status (F3) & clamped notify (F4) -------------------------
+
+test("/thinking status shows the current level like /ponytail status", async () => {
+  const pi = makeFakePi();
+  autoThinkingExtension(pi as unknown as Parameters<typeof autoThinkingExtension>[0]);
+
+  const cmd = pi.commands.get("thinking")!;
+  await cmd.handler("status", { ui: pi.ui });
+
+  expect(pi.getThinkingLevel()).toBe("medium"); // status is not a level change
+  expect(pi.notices.some((n) => n.includes("Thinking level: medium"))).toBe(true);
+  expect(pi.notices.some((n) => n.includes("Unknown thinking level"))).toBe(false);
+});
+
+test("/thinking minimal notifies the clamped effective level, not the request", async () => {
+  const pi = makeFakePi();
+  // Upstream clamps unsupported levels: only off/high/max are available here,
+  // so "minimal" lands on "high".
+  const supported = ["off", "high", "max"];
+  const originalSet = pi.setThinkingLevel;
+  pi.setThinkingLevel = (level: string) => {
+    originalSet(supported.includes(level) ? level : "high");
+  };
+  autoThinkingExtension(pi as unknown as Parameters<typeof autoThinkingExtension>[0]);
+
+  const cmd = pi.commands.get("thinking")!;
+  await cmd.handler("minimal", { ui: pi.ui });
+
+  expect(pi.getThinkingLevel()).toBe("high");
+  expect(pi.notices.some((n) => n.includes("Thinking level set to high"))).toBe(true);
+  expect(pi.notices.some((n) => n.includes("minimal not supported"))).toBe(true);
+});
+
+// --- ultrathink must not persist defaultThinkingLevel (F2/M12) ------------
+
+test("ultrathink restore puts the persisted defaultThinkingLevel back", () => {
+  const oldHome = process.env.PICO_HOME;
+  const home = mkdtempSync(join(tmpdir(), "pico-thinking-home-"));
+  process.env.PICO_HOME = home;
+  try {
+    mkdirSync(join(home, "agent"), { recursive: true });
+    writeFileSync(join(home, "agent", "settings.json"), JSON.stringify({
+      defaultThinkingLevel: "medium",
+    }));
+
+    // Simulate upstream AgentSession.setThinkingLevel: clamp to the model's
+    // supported levels (off/high/max) and persist every effective change to
+    // settings.json — exactly the behavior that used to rewrite the user's
+    // default from medium to high after one ultrathink turn.
+    const pi = makeFakePi();
+    const supported = ["off", "high", "max"];
+    let level = "high"; // "medium" in settings clamps to "high" at session start
+    pi.getThinkingLevel = () => level;
+    pi.setThinkingLevel = (next: string) => {
+      const effective = supported.includes(next) ? next : "high";
+      level = effective;
+      if (!isSettingsDamaged()) {
+        const settings = readSettings();
+        settings.defaultThinkingLevel = effective;
+        writeSettings(settings);
+      }
+    };
+    autoThinkingExtension(pi as unknown as Parameters<typeof autoThinkingExtension>[0]);
+
+    runBeforeAgentStart(pi, "ultrathink design the queue module");
+    expect(pi.getThinkingLevel()).toBe("max");
+    expect(readSettings().defaultThinkingLevel).toBe("max"); // upstream persisted the raise
+
+    const endHandler = pi.handlers["agent_end"]?.[0];
+    if (!endHandler) throw new Error("agent_end handler not registered");
+    endHandler({}, {});
+
+    expect(pi.getThinkingLevel()).toBe("high"); // session restored to clamped level
+    expect(readSettings().defaultThinkingLevel).toBe("medium"); // config unchanged
+  } finally {
+    if (oldHome === undefined) delete process.env.PICO_HOME;
+    else process.env.PICO_HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  }
 });

@@ -34,7 +34,12 @@ import { SandboxState } from "./sandbox.ts";
 import type { BufferedToolSet } from "./tools.ts";
 import { createBufferedToolSet } from "./tools.ts";
 import { SnapshotTracker } from "./tracker.ts";
-import type { SandboxProgress, TrackedStats } from "./types.ts";
+import type {
+	FileState,
+	Manifest,
+	SandboxProgress,
+	TrackedStats,
+} from "./types.ts";
 
 const STATUS_KEY = "undo-redo";
 const TOOL_OUTPUT_DIR = "diffs";
@@ -305,7 +310,12 @@ export default function (pi: ExtensionAPI) {
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const session = ensureState(ctx);
 			if (!session) return;
-			await showDiffStack(pi, ctx, session.tracker, session.cache);
+			// Session history order (oldest first) so adjacent leaves can be
+			// diffed against each other, not only against the session base.
+			const leafOrder = [...session.undoStack];
+			if (session.currentLeafId) leafOrder.push(session.currentLeafId);
+			leafOrder.push(...[...session.redoStack].reverse());
+			await showDiffStack(pi, ctx, session.tracker, session.cache, leafOrder);
 		},
 	});
 
@@ -608,6 +618,91 @@ export default function (pi: ExtensionAPI) {
 		return sessionState;
 	};
 
+	interface HistoryBackup {
+		blobs: Map<string, Buffer>;
+		leafManifests: Map<string, Manifest>;
+		baseManifest: Manifest;
+		undoStack: string[];
+		redoStack: string[];
+	}
+
+	/** Capture the current session history (leaf snapshots + blobs + stacks) so
+	 * clearing the on-disk cache does not silently drop undo/redo capability. */
+	const preserveHistory = async (
+		session: SessionState,
+	): Promise<HistoryBackup> => {
+		// Capture the current real/sandbox state into the current leaf first so
+		// the pre-clear snapshot is the manifest we restore afterwards.
+		await session.tracker.saveLeaf(session.currentLeafId);
+
+		const leafIds: string[] = [];
+		const pushLeaf = (leafId: string | null) => {
+			if (leafId && !leafIds.includes(leafId)) leafIds.push(leafId);
+		};
+		pushLeaf(session.currentLeafId);
+		for (const leafId of session.undoStack) pushLeaf(leafId);
+		for (const leafId of session.redoStack) pushLeaf(leafId);
+
+		const leafManifests = new Map<string, Manifest>();
+		const blobs = new Map<string, Buffer>();
+		const addBlob = async (entry: FileState | undefined) => {
+			if (!entry?.exists || !entry.hash || blobs.has(entry.hash)) return;
+			blobs.set(entry.hash, await session.cache.readBlob(entry.hash));
+		};
+
+		for (const leafId of leafIds) {
+			const manifest = await session.tracker.loadLeaf(leafId);
+			if (!manifest) continue;
+			leafManifests.set(leafId, manifest);
+			for (const entry of manifest.values()) await addBlob(entry);
+		}
+
+		const baseManifest = session.tracker.getBaseManifest();
+		for (const entry of baseManifest.values()) await addBlob(entry);
+
+		return {
+			blobs,
+			leafManifests,
+			baseManifest,
+			undoStack: [...session.undoStack],
+			redoStack: [...session.redoStack],
+		};
+	};
+
+	/** Re-seed a freshly initialized session with the preserved history. */
+	const restoreHistory = async (
+		session: SessionState,
+		backup: HistoryBackup,
+	): Promise<void> => {
+		for (const [hash, buffer] of backup.blobs) {
+			await session.cache.writeBlob(hash, buffer);
+		}
+		for (const [leafId, manifest] of backup.leafManifests) {
+			await session.cache.writeLeaf(leafId, manifest);
+		}
+		await session.cache.writeBase(backup.baseManifest);
+
+		// The fresh tracker started with an empty base/leaf cache: reload the
+		// restored base and re-apply the current leaf so tracked state and the
+		// on-disk snapshot match the pre-clear files (still on the real root).
+		await session.tracker.loadBase();
+		for (const leafId of backup.leafManifests.keys()) {
+			// initializeSession's saveLeaf cached an empty manifest for the
+			// current leaf; drop it so loadLeaf re-reads the restored disk file.
+			session.tracker.invalidateLeafCache(leafId);
+		}
+		if (session.currentLeafId) {
+			await session.tracker.restoreLeaf(session.currentLeafId, [
+				session.sandboxRoot,
+				session.realRoot,
+			]);
+		}
+		session.undoStack.push(...backup.undoStack);
+		session.redoStack.push(...backup.redoStack);
+		session.sandboxState.setStats(await session.sandboxState.rescan());
+		updateStatus(session.tracker.getTrackedStats(), session.ui);
+	};
+
 	pi.registerCommand("undo-redo-clear-cache", {
 		description:
 			"Clear the undo/redo extension cache (snapshots, diffs, sandbox) for the current session",
@@ -615,11 +710,13 @@ export default function (pi: ExtensionAPI) {
 			const session = ensureState(ctx);
 			if (!session) return;
 			try {
+				const backup = await preserveHistory(session);
 				await rm(session.cache.root, { recursive: true, force: true });
 				state = await initializeSession(ctx);
+				await restoreHistory(state, backup);
 				notify(
 					ctx,
-					"Undo/redo cache cleared. Undo/redo history has been reset.",
+					"Undo/redo cache cleared. Current session's undo/redo history preserved.",
 					"info",
 				);
 			} catch (error) {

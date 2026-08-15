@@ -923,7 +923,7 @@ test("turn_end stores strong corrections, skips short/assistant messages and nev
   await pi.handlers["session_shutdown"]![0]!({ reason: "quit" }, {});
 });
 
-test("turn_end resets the curated consolidation retry budget", async () => {
+test("consolidation retry cap persists across turn_end and resets at agent_start", async () => {
   const env = makeEnv();
   const pi = makeDeepFakePi();
   memoryExtension(pi as any);
@@ -955,9 +955,15 @@ test("turn_end resets the curated consolidation retry budget", async () => {
   // …failure 4 trips the cap.
   expect((await noteAdd(over(4))).done).toBe(true);
 
-  // turn_end resets the counter → the next failure starts fresh.
+  // A turn_end (the upstream agent loop emits one after EVERY assistant
+  // message, including tool-call batches) must NOT reset the counter — the
+  // cap is per user turn, so the 5th failure still terminates.
   pi.handlers["turn_end"]![0]!({ message: { role: "assistant", content: "ok" } }, {});
-  expect((await noteAdd(over(5))).done).toBeUndefined();
+  expect((await noteAdd(over(5))).done).toBe(true);
+
+  // agent_start fires once per user turn and resets the budget.
+  pi.handlers["agent_start"]![0]!({}, {});
+  expect((await noteAdd(over(6))).done).toBeUndefined();
 
   await pi.handlers["session_shutdown"]![0]!({ reason: "quit" }, {});
 });
@@ -1024,6 +1030,78 @@ test("session_before_compact with no branch entries contributes nothing", async 
 
   const result = await pi.handlers["session_before_compact"]![0]!({});
   expect(result).toEqual({});
+  await pi.handlers["session_shutdown"]![0]!({ reason: "quit" }, {});
+});
+
+test("session_before_compact archives session entries into memory before discard", async () => {
+  const env = makeEnv();
+  const pi = makeDeepFakePi();
+  memoryExtension(pi as any);
+  await pi.handlers["session_start"]![0]!({}, sessionCtx());
+
+  // branchEntries are SESSION entries ({type:'message', message:{role,
+  // content}}) — the handler must unwrap them into plain messages for
+  // onPreCompress, otherwise the role filter matches nothing (D2-M3).
+  const branchEntries = [
+    { type: "message", message: { role: "user", content: "we agreed to use bun for scripts" } },
+    { type: "message", message: { role: "assistant", content: "sounds good" } },
+    { type: "custom", message: { role: "user", content: "not a message entry — ignored" } },
+  ];
+  const result = await pi.handlers["session_before_compact"]![0]!({
+    branchEntries,
+    preparation: { firstKeptEntryId: "entry-9", tokensBefore: 12345 },
+  });
+
+  expect(result).toMatchObject({
+    compaction: {
+      summary: expect.stringContaining("[memory] 1 user message"),
+      firstKeptEntryId: "entry-9",
+      tokensBefore: 12345,
+    },
+  });
+
+  const raw = new MemoryStore(env.db);
+  const archived = raw
+    .list({ minTrust: 0, limit: 50, scope: "project", cwd: "/tmp/x" })
+    .find((f) => f.content.includes("bun for scripts"));
+  expect(archived).toBeDefined();
+  expect(archived!.scope).toContain("project:");
+  raw.close();
+
+  await pi.handlers["session_shutdown"]![0]!({ reason: "quit" }, {});
+});
+
+test("turn_end automatic corrections link correction_of and dock the original's trust", async () => {
+  const env = makeEnv();
+  const pi = makeDeepFakePi();
+  memoryExtension(pi as any);
+  await pi.handlers["session_start"]![0]!({}, sessionCtx());
+
+  // Session A wrote a project fact; session B corrects it without the model
+  // touching the memory tool — the automatic correction path must link to the
+  // original (correction_of) and dock its trust, like the explicit path.
+  const tool = pi.tools.get("memory")!;
+  await tool.execute(
+    "id",
+    { action: "add", content: "团队使用 PostgreSQL 15 作为数据库", scope: "project" },
+    new AbortController().signal,
+    () => {},
+    { cwd: "/tmp/x", sessionManager: { getSessionId: () => "deep-session" } },
+  );
+
+  pi.handlers["turn_end"]![0]!({ message: { role: "user", content: "错了，其实是 MySQL，不是 PostgreSQL。" } }, {});
+
+  const raw = new MemoryStore(env.db);
+  const facts = raw.list({ minTrust: 0, limit: 50, scope: "project", cwd: "/tmp/x" });
+  const original = facts.find((f) => f.content.includes("PostgreSQL 15"));
+  const correction = facts.find((f) => f.category === "correction");
+  expect(original).toBeDefined();
+  expect(correction).toBeDefined();
+  expect(correction!.correction_of).toBe(original!.fact_id);
+  expect(correction!.trust_score).toBeCloseTo(0.7, 5);
+  expect(raw.get(original!.fact_id)!.trust_score).toBeCloseTo(0.5 - 0.3, 5);
+  raw.close();
+
   await pi.handlers["session_shutdown"]![0]!({ reason: "quit" }, {});
 });
 

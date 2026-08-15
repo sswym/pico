@@ -12,7 +12,17 @@ const SECRET_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
   { name: "AWS access key", pattern: /(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}/ },
   { name: "GitHub token", pattern: /gh[ps]_[A-Za-z0-9_]{36,}/ },
   { name: "SSH private key", pattern: /-----BEGIN\s+(?:RSA\s+|OPENSSH\s+|EC\s+|DSA\s+)?PRIVATE\s+KEY-----/ },
-  { name: "Stripe/OpenAI-style key", pattern: /\b(?:sk-|sk_live_|sk_test_|pk_live_|pk_test_)[A-Za-z0-9_-]{20,}/ },
+  { name: "Stripe/OpenAI-style key", pattern: /\b(?:sk_live_|sk_test_|pk_live_|pk_test_)[A-Za-z0-9_-]{20,}/ },
+  {
+    name: "OpenAI-style key (sk- prefix)",
+    // The bare `sk-` prefix is itself a strong signal, so it gets its own
+    // pattern with a much lower continuation bound. The old combined pattern
+    // required 20+ chars after the prefix and let short test keys slip
+    // through (`sk-test-abcdef123456` — 17 chars — was stored verbatim).
+    // False positives are preferable to false negatives here; 8 continuation
+    // chars still lets "sk-100" / "sk-id" style non-secrets through.
+    pattern: /\bsk-[A-Za-z0-9_-]{8,}/,
+  },
   {
     name: "key=value secret",
     // Unquoted (`KEY = value`) and non-canonical spellings (`aws_secret_access_key`,

@@ -9,6 +9,9 @@
  * instructions into a task for a worker subagent, so the skill runs in a
  * clean context instead of inline in the main context.
  */
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -41,12 +44,31 @@ const SkillParams = Type.Object({
 });
 
 /**
- * Parse `--skill <path>` (separated form only) from argv, mirroring upstream
- * args.js behavior. The bundled skills dir injected by src/runtime/args.ts is
- * therefore picked up automatically. Tolerates `--skill` as the last argv
- * element with no following value (skipped).
+ * 定位内置技能目录（src/skills）。
+ *
+ * bin/pico.ts 通过 buildRuntimeArgs() 把 `--skill <dir>` 追加进传给 main() 的
+ * 参数数组，上游 main 从不改写 process.argv —— 从 process.argv 读必然落空。
+ * 改为按运行形态自定位同一目录：
+ * - 编译二进制模式：prepareEmbeddedRuntime 把嵌入资源解到 $PI_PACKAGE_DIR/skills；
+ * - 源码模式：相对本文件（src/extensions/skill/index.ts）上溯两级到 src/skills。
  */
-function skillPathsFromArgv(): string[] {
+function bundledSkillsDir(): string | undefined {
+  const packageDir = process.env.PI_PACKAGE_DIR;
+  if (packageDir) {
+    const extracted = resolve(packageDir, "skills");
+    if (existsSync(extracted)) return extracted;
+  }
+  const sourceDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "skills");
+  if (existsSync(sourceDir)) return sourceDir;
+  return undefined;
+}
+
+/**
+ * 用户显式传的 `--skill <path>`（separated form only，与上游 args.js 一致）。
+ * 与 bundledSkillsDir 互补：注入的内置目录不进 process.argv，显式参数会进。
+ * Tolerates `--skill` as the last argv element with no following value (skipped).
+ */
+function explicitSkillPathsFromArgv(): string[] {
   const paths: string[] = [];
   const argv = process.argv;
   for (let i = 0; i < argv.length; i++) {
@@ -56,6 +78,25 @@ function skillPathsFromArgv(): string[] {
     }
   }
   return paths;
+}
+
+/** `--no-skills`/`-ns` 时上游不加载内置技能，工具侧同步跳过。 */
+function hasNoSkillsFlag(): boolean {
+  return process.argv.includes("--no-skills") || process.argv.includes("-ns");
+}
+
+/**
+ * 默认额外技能目录：内置 src/skills（存在时）+ 用户显式 `--skill` 路径。
+ * 测试可通过 createSkillExtension 的 options.extraSkillDirs 注入覆盖。
+ */
+function defaultSkillDirs(): string[] {
+  const dirs: string[] = [];
+  if (!hasNoSkillsFlag()) {
+    const bundled = bundledSkillsDir();
+    if (bundled) dirs.push(bundled);
+  }
+  dirs.push(...explicitSkillPathsFromArgv());
+  return dirs;
 }
 
 /** 精确匹配优先，再大小写不敏感。 */
@@ -83,7 +124,15 @@ function joinTextContent(content: readonly (TextContent | ImageContent)[] | unde
     .join("\n");
 }
 
-export function createSkillExtension(execute?: SkillExecutor): ExtensionFactory {
+export interface SkillExtensionOptions {
+  /**
+   * 额外技能目录（内置 src/skills + 显式 --skill 参数的默认值）。
+   * 测试注入 `[]` 可模拟无内置技能的干净环境。
+   */
+  extraSkillDirs?: string[];
+}
+
+export function createSkillExtension(execute?: SkillExecutor, options?: SkillExtensionOptions): ExtensionFactory {
   // The tool runtime's onUpdate is structurally the orchestrator's private
   // OnUpdateCallback; the DI signature widens it to unknown, so narrow back
   // to the exact parameter type at the call site.
@@ -91,6 +140,9 @@ export function createSkillExtension(execute?: SkillExecutor): ExtensionFactory 
     execute ??
     ((req, signal, onUpdate, ctx) =>
       runSubagentRequest(req, signal, onUpdate as Parameters<typeof runSubagentRequest>[2], ctx));
+
+  // 工厂创建时解析一次：内置目录与 argv 在运行期不变。
+  const extraDirs = options?.extraSkillDirs ?? defaultSkillDirs();
 
   return (pi: ExtensionAPI) => {
     pi.registerTool({
@@ -104,7 +156,7 @@ export function createSkillExtension(execute?: SkillExecutor): ExtensionFactory 
       parameters: SkillParams,
 
       async execute(_toolCallId, params, signal, onUpdate, ctx) {
-        const skills = discoverSkills(ctx.cwd, skillPathsFromArgv());
+        const skills = discoverSkills(ctx.cwd, extraDirs);
 
         if (params.action === "run") {
           if (!params.name) {
@@ -113,9 +165,13 @@ export function createSkillExtension(execute?: SkillExecutor): ExtensionFactory 
           const skill = findSkill(skills, params.name);
           if (!skill) {
             const available = skills.map((s) => s.name);
+            const listed =
+              available.length > 0
+                ? available.join(", ")
+                : "none. Place SKILL.md files in ~/.pico/agent/skills/ or <project>/.pico/skills/.";
             throw toolError(
               "invalid_request",
-              `Skill "${params.name}" not found. Available skills: ${available.join(", ")}`,
+              `Skill "${params.name}" not found. Available skills: ${listed}`,
               { structured: { available } },
             );
           }

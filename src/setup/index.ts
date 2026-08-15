@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as defaultInput, stdout as defaultOutput } from "node:process";
@@ -1654,6 +1654,14 @@ function writeJson(path: string, value: JsonObject): void {
   const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
   writeFileSync(tmp, content, { mode: 0o600, encoding: "utf-8" });
   renameSync(tmp, path);
+  // tmp 以 0o600 创建，rename 后目标即 0o600；显式 chmod 兜底，防止未来写
+  // 策略变更（如改回直接 writeFileSync）让已存在的宽权限文件保持组可读。
+  try {
+    const mode = statSync(path).mode & 0o777;
+    if ((mode & 0o077) !== 0) chmodSync(path, 0o600);
+  } catch {
+    // ignore — rename succeeded, so this can only fail on exotic filesystems
+  }
 }
 
 function commandExists(command: string): boolean {

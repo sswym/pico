@@ -257,6 +257,44 @@ test("secret scanning allows normal text mentioning keys", () => {
   expect(scanSecrets("we should rotate our api keys regularly").blocked).toBe(false);
 });
 
+test("secret scanning blocks short sk- suffix keys and Chinese-separated forms", () => {
+  // sk- prefix with a 17-char suffix previously slipped past the 20-char
+  // bound and was stored verbatim (fact #8 in the D4 walkthrough).
+  expect(scanSecrets("sk-test-abcdef123456").blocked).toBe(true);
+  // Even shorter suffixes are refused — the bare sk- prefix is a strong signal.
+  expect(scanSecrets("sk-abcdef12").blocked).toBe(true);
+  // Chinese-separated key phrasing must not bypass the scan either.
+  expect(scanSecrets("API key 是 sk-test-abcdef123456").blocked).toBe(true);
+  expect(scanSecrets("记住我的 key：sk-abcdef12").blocked).toBe(true);
+  // Long underscore-prefixed forms keep being blocked.
+  expect(scanSecrets("sk_test_51AbCdEfGhIjKlMnOpQrStUvWxYz1234567890").blocked).toBe(true);
+  // Non-secret sk- mentions (short suffix) still pass.
+  expect(scanSecrets("the sk-id format is used internally").blocked).toBe(false);
+});
+
+test("store rejects short sk- keys on add like long ones", () => {
+  expect(() =>
+    store.add("API 主 key：sk-test-abcdef123456，调用 API 时使用", { tags: "api-key,secret" }),
+  ).toThrow(/secret/i);
+  expect(() => store.add("backup key sk-abcdef12", { scope: "global" })).toThrow(/secret/i);
+  // The scan covers tags too — smuggling the key into tags must not bypass.
+  expect(() => store.add("remember to rotate", { tags: "token=sk-test-abcdef123456" })).toThrow(/secret/i);
+});
+
+test("curated notes reject sk- prefixed keys on add", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pico-secrets-curated-"));
+  try {
+    const curated = new CuratedMemoryStore({ dir });
+    curated.loadFromDisk();
+    const res = curated.add("memory", "API key 是 sk-test-abcdef123456");
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/secret/i);
+    expect(curated.list("memory").memory).toHaveLength(0);
+  } finally {
+    resetCuratedMemoryDir(dir);
+  }
+});
+
 test("store.add rejects content with secrets", () => {
   expect(() => store.add("my key is AKIAIOSFODNN7EXAMPLE", { category: "general" })).toThrow(/secret/i);
   expect(store.count()).toBe(0);
@@ -360,6 +398,26 @@ test("autoExtractFromMessages assigns correction high trust", () => {
   const all = store.list({ limit: 10, minTrust: 0, category: "correction" });
   expect(all).toHaveLength(1);
   expect(all[0]!.trust_score).toBeCloseTo(0.7, 5);
+});
+
+test("auto-extracted corrections link correction_of to the original and dock its trust", () => {
+  const original = store.add("团队使用 PostgreSQL 15 作为数据库", { category: "project", scope: "project", cwd: "/proj/a" });
+  expect(store.get(original)!.trust_score).toBeCloseTo(0.5, 5);
+
+  // Automatic correction path (agent_end extraction) — no explicit
+  // correction_of; the extractor must find the original itself.
+  autoExtractFromMessages(store, [
+    { role: "user", content: "错了，其实是 MySQL，不是 PostgreSQL。" },
+  ], { cwd: "/proj/a" });
+
+  const facts = store.list({ minTrust: 0, limit: 20, scope: "project", cwd: "/proj/a" });
+  const correction = facts.find((f) => f.category === "correction");
+  expect(correction).toBeDefined();
+  expect(correction!.correction_of).toBe(original);
+  // New correction starts at the boosted trust…
+  expect(correction!.trust_score).toBeCloseTo(0.7, 5);
+  // …and the superseded original loses rank (CORRECTION_DELTA = -0.30).
+  expect(store.get(original)!.trust_score).toBeCloseTo(0.2, 5);
 });
 
 test("autoExtractFromMessages with cwd stores project-scoped facts", () => {
@@ -978,6 +1036,81 @@ test("memory tool passes project scope to related and reason providers", () => {
   ]);
 });
 
+test("memory tool read actions default to the current project scope when scope is omitted", () => {
+  const manager = new ProviderManager();
+  const calls: Array<{ method: string; opts: unknown }> = [];
+  const fakeProvider = makeFakeMemoryProvider({
+    search: (_query, opts) => { calls.push({ method: "search", opts }); return []; },
+    probe: (_entity, opts) => { calls.push({ method: "probe", opts }); return []; },
+    list: (opts) => { calls.push({ method: "list", opts }); return []; },
+    related: (_entity, opts) => { calls.push({ method: "related", opts }); return []; },
+    reason: (_entities, opts) => { calls.push({ method: "reason", opts }); return []; },
+    contradict: (opts) => { calls.push({ method: "contradict", opts }); return []; },
+  });
+
+  executeMemoryToolAction({ action: "search", query: "bun" }, { provider: fakeProvider, manager, currentCwd: "/repo" });
+  executeMemoryToolAction({ action: "probe", entity: "Bun" }, { provider: fakeProvider, manager, currentCwd: "/repo" });
+  executeMemoryToolAction({ action: "list" }, { provider: fakeProvider, manager, currentCwd: "/repo" });
+  executeMemoryToolAction({ action: "related", entity: "Bun" }, { provider: fakeProvider, manager, currentCwd: "/repo" });
+  executeMemoryToolAction({ action: "reason", entities: ["Bun", "Build"] }, { provider: fakeProvider, manager, currentCwd: "/repo" });
+  executeMemoryToolAction({ action: "contradict" }, { provider: fakeProvider, manager, currentCwd: "/repo" });
+
+  expect(calls).toHaveLength(6);
+  for (const c of calls) {
+    // 2.3.1: no explicit scope + known cwd → the store must receive an actual
+    // scope="project" (a bare cwd is ignored by scopeFilter, which defaults an
+    // undefined scope to global-only).
+    expect(c.opts).toMatchObject({ scope: "project", cwd: "/repo" });
+  }
+
+  // Without a session cwd the default degrades to global-only (as before).
+  const noCwd: Array<{ method: string; opts: unknown }> = [];
+  const providerNoCwd = makeFakeMemoryProvider({
+    search: (_query, opts) => { noCwd.push({ method: "search", opts }); return []; },
+  });
+  executeMemoryToolAction({ action: "search", query: "bun" }, { provider: providerNoCwd, manager, currentCwd: null });
+  expect(noCwd[0]!.opts).toMatchObject({ scope: undefined, cwd: undefined });
+
+  // Explicit global still forces global-only even with a cwd.
+  const explicitGlobal: Array<{ method: string; opts: unknown }> = [];
+  const providerGlobal = makeFakeMemoryProvider({
+    search: (_query, opts) => { explicitGlobal.push({ method: "search", opts }); return []; },
+  });
+  executeMemoryToolAction({ action: "search", query: "bun", scope: "global" }, { provider: providerGlobal, manager, currentCwd: "/repo" });
+  expect(explicitGlobal[0]!.opts).toMatchObject({ scope: "global", cwd: undefined });
+});
+
+test("default-scope tool search hits current project facts end to end", () => {
+  const provider = new BuiltinMemoryProvider(":memory:");
+  try {
+    provider.initialize("s1", { cwd: "/proj/alpha" });
+    const manager = new ProviderManager();
+    const cwd = "/proj/alpha";
+    const added = resultOf(
+      executeMemoryToolAction(
+        { action: "add", content: "团队使用 PostgreSQL 15 作为数据库", category: "project", scope: "project" },
+        { provider, manager, currentCwd: cwd },
+      ),
+    ) as { status: string };
+    expect(added.status).toBe("added");
+
+    // No scope on the read → must default to the current project scope and
+    // find the project fact (previously degraded to global-only → 0 hits).
+    const searched = resultOf(
+      executeMemoryToolAction({ action: "search", query: "数据库" }, { provider, manager, currentCwd: cwd }),
+    ) as { count: number; results: Array<{ content: string }> };
+    expect(searched.count).toBe(1);
+    expect(searched.results[0]!.content).toContain("PostgreSQL 15");
+  } finally {
+    provider.shutdown();
+  }
+});
+
+/** Parse the text payload of a tool result. */
+function resultOf(result: { content: Array<{ type: string; text: string }> }): unknown {
+  return JSON.parse(result.content[0]!.text);
+}
+
 test("ProviderManager.syncTurn fans out to registered providers", async () => {
   const oldEnv = process.env.PICO_MEMORY_DB;
   const tempDb = join(tmpdir(), `pico-mgr-sync-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -1159,6 +1292,46 @@ test("/memory count and status report store state", async () => {
     expect(status).toContain("Facts: 1");
     expect(status).toContain("Curated notes: 0");
   });
+});
+
+test("/memory reads default to the current project scope when a cwd is known", async () => {
+  const oldEnv = process.env.PICO_MEMORY_DB;
+  const tempDb = join(tmpdir(), `pico-cmd-scope-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const notesDir = mkdtempSync(join(tmpdir(), "pico-cmd-scope-notes-"));
+  process.env.PICO_MEMORY_DB = tempDb;
+  try {
+    const manager = new ProviderManager();
+    const curated = new CuratedMemoryStore({ dir: notesDir });
+    const cwd = "/proj/count";
+    const deps: MemoryCommandDeps = {
+      provider: manager.provider,
+      manager,
+      curated,
+      currentCwd: cwd,
+      notify: () => {},
+      confirm: async () => true,
+    };
+
+    await executeMemoryCommand("add --scope project project 团队使用 PostgreSQL 15 作为数据库", deps);
+    await executeMemoryCommand("add general shared global fact", deps);
+
+    // Default search (no --scope) must hit the project fact — previously the
+    // scope stayed undefined and only global facts were searched.
+    const searched = await executeMemoryCommand("search 数据库", deps);
+    expect(searched).toContain("PostgreSQL 15");
+
+    // Default count must count current-project facts as project, not fold
+    // them into "0 project".
+    const counted = await executeMemoryCommand("count", deps);
+    expect(counted).toContain("(1 global, 1 project)");
+  } finally {
+    if (oldEnv === undefined) delete process.env.PICO_MEMORY_DB;
+    else process.env.PICO_MEMORY_DB = oldEnv;
+    try { rmSync(tempDb); } catch { }
+    try { rmSync(`${tempDb}-wal`); } catch { }
+    try { rmSync(`${tempDb}-shm`); } catch { }
+    try { rmSync(notesDir, { recursive: true }); } catch { }
+  }
 });
 
 test("/memory notes add, list, replace, and remove round-trip", async () => {

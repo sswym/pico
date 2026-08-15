@@ -110,7 +110,14 @@ export function validateSettingsFile(
   const root = settings as Record<string, unknown>;
   for (const key of Object.keys(root)) {
     if (key !== "autoMode" && key !== "permissions") {
-      diagnostics.push(`${source}: unknown top-level key ${key}`);
+      // The `enabled` trap is common enough to deserve a corrective hint:
+      // automode.enabled (top level) silently no-ops; the real shape is
+      // automode.autoMode.enabled.
+      diagnostics.push(
+        key === "enabled"
+          ? `${source}: unknown top-level key "enabled" — 正确形状是 ${source}.autoMode.enabled（automode 顶层仅支持 autoMode 与 permissions）`
+          : `${source}: unknown top-level key ${key}`,
+      );
     }
   }
 

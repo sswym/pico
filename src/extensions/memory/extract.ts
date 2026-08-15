@@ -14,6 +14,8 @@
 import type { MemoryStore } from "./store.ts";
 import type { Category, Scope } from "./schema.ts";
 import { CORRECTED_BOOST, SCOPE_GLOBAL, SCOPE_PROJECT } from "./schema.ts";
+import { tokenize, filterStopwords } from "./tfidf.ts";
+import { normalizeTerm } from "./synonyms.ts";
 
 // ---- Pattern sets (all case-insensitive) --------------------------------
 
@@ -281,6 +283,48 @@ export function classifyMessage(text: string): Category | undefined {
 }
 
 /**
+ * Find the most plausible original fact a correction supersedes: the
+ * highest-ranked same-scope fact (excluding other corrections) whose
+ * normalized terms overlap the correction text. Returns undefined when
+ * nothing plausible matches — the correction is then stored without a
+ * correction_of link (and the original's trust is not docked).
+ *
+ * The explicit `memory(action=add, correction_of=#N)` path already docks the
+ * original's trust by CORRECTION_DELTA and links correction_of; the automatic
+ * correction paths (turn_end + agent_end auto-extraction) must do the same so
+ * a corrected fact loses rank instead of staying at full trust forever.
+ */
+export function findCorrectionTarget(
+  store: MemoryStore,
+  correctionText: string,
+  opts?: { scope?: Scope; cwd?: string },
+): number | undefined {
+  try {
+    const hits = store.search(correctionText, {
+      scope: opts?.scope,
+      cwd: opts?.cwd,
+      limit: 10,
+      minTrust: 0.2,
+    });
+    if (hits.length === 0) return undefined;
+    const queryTerms = new Set(filterStopwords(tokenize(correctionText)).map(normalizeTerm));
+    for (const hit of hits) {
+      if (hit.category === "correction") continue;
+      // Require real textual overlap — FTS/fallback ranking alone can surface
+      // an unrelated top fact for a short query.
+      if (queryTerms.size === 0) return hit.fact_id;
+      const contentTerms = new Set(filterStopwords(tokenize(hit.content)).map(normalizeTerm));
+      for (const term of queryTerms) {
+        if (term && contentTerms.has(term)) return hit.fact_id;
+      }
+    }
+  } catch {
+    // best-effort — a failed lookup must never break correction storage
+  }
+  return undefined;
+}
+
+/**
  * Scan user messages for extractable patterns and store them as facts.
  * Returns the count of newly extracted facts.
  *
@@ -302,12 +346,18 @@ export function autoExtractFromMessages(
     if (!category) continue;
 
     try {
-      store.add(text.slice(0, 200), {
+      const content = text.slice(0, 200);
+      const correctionOf =
+        category === "correction"
+          ? findCorrectionTarget(store, content, { scope, cwd: opts?.cwd })
+          : undefined;
+      store.add(content, {
         category,
         scope,
         cwd: opts?.cwd,
         source: "auto",
         trust: category === "correction" ? CORRECTED_BOOST : undefined,
+        correctionOf,
       });
       extracted++;
     } catch {

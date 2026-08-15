@@ -11,7 +11,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadMcpConfig } from "../src/extensions/mcp/config.ts";
+import { __resetMcpConfigWarningsForTests, loadInvalidMcpServers, loadMcpConfig } from "../src/extensions/mcp/config.ts";
 import { createMcpExtension, formatMcpReport } from "../src/extensions/mcp/index.ts";
 import type { McpServerConfig, McpServerHandle, McpToolCallResult } from "../src/extensions/mcp/types.ts";
 
@@ -497,6 +497,225 @@ test("loadMcpConfig validates server entries and keeps valid ones from a broken 
     const loaded = loadMcpConfig(process.cwd());
     expect(Object.keys(loaded)).toEqual(["good"]);
     expect(loaded.good).toEqual({ command: "npx", args: ["-y", "server"], env: { TOKEN: "abc" } });
+  } finally {
+    __resetMcpConfigWarningsForTests();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ─── Fifth-round regression tests: backoff observability / respawn self-heal / parallel race / invalid config ───
+
+/** Let a resolved `proc.exited` promise run its watchHandleDeath reaction. */
+const flushMicrotasks = async () => {
+  await Promise.resolve();
+  await Promise.resolve();
+};
+
+/**
+ * Extension harness with a controllable clock (deps.reconnect.now) and
+ * manually-killable spawned handles. `kill(i)` resolves the exited promise
+ * of the i-th spawn; `advance(ms)` moves the fake clock forward.
+ */
+function makeReconnectHarness(options: { doomed?: () => boolean } = {}) {
+  const pi = makeFakePi();
+  let spawns = 0;
+  const exitResolvers: Array<() => void> = [];
+  let fakeNow = 1_000_000;
+  const extension = createMcpExtension({
+    load: () => ({ crash: { command: "fake" } }),
+    loadInvalid: () => [],
+    spawn: (id) => {
+      spawns++;
+      const handle = makeHandle(id);
+      const { promise, resolve } = Promise.withResolvers<number>();
+      handle.proc.exited = promise;
+      exitResolvers.push(() => resolve(1));
+      return handle;
+    },
+    initialize: async (handle) => {
+      if (options.doomed?.()) throw new Error("cannot start (doomed)");
+      return { protocolVersion: "test", capabilities: {}, serverInfo: { name: "C", version: "1" } };
+    },
+    listTools: async () => [{ name: "ping", inputSchema: { type: "object", properties: {} } }],
+    callTool: async (): Promise<McpToolCallResult> => ({ content: [{ type: "text", text: "pong" }] }),
+    close: () => {},
+    reconnect: { now: () => fakeNow },
+  });
+  extension(pi as never);
+  return {
+    pi,
+    get spawnCount(): number {
+      return spawns;
+    },
+    kill: (index: number) => exitResolvers[index]?.(),
+    advance: (ms: number) => {
+      fakeNow += ms;
+    },
+    get tool() {
+      return pi.tools.get("mcp__crash__ping");
+    },
+  };
+}
+
+test("MCP reconnect backoff window is observable: calls inside the window wait instead of re-spawning", async () => {
+  const h = makeReconnectHarness();
+  await h.pi.handlers["session_start"]![0]!({}, { cwd: "/repo" });
+  const tool = h.tool;
+  expect(tool).toBeDefined();
+  expect(h.spawnCount).toBe(1);
+
+  // First crash: the first call after the death reconnects transparently.
+  h.kill(0);
+  await flushMicrotasks();
+  expect((await tool.execute("tc1", {})).content[0].text).toBe("pong");
+  expect(h.spawnCount).toBe(2);
+
+  // The respawned server dies again inside the 5s window left by the
+  // successful reconnect — the next call must WAIT ("retry in Ns") instead of
+  // immediately re-spawning. Previously the reset-on-success made this branch
+  // unreachable and every call cold-restarted the server.
+  h.kill(1);
+  await flushMicrotasks();
+  await expect(tool.execute("tc2", {})).rejects.toThrow(/retry in \d+s/);
+  expect(h.spawnCount).toBe(2); // no new spawn while waiting
+
+  // Once the window elapses the next call reconnects transparently again.
+  h.advance(6_000);
+  expect((await tool.execute("tc3", {})).content[0].text).toBe("pong");
+  expect(h.spawnCount).toBe(3);
+});
+
+test("MCP reconnect failure self-heals on the backoff schedule without /reload", async () => {
+  let doomed = false;
+  const h = makeReconnectHarness({ doomed: () => doomed });
+  await h.pi.handlers["session_start"]![0]!({}, { cwd: "/repo" });
+  const tool = h.tool;
+  expect(h.spawnCount).toBe(1);
+
+  // Server crashes; the respawn fails (doomed). The triggering call reports a
+  // retry, and the server is left in reconnect state — not "not active".
+  h.kill(0);
+  await flushMicrotasks();
+  doomed = true;
+  await expect(tool.execute("tc1", {})).rejects.toThrow(/retry in \d+s/);
+  expect(h.spawnCount).toBe(2);
+
+  // Calls inside the backoff window keep getting a visible retry — the old
+  // behavior was a permanent misleading "not active" for the whole session.
+  await expect(tool.execute("tc2", {})).rejects.toThrow(/retry in \d+s/);
+  expect(h.spawnCount).toBe(2);
+
+  // Server recovers; after the window elapses the next call reconnects and
+  // the tool works again — no /reload required.
+  doomed = false;
+  h.advance(6_000);
+  expect((await tool.execute("tc3", {})).content[0].text).toBe("pong");
+  expect(h.spawnCount).toBe(3);
+
+  // And stays healthy for subsequent calls.
+  expect((await tool.execute("tc4", {})).content[0].text).toBe("pong");
+});
+
+test("MCP parallel calls on the same dead handle share one reconnect and all recover", async () => {
+  const h = makeReconnectHarness();
+  await h.pi.handlers["session_start"]![0]!({}, { cwd: "/repo" });
+  const tool = h.tool;
+
+  h.kill(0);
+  await flushMicrotasks();
+  const results = await Promise.allSettled([
+    tool.execute("t1", {}),
+    tool.execute("t2", {}),
+    tool.execute("t3", {}),
+    tool.execute("t4", {}),
+    tool.execute("t5", {}),
+  ]);
+  // Every parallel caller observes the shared reconnect result (pong), not a
+  // misleading "not active"; exactly ONE respawn served all five.
+  expect(results.every((r) => r.status === "fulfilled")).toBe(true);
+  for (const r of results) {
+    if (r.status === "fulfilled") expect(r.value.content[0].text).toBe("pong");
+  }
+  expect(h.spawnCount).toBe(2);
+});
+
+test("MCP schema-invalid config entries surface as FAILED in /mcp (not silently dropped)", async () => {
+  const pi = makeFakePi();
+  const notices: Array<{ text: string; level: string }> = [];
+  const statuses: Array<[string, string | undefined]> = [];
+  const extension = createMcpExtension({
+    load: () => ({ good: { command: "good" } }),
+    loadInvalid: () => [
+      { id: "malformed", error: 'server "malformed" has no valid "command" (must be a non-empty string)' },
+    ],
+    spawn: (id) => makeHandle(id),
+    initialize: async () => ({ protocolVersion: "test", capabilities: {}, serverInfo: { name: "G", version: "1" } }),
+    listTools: async () => [{ name: "ok", inputSchema: { type: "object", properties: {} } }],
+    callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    close: () => {},
+  });
+  extension(pi as never);
+  await pi.handlers["session_start"]![0]!({}, {
+    cwd: "/repo",
+    ui: {
+      notify: (text: string, level: string) => notices.push({ text, level }),
+      setStatus: (key: string, value: string | undefined) => statuses.push([key, value]),
+    },
+  });
+
+  // Footer status counts the malformed entry as failed.
+  expect(statuses.at(-1)).toEqual(["mcp", "MCP: 1 ok, 1 failed"]);
+  // The /mcp report lists it as FAILED with the validation reason.
+  await pi.commands.get("mcp").handler("", {
+    ui: { notify: (text: string, level: string) => notices.push({ text, level }) },
+  });
+  const report = notices.at(-1)!;
+  expect(report.level).toBe("warning");
+  expect(report.text).toContain("1 connected, 1 failed");
+  expect(report.text).toContain('! malformed - FAILED: 配置无效：server "malformed" has no valid "command"');
+});
+
+test("MCP all-invalid config still reports failures in /mcp (early return does not hide them)", async () => {
+  const pi = makeFakePi();
+  const notices: Array<{ text: string; level: string }> = [];
+  const extension = createMcpExtension({
+    load: () => ({}),
+    loadInvalid: () => [{ id: "malformed", error: 'server "malformed" has no valid "command"' }],
+    spawn: (id) => makeHandle(id),
+    initialize: async () => ({ protocolVersion: "test", capabilities: {}, serverInfo: { name: "G", version: "1" } }),
+    listTools: async () => [{ name: "ok", inputSchema: { type: "object", properties: {} } }],
+    callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    close: () => {},
+  });
+  extension(pi as never);
+  await pi.handlers["session_start"]![0]!({}, { cwd: "/repo" });
+  await pi.commands.get("mcp").handler("", {
+    ui: { notify: (text: string, level: string) => notices.push({ text, level }) },
+  });
+  expect(notices.at(-1)!.level).toBe("warning");
+  expect(notices.at(-1)!.text).toContain("! malformed - FAILED: 配置无效");
+});
+
+test("loadInvalidMcpServers reports schema-invalid entries with reasons", () => {
+  pushEnv();
+  const home = mkdtempSync(join(tmpdir(), "pico-mcp-home-"));
+  process.env.PICO_HOME = home;
+  try {
+    writeFileSync(join(home, "mcp-servers.json"), JSON.stringify({
+      mcpServers: {
+        good: { command: "npx" },
+        badCommand: { command: 123 },
+        badArgs: { command: "x", args: "nope" },
+        badEnv: { command: "x", env: "nope" },
+      },
+    }));
+    const invalid = loadInvalidMcpServers(process.cwd());
+    expect(invalid.map((e) => e.id).sort()).toEqual(["badArgs", "badCommand", "badEnv"]);
+    expect(invalid.find((e) => e.id === "badCommand")!.error).toContain('no valid "command"');
+    expect(invalid.find((e) => e.id === "badArgs")!.error).toContain('invalid "args"');
+    expect(invalid.find((e) => e.id === "badEnv")!.error).toContain('invalid "env"');
+    // Valid entries are unaffected.
+    expect(loadMcpConfig(process.cwd())).toEqual({ good: { command: "npx" } });
   } finally {
     __resetMcpConfigWarningsForTests();
     rmSync(home, { recursive: true, force: true });

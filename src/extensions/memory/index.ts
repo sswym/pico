@@ -18,6 +18,7 @@ import {
 import { type Text } from "@earendil-works/pi-tui";
 import {
   autoExtractFromMessages,
+  findCorrectionTarget,
   isLikelyCorrection,
   extractText,
   type ExtractableMessage,
@@ -324,12 +325,18 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   });
 
   // --- 4. real-time correction detection + prefetch queue -------------------
+  pi.on("agent_start", () => {
+    // New user turn — reset the curated-store consolidation retry cap so the
+    // model gets a fresh budget of capacity errors (mirrors hermes #42405).
+    // agent_start fires once per user turn; turn_end fires after EVERY
+    // assistant message (including each tool-call batch), so resetting there
+    // would zero the counter between consecutive note_add retries and the
+    // >3 at-capacity cap could never trip.
+    curated.resetConsolidationFailures();
+  });
+
   pi.on("turn_end", (event) => {
     try {
-      // New turn — reset the curated-store consolidation retry cap so the
-      // model gets a fresh budget of capacity errors (mirrors hermes #42405).
-      curated.resetConsolidationFailures();
-
       const msg = event.message;
       if (!msg || msg.role !== "user") return;
 
@@ -340,12 +347,26 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       // be stored as a 0.7-trust correction (2.3.5). Questions and long
       // contextual turns are skipped.
       if (isLikelyCorrection(text)) {
-        manager.add(text.slice(0, 200), {
+        const content = text.slice(0, 200);
+        // Correction chaining: link the new fact to the original one it
+        // supersedes (best same-scope textual match, skipping other
+        // corrections) so the original's trust is docked and correction_of is
+        // populated — the explicit correction_of tool path already does this,
+        // the automatic path previously never linked.
+        const correctionOf =
+          rawStore instanceof MemoryStore
+            ? findCorrectionTarget(rawStore, content, {
+                scope: currentCwd ? "project" : undefined,
+                cwd: currentCwd ?? undefined,
+              })
+            : undefined;
+        manager.add(content, {
           category: "correction",
           scope: currentCwd ? "project" : undefined,
           cwd: currentCwd ?? undefined,
           source: "correction",
           trust: CORRECTED_BOOST,
+          correctionOf,
         });
       }
 
@@ -391,7 +412,21 @@ export const memoryExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   pi.on("session_before_compact", (event) => {
     try {
       const branchEntries = (event as { branchEntries?: unknown[] }).branchEntries ?? [];
-      const contribution = manager.onPreCompress(branchEntries);
+      // branchEntries are SESSION entries ({type:'message', message:{role,
+      // content}}); onPreCompress expects plain {role, content} messages —
+      // without this conversion the role filter matched nothing and the
+      // compressed range was never archived into memory.
+      const messages = branchEntries
+        .filter(
+          (e): e is { type: string; message: { role?: string; content?: unknown } } => {
+            if (!e || typeof e !== "object") return false;
+            if (!("type" in e) || e.type !== "message") return false;
+            if (!("message" in e) || !e.message || typeof e.message !== "object") return false;
+            return true;
+          },
+        )
+        .map((e) => ({ role: e.message.role, content: e.message.content }));
+      const contribution = manager.onPreCompress(messages);
       if (!contribution) return {};
       const preparation = (event as { preparation?: { firstKeptEntryId?: string; tokensBefore?: number } }).preparation;
       if (!preparation?.firstKeptEntryId || preparation.tokensBefore === undefined) return {};

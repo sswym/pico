@@ -43,14 +43,7 @@ export function parseSkillFile(filePath: string, source: SkillSource): SkillInfo
   if (!match) return null;
 
   const frontmatter = match[1] ?? "";
-  const fields = new Map<string, string>();
-  for (const line of frontmatter.split(/\r?\n/)) {
-    const sep = line.indexOf(":");
-    if (sep < 0) continue;
-    const key = line.slice(0, sep).trim().toLowerCase();
-    if (key.length === 0) continue;
-    fields.set(key, stripQuotes(line.slice(sep + 1).trim()));
-  }
+  const fields = parseFrontmatterFields(frontmatter);
 
   const name = (fields.get("name") ?? "").trim() || basename(dirname(filePath));
   return {
@@ -61,8 +54,91 @@ export function parseSkillFile(filePath: string, source: SkillSource): SkillInfo
   };
 }
 
-/** 递归扫描目录下所有 SKILL.md（含子目录），非 .md 文件忽略；目录不存在返回 []。 */
+/**
+ * 解析 frontmatter 为 key→value 表。支持单行标量（`key: value`，值 strip 引号）
+ * 与 YAML 折叠/字面块标量（`key: >` / `key: |`，含 `>-`/`>+`/`|-`/`|+`），与
+ * 上游 loadSkills 的 YAML 解析行为对齐。
+ */
+function parseFrontmatterFields(frontmatter: string): Map<string, string> {
+  const fields = new Map<string, string>();
+  const lines = frontmatter.split(/\r?\n/);
+  let key: string | undefined;
+  let scalar: { literal: boolean } | undefined;
+  let content: string[] = [];
+
+  const commit = (): void => {
+    if (key === undefined) return;
+    if (scalar) {
+      fields.set(key, joinBlockScalar(content, scalar.literal).trim());
+    } else {
+      fields.set(key, stripQuotes(content.join(" ").trim()));
+    }
+    key = undefined;
+    scalar = undefined;
+    content = [];
+  };
+
+  for (const line of lines) {
+    // 块标量内容行：比键更缩进（或空行），原样累积。
+    if (key !== undefined && scalar && (line.startsWith(" ") || line.startsWith("\t") || line === "")) {
+      content.push(line);
+      continue;
+    }
+    const sep = line.indexOf(":");
+    if (sep < 0) continue;
+    commit();
+    const rawKey = line.slice(0, sep).trim().toLowerCase();
+    if (rawKey.length === 0) continue;
+    key = rawKey;
+    const rawValue = line.slice(sep + 1).trim();
+    // 折叠/字面块标量指示符：`>` 或 `|`，可带 chomping 后缀（`-`/`+`）。
+    const blockIndicator = /^([>|])[+-]?$/.exec(rawValue)?.[1];
+    if (blockIndicator) {
+      scalar = { literal: blockIndicator === "|" };
+      content = [];
+    } else {
+      content = [rawValue];
+    }
+  }
+  commit();
+  return fields;
+}
+
+/**
+ * YAML 块标量拼接：`|` 字面保留换行；`>` 折叠为段落（连续行以空格连接，空行
+ * 分段），并剥掉块缩进。chomping 指示符（`-`/`+`）对 description 无实际影响
+ * （最终值在 commit 处 trim），不区分。
+ */
+function joinBlockScalar(lines: string[], literal: boolean): string {
+  if (literal) {
+    return lines.map((line) => line.replace(/^\s+/, "")).join("\n");
+  }
+  const paragraphs: string[] = [];
+  let paragraph: string[] = [];
+  for (const line of lines) {
+    if (line.trim() === "") {
+      if (paragraph.length > 0) {
+        paragraphs.push(paragraph.join(" "));
+        paragraph = [];
+      }
+    } else {
+      paragraph.push(line.trim());
+    }
+  }
+  if (paragraph.length > 0) paragraphs.push(paragraph.join(" "));
+  return paragraphs.join("\n");
+}
+
+/**
+ * 递归扫描目录下所有 SKILL.md（含子目录）；顶层额外兼容根级 .md 文件（与上游
+ * loadSkills 的 includeRootFiles 对齐 —— 顶层目录的 .md 直接视为技能），嵌套
+ * 目录中非 SKILL.md 的 .md 仍忽略。目录不存在返回 []。
+ */
 export function scanSkillDir(dir: string, source: SkillSource): SkillInfo[] {
+  return scanSkillDirInternal(dir, source, true);
+}
+
+function scanSkillDirInternal(dir: string, source: SkillSource, includeRootFiles: boolean): SkillInfo[] {
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -73,8 +149,10 @@ export function scanSkillDir(dir: string, source: SkillSource): SkillInfo[] {
   for (const entry of entries) {
     const fullPath = join(dir, entry.name);
     if (entry.isDirectory()) {
-      found.push(...scanSkillDir(fullPath, source));
-    } else if (entry.isFile() && entry.name === "SKILL.md") {
+      found.push(...scanSkillDirInternal(fullPath, source, false));
+    } else if (entry.isFile()) {
+      const isSkillFile = entry.name === "SKILL.md" || (includeRootFiles && entry.name.endsWith(".md"));
+      if (!isSkillFile) continue;
       const info = parseSkillFile(fullPath, source);
       if (info) found.push(info);
     }

@@ -14,6 +14,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   __resetWarnedPaths,
   hookConfigPaths,
@@ -264,15 +265,31 @@ test("runHook drains output larger than the pipe buffer without deadlocking", as
 // ---------------------------------------------------------------------------
 
 interface FakeApi {
-  handlers: Record<string, (event: unknown) => unknown>;
+  handlers: Record<string, (event: unknown, ctx?: unknown) => unknown>;
   messages: Array<{ customType?: string; content?: string }>;
+  notifications: Array<{ message: string; type?: string }>;
+  ctx: {
+    hasUI: boolean;
+    cwd: string;
+    ui: { notify(message: string, type?: string): void };
+  };
 }
 
-function makeFakeApi(): FakeApi & { api: Parameters<ReturnType<typeof createHooksExtension>>[0] } {
+function makeFakeApi(): FakeApi & { api: ExtensionAPI } {
   const handlers: FakeApi["handlers"] = {};
   const messages: FakeApi["messages"] = [];
+  const notifications: FakeApi["notifications"] = [];
+  const ctx: FakeApi["ctx"] = {
+    hasUI: true,
+    cwd: workdir,
+    ui: {
+      notify: (message, type) => {
+        notifications.push({ message, type });
+      },
+    },
+  };
   const api = {
-    on: (event: string, handler: (event: unknown) => unknown) => {
+    on: (event: string, handler: (event: unknown, ctx?: unknown) => unknown) => {
       handlers[event] = handler;
     },
     sendMessage: (msg: { customType?: string; content?: string }) => {
@@ -281,8 +298,8 @@ function makeFakeApi(): FakeApi & { api: Parameters<ReturnType<typeof createHook
     registerTool: () => {},
     registerCommand: () => {},
     registerMessageRenderer: () => {},
-  } as unknown as Parameters<ReturnType<typeof createHooksExtension>>[0];
-  return { handlers, messages, api };
+  } as unknown as ExtensionAPI;
+  return { handlers, messages, notifications, ctx, api };
 }
 
 test("factory registers handlers for all four mapped events", () => {
@@ -335,14 +352,22 @@ test("PreToolUse hook with blocking=false only warns on failure", async () => {
   });
   const fake = makeFakeApi();
   factory(fake.api);
-  const result = (await fake.handlers.tool_call!({
-    type: "tool_call",
-    toolCallId: "t1",
-    toolName: "edit",
-    input: {},
-  })) as { block?: boolean };
+  const result = (await fake.handlers.tool_call!(
+    {
+      type: "tool_call",
+      toolCallId: "t1",
+      toolName: "edit",
+      input: {},
+    },
+    fake.ctx,
+  )) as { block?: boolean };
   expect(result.block).toBeUndefined();
-  expect(fake.messages.some((m) => m.customType === "pico.hook.warn")).toBe(true);
+  // D13-F2: the failure is a TUI warning, never a session custom message
+  // (pi would inject custom messages into the model context).
+  expect(
+    fake.notifications.some((n) => n.type === "warning" && n.message.includes("blocking=false")),
+  ).toBe(true);
+  expect(fake.messages.length).toBe(0);
 });
 
 test("PostToolUse failure surfaces a warning, never blocks", async () => {
@@ -352,16 +377,94 @@ test("PostToolUse failure surfaces a warning, never blocks", async () => {
   });
   const fake = makeFakeApi();
   factory(fake.api);
-  const out = await fake.handlers.tool_result!({
-    type: "tool_result",
-    toolCallId: "t1",
-    toolName: "edit",
-    input: {},
-    content: [],
-    isError: false,
-  });
+  const out = await fake.handlers.tool_result!(
+    {
+      type: "tool_result",
+      toolCallId: "t1",
+      toolName: "edit",
+      input: {},
+      content: [],
+      isError: false,
+    },
+    fake.ctx,
+  );
   expect(out).toEqual({});
-  expect(fake.messages.some((m) => m.customType === "pico.hook.warn")).toBe(true);
+  expect(
+    fake.notifications.some((n) => n.type === "warning" && n.message.includes("PostToolUse hook")),
+  ).toBe(true);
+  expect(fake.messages.length).toBe(0);
+});
+
+test("session_start warns when project hooks config exists but is disabled (D13-F1)", async () => {
+  const factory = createHooksExtension({
+    load: () => [],
+    run: async () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false }),
+    cwd: () => workdir,
+  });
+  const fake = makeFakeApi();
+  factory(fake.api);
+  // Project hooks config exists; PICO_ENABLE_PROJECT_HOOKS is unset (beforeEach).
+  writeCwdConfig({ hooks: [{ event: "PostToolUse", command: "echo x" }] });
+
+  await fake.handlers.session_start!({ type: "session_start" }, fake.ctx);
+
+  const warning = fake.notifications.find((n) => n.type === "warning");
+  expect(warning).toBeDefined();
+  expect(warning!.message).toContain("被安全策略禁用");
+  expect(warning!.message).toContain("/doctor");
+  expect(warning!.message).toContain("PICO_ENABLE_PROJECT_HOOKS");
+  expect(fake.messages.length).toBe(0);
+});
+
+test("session_start eager-loads hooks so malformed-config errors are drained (D13-F1)", async () => {
+  process.env.PICO_ENABLE_PROJECT_HOOKS = "1";
+  const dir = join(workdir, ".pico");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "hooks.json"), "{not json");
+  const factory = createHooksExtension({
+    load: loadHooks,
+    run: async () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false }),
+    cwd: () => workdir,
+  });
+  const fake = makeFakeApi();
+  factory(fake.api);
+
+  await fake.handlers.session_start!({ type: "session_start" }, fake.ctx);
+
+  const warning = fake.notifications.find((n) => n.type === "warning");
+  expect(warning).toBeDefined();
+  expect(warning!.message).toContain("ignoring");
+  expect(warning!.message).toContain("hooks.json");
+});
+
+test("long blocking hook progress is a TUI notice, not a model-context message (D13-F2)", async () => {
+  const factory = createHooksExtension({
+    load: () => [
+      { event: "PreToolUse", command: "slow $TOOL", timeoutMs: 30000, blocking: true },
+    ],
+    run: async () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false }),
+    cwd: () => workdir,
+  });
+  const fake = makeFakeApi();
+  factory(fake.api);
+
+  const out = (await fake.handlers.tool_call!(
+    {
+      type: "tool_call",
+      toolCallId: "t1",
+      toolName: "edit",
+      input: {},
+    },
+    fake.ctx,
+  )) as { block?: boolean };
+
+  expect(out.block).toBeUndefined();
+  expect(
+    fake.notifications.some(
+      (n) => n.type === "info" && n.message.includes("Waiting for PreToolUse hook"),
+    ),
+  ).toBe(true);
+  expect(fake.messages.length).toBe(0);
 });
 
 test("turn_end fires PostUserMessage hooks with $TURN populated", async () => {

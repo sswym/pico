@@ -278,3 +278,69 @@ test("preserves structural markers when lifting marked sections", () => {
   expect(result.systemPrompt.startsWith(marked)).toBe(true);
   expect(result.systemPrompt).toContain("<rules>same every turn</rules>");
 });
+
+test("lifts the whole <project_instructions> wrapper with content intact (D11-F1)", () => {
+  // Mirrors the upstream system-prompt builder:
+  //   `<project_instructions path="${filePath}">\n${content}\n</project_instructions>`
+  // Hoisting the bare `file.content` would hollow the wrapper (empty tag pair
+  // left behind, content reordered to the top of the prompt); the wrapper
+  // must move into the stable prefix as one block.
+  const content = [
+    "# AGENTS.md",
+    "",
+    "> Project conventions for this repo.",
+    "- use Bun APIs",
+    "- prefer `import type`",
+    "- keep extension edits narrowly scoped",
+    "",
+  ].join("\n");
+  const wrapper = `<project_instructions path="/repo/AGENTS.md">\n${content}\n</project_instructions>`;
+  const prompt = [
+    "<project_context>",
+    "",
+    "Project-specific instructions and guidelines:",
+    "",
+    wrapper,
+    "",
+    "</project_context>",
+    "",
+    "Dynamic git state changes every turn.",
+  ].join("\n");
+
+  const result = optimizeSystemPrompt(prompt, makeOpts({
+    contextFiles: [{ path: "/repo/AGENTS.md", content }],
+  }));
+
+  expect(result.changed).toBe(true);
+  // The complete wrapper — opening tag, content, closing tag, in original
+  // order — is hoisted byte-identically into the stable prefix.
+  expect(result.stablePrefix).toBe(wrapper);
+  expect(result.systemPrompt.startsWith(wrapper)).toBe(true);
+  // The tag pair still encloses the full content: nothing was carved out.
+  const openTag = '<project_instructions path="/repo/AGENTS.md">';
+  const openIdx = result.systemPrompt.indexOf(openTag);
+  const closeIdx = result.systemPrompt.indexOf("</project_instructions>");
+  expect(openIdx).toBeGreaterThanOrEqual(0);
+  expect(closeIdx).toBeGreaterThan(openIdx);
+  expect(result.systemPrompt.slice(openIdx + openTag.length, closeIdx)).toBe(`\n${content}\n`);
+  // No hollowed wrapper remains anywhere in the prompt.
+  expect(result.systemPrompt).not.toContain('<project_instructions path="/repo/AGENTS.md">\n\n</project_instructions>');
+  // Dynamic content stays in the remainder after the separator, not reordered
+  // above the wrapper.
+  const sepIdx = result.systemPrompt.indexOf("\n\n---\n\n");
+  expect(sepIdx).toBeGreaterThan(0);
+  expect(result.systemPrompt.slice(sepIdx)).toContain("Dynamic git state changes every turn.");
+});
+
+test("leaves <project_instructions> wrappers for non-stable files in place (D11-F1)", () => {
+  const content = "A long enough non-stable note that must not be hoisted: keep extension edits narrowly scoped and use Bun APIs throughout.";
+  const wrapper = `<project_instructions path="/repo/NOTES.md">\n${content}\n</project_instructions>`;
+  const prompt = [wrapper, "Dynamic tail."].join("\n\n");
+
+  const result = optimizeSystemPrompt(prompt, makeOpts({
+    contextFiles: [{ path: "/repo/NOTES.md", content }],
+  }));
+
+  expect(result.changed).toBe(false);
+  expect(result.systemPrompt).toBe(prompt);
+});

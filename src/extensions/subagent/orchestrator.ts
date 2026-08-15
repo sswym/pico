@@ -656,6 +656,21 @@ export async function runSubagentRequest(
 		};
 	}
 
+	// isolation is a parallel-mode-only knob: single mode runs in the task's
+	// cwd directly, so a requested worktree isolation has no effect. Refuse
+	// loudly instead of silently pretending the task ran isolated.
+	if (hasSingle && params.isolation && params.isolation !== "none") {
+		return {
+			content: [
+				{
+					type: "text",
+					text: `Invalid parameters: isolation: "${params.isolation}" is only supported in parallel mode (tasks array) — a single task cannot be isolated in a git worktree. Omit isolation, or pass a tasks array for worktree isolation.`,
+				},
+			],
+			details: makeDetails("single")([]),
+		};
+	}
+
 	// 2.7.1: spawn allowlist — refuse agents not listed in settings "subagent".spawns
 	// `spawns` before any confirmation or execution. Nested subagent
 	// processes inherit the same config, so the allowlist holds recursively.
@@ -893,10 +908,16 @@ export async function runSubagentRequest(
 			sharedContext ? `## Context\n\n${sharedContext}\n\n## Task\n\n${task}` : task;
 
 		const useWorktree = params.isolation === "worktree";
-		const worktreeHandles: Array<WorktreeHandle | null> = new Array(params.tasks.length).fill(null);
+		const worktreeHandles: Array<WorktreeHandle | null> = new Array(params.tasks?.length ?? 0).fill(null);
+		// Each task's repo — the repo its worktree is checked out from and the
+		// changes are merged back into. Must resolve per task (t.cwd ?? ctx.cwd,
+		// same as the isolation:"none" branch), NOT the main session cwd: with
+		// cwd pointing at another repo, worktrees were created from and merged
+		// into the session repo, committing subagent output into the wrong tree.
+		const taskRepoCwd = (index: number): string => params.tasks?.[index]?.cwd ?? ctx.cwd;
 
 		if (useWorktree) {
-			const prepared = await prepareParallelWorktrees(ctx.cwd, params.tasks);
+			const prepared = await prepareParallelWorktrees((_task, index) => taskRepoCwd(index), params.tasks);
 			worktreeHandles.splice(0, worktreeHandles.length, ...prepared.handles);
 			if (prepared.errorText) {
 				throw new Error(prepared.errorText);
@@ -981,7 +1002,7 @@ export async function runSubagentRequest(
 			// 2.4.5: on interrupt, running tasks come back as aborted results
 			// (runSingleAgent no longer throws); never-launched tasks keep
 			// their placeholder status — report them, don't drop the lot.
-			const mergeNotes = useWorktree ? await mergeParallelWorktrees(ctx.cwd, results, worktreeHandles) : [];
+			const mergeNotes = useWorktree ? await mergeParallelWorktrees(taskRepoCwd, results, worktreeHandles) : [];
 
 			for (let i = 0; i < results.length; i++) {
 				const t = params.tasks[i];
@@ -1078,7 +1099,17 @@ export async function runSubagentRequest(
 		const isError = isFailedResult(result);
 		if (isError) {
 			const errorMsg = getResultOutput(result);
-			throw new Error(`Agent ${result.stopReason || "failed"}: ${errorMsg}${resumeHint}`);
+			// Return a structured result (same as the aborted branch and
+			// parallel/chain summaries) instead of throwing: the agent loop
+			// serializes thrown errors as {isError:true, content, details:{}},
+			// which would drop exitCode/stopReason/messages/sessionFile from
+			// the toolResult and the session JSONL, leaving no way to replay
+			// or audit the failed run. The failure is still conveyed to the
+			// caller through the content text.
+			return {
+				content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${errorMsg}${resumeHint}` }],
+				details: makeDetails("single")([result]),
+			};
 		}
 		const fallbackPrefix = forkFallbackNote ? `_note: ${forkFallbackNote}_\n\n` : "";
 		return {

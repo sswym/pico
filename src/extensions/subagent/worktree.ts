@@ -164,7 +164,7 @@ export async function createWorktree(
 }
 
 export async function prepareParallelWorktrees(
-	cwd: string,
+	cwd: string | ((task: WorktreeTask, index: number) => string),
 	tasks: WorktreeTask[],
 	create: (cwd: string, agentName: string, index: number) => Promise<WorktreeHandle> | WorktreeHandle = createWorktree,
 ): Promise<PreparedWorktrees> {
@@ -174,8 +174,9 @@ export async function prepareParallelWorktrees(
 	for (let i = 0; i < tasks.length; i++) {
 		const task = tasks[i];
 		if (!task) continue;
+		const taskCwd = typeof cwd === "function" ? cwd(task, i) : cwd;
 		try {
-			handles[i] = await create(cwd, task.agent, i);
+			handles[i] = await create(taskCwd, task.agent, i);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			errors.push(`task ${i} (${task.agent}): ${message}`);
@@ -271,7 +272,7 @@ export async function commitWorktreeChanges(
 }
 
 export async function mergeParallelWorktrees(
-	cwd: string,
+	cwd: string | ((index: number) => string),
 	results: SingleResult[],
 	handles: Array<WorktreeHandle | null>,
 	getDiff: (cwd: string, branchName: string) => string | Promise<string> = getWorktreeDiff,
@@ -288,10 +289,13 @@ export async function mergeParallelWorktrees(
 			mergeNotes.push(`task ${i} (${result.agent}): skipped merge (task failed)`);
 			continue;
 		}
+		// The worktree's repo — the branch must be merged back into the repo
+		// it was checked out from, which may differ from the main session cwd.
+		const repoCwd = typeof cwd === "function" ? cwd(i) : cwd;
 		// Commit uncommitted edits before diffing — a branch that only has
 		// working-tree changes merges as "no changes" and then gets deleted
 		// with the worktree, silently dropping the task's output.
-		const committed = await commitChanges(cwd, handle.worktreeDir);
+		const committed = await commitChanges(repoCwd, handle.worktreeDir);
 		if (!committed) {
 			mergeNotes.push(
 				`task ${i} (${result.agent}): could not commit worktree changes (git identity missing?); ` +
@@ -299,12 +303,12 @@ export async function mergeParallelWorktrees(
 			);
 			continue;
 		}
-		const diff = await getDiff(cwd, handle.branchName);
+		const diff = await getDiff(repoCwd, handle.branchName);
 		if (!diff.trim()) {
 			mergeNotes.push(`task ${i} (${result.agent}): no changes to merge`);
 			continue;
 		}
-		const mergeResult = await merge(cwd, handle.branchName);
+		const mergeResult = await merge(repoCwd, handle.branchName);
 		if (mergeResult.success) {
 			mergeNotes.push(`task ${i} (${result.agent}): merged\n${diff.trimEnd()}`);
 		} else {

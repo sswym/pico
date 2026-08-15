@@ -28,27 +28,28 @@ export function __resetMcpConfigWarningsForTests(): void {
   warnedInvalidServers.clear();
 }
 
+type ServerValidation =
+  | { ok: true; config: McpServerConfig }
+  | { ok: false; error: string };
+
 /**
- * Validate a single server entry; a malformed entry must not silently vanish
- * (it would look like "no servers configured" and poison the whole file).
+ * Validate a single server entry. A malformed entry must not silently vanish
+ * (it would look like "no servers configured" and poison the whole file) —
+ * the returned reason is surfaced in /mcp as a FAILED entry (P5).
  */
-function validateServer(key: string, server: unknown): McpServerConfig | null {
+function validateServer(key: string, server: unknown): ServerValidation {
   if (!server || typeof server !== "object") {
-    warnOnce(key, `server "${key}" is not an object; skipped`);
-    return null;
+    return { ok: false, error: `server "${key}" is not an object` };
   }
   const s = server as Record<string, unknown>;
   if (typeof s.command !== "string" || s.command.trim() === "") {
-    warnOnce(key, `server "${key}" has no valid "command" (must be a non-empty string); skipped`);
-    return null;
+    return { ok: false, error: `server "${key}" has no valid "command" (must be a non-empty string)` };
   }
   if (s.args !== undefined && !Array.isArray(s.args)) {
-    warnOnce(key, `server "${key}" has invalid "args" (must be an array); skipped`);
-    return null;
+    return { ok: false, error: `server "${key}" has invalid "args" (must be an array)` };
   }
   if (s.env !== undefined && (typeof s.env !== "object" || s.env === null || Array.isArray(s.env))) {
-    warnOnce(key, `server "${key}" has invalid "env" (must be an object); skipped`);
-    return null;
+    return { ok: false, error: `server "${key}" has invalid "env" (must be an object)` };
   }
   const out: McpServerConfig = { command: s.command };
   if (Array.isArray(s.args)) {
@@ -69,24 +70,80 @@ function validateServer(key: string, server: unknown): McpServerConfig | null {
       ),
     );
   }
-  return out;
+  return { ok: true, config: out };
+}
+
+interface McpConfigLoadResult {
+  servers: Record<string, McpServerConfig>;
+  /** Entries rejected by validation, with the reason (P5). */
+  invalid: Array<{ id: string; error: string }>;
+}
+
+function parseFile(path: string, sourceName: string): McpConfigLoadResult {
+  try {
+    if (!existsSync(path)) return { servers: {}, invalid: [] };
+    const raw = readFileSync(path, "utf-8");
+    return parseMcpConfigObject(JSON.parse(raw), sourceName);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    warnOnce(sourceName, `${sourceName} could not be parsed (${msg}); ignored`);
+    return { servers: {}, invalid: [] };
+  }
 }
 
 /**
- * 从已解析的 mcp 配置对象（含 mcpServers 键）提取服务器表。
+ * 从已解析的 mcp 配置对象（含 mcpServers 键）提取服务器表与校验失败条目。
  * 兼容旧文件顶层与 settings.json `mcpServers` 命名空间（逐字一致）。
  */
-function parseMcpConfigObject(raw: unknown, sourceName: string): Record<string, McpServerConfig> {
+function parseMcpConfigObject(raw: unknown, sourceName: string): McpConfigLoadResult {
   if (!raw || typeof raw !== "object" || !(raw as McpConfig).mcpServers) {
     warnOnce(sourceName, `${sourceName} is missing "mcpServers"; ignored`);
-    return {};
+    return { servers: {}, invalid: [] };
   }
-  const out: Record<string, McpServerConfig> = {};
+  const servers: Record<string, McpServerConfig> = {};
+  const invalid: Array<{ id: string; error: string }> = [];
   for (const [key, server] of Object.entries((raw as McpConfig).mcpServers)) {
     const validated = validateServer(key, server);
-    if (validated) out[key] = validated;
+    if (validated.ok) {
+      servers[key] = validated.config;
+    } else {
+      invalid.push({ id: key, error: validated.error });
+      warnOnce(key, `${validated.error}; skipped`);
+    }
   }
-  return out;
+  return { servers, invalid };
+}
+
+/**
+ * Load the merged (home + project) config together with its validation
+ * failures, so callers can surface rejected entries instead of losing them.
+ */
+function loadMcpConfigResult(cwd: string): McpConfigLoadResult {
+  // 用户级：settings.json `mcpServers` 命名空间优先，否则回退旧 ~/.pico/mcp-servers.json。
+  const settings = readSettings();
+  const homeResult = settings.mcpServers !== undefined
+    ? parseMcpConfigObject(settings.mcpServers, "settings.json:mcpServers")
+    : parseFile(picoMcpConfigPath(), picoMcpConfigPath());
+  const projectPath = join(cwd, ".pico", "mcp-servers.json");
+  const projectResult = allowProjectMcp() ? parseFile(projectPath, projectPath) : { servers: {}, invalid: [] };
+
+  const servers: Record<string, McpServerConfig> = { ...homeResult.servers };
+  for (const [key, server] of Object.entries(projectResult.servers)) {
+    servers[key] = server;
+  }
+
+  // A project key (valid or invalid) overrides the home entry of the same
+  // name, so a home-side failure is dropped when the project replaces it.
+  const projectKeys = new Set([
+    ...Object.keys(projectResult.servers),
+    ...projectResult.invalid.map((entry) => entry.id),
+  ]);
+  const invalid = [
+    ...homeResult.invalid.filter((entry) => !projectKeys.has(entry.id)),
+    ...projectResult.invalid,
+  ];
+
+  return { servers, invalid };
 }
 
 /**
@@ -96,29 +153,14 @@ function parseMcpConfigObject(raw: unknown, sourceName: string): Record<string, 
  * Returns an empty record when no config is found.
  */
 export function loadMcpConfig(cwd: string): Record<string, McpServerConfig> {
-  const merger = (path: string, sourceName: string): Record<string, McpServerConfig> => {
-    try {
-      if (!existsSync(path)) return {};
-      const raw = readFileSync(path, "utf-8");
-      return parseMcpConfigObject(JSON.parse(raw), sourceName);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      warnOnce(sourceName, `${sourceName} could not be parsed (${msg}); ignored`);
-      return {};
-    }
-  };
+  return loadMcpConfigResult(cwd).servers;
+}
 
-  // 用户级：settings.json `mcpServers` 命名空间优先，否则回退旧 ~/.pico/mcp-servers.json。
-  const settings = readSettings();
-  const homeServers = settings.mcpServers !== undefined
-    ? parseMcpConfigObject(settings.mcpServers, "settings.json:mcpServers")
-    : merger(picoMcpConfigPath(), picoMcpConfigPath());
-  const projectPath = join(cwd, ".pico", "mcp-servers.json");
-  const projectServers = allowProjectMcp() ? merger(projectPath, projectPath) : {};
-
-  const merged: Record<string, McpServerConfig> = { ...homeServers };
-  for (const [key, server] of Object.entries(projectServers)) {
-    merged[key] = server;
-  }
-  return merged;
+/**
+ * Validation failures from the merged config (same sources and merge rules as
+ * `loadMcpConfig`): the entries `loadMcpConfig` silently skips, with reasons.
+ * The MCP extension surfaces these as FAILED entries in /mcp (P5).
+ */
+export function loadInvalidMcpServers(cwd: string): Array<{ id: string; error: string }> {
+  return loadMcpConfigResult(cwd).invalid;
 }

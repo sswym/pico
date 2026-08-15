@@ -251,6 +251,13 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           // (observed in batch runs). Staying locked is not a deadlock —
           // the model can always end the turn with a text reply, or the
           // operator can re-run with PICO_ALLOW_UNATTENDED_PLAN_APPROVAL=1.
+          // Batch callers must be able to tell "plan not approved" apart
+          // from a clean run, so flag a non-zero exit code as well. The
+          // denial is final in this process (hasUI=false and the env opt-in
+          // are fixed for the process lifetime), so the flag is safe: the
+          // turn still finishes — the model sees the error, stdout flushes —
+          // and the process then exits with this code.
+          process.exitCode = 1;
           throw new Error(
             `Plan NOT approved (non-interactive). Plan mode stays active and write tools remain blocked. ` +
               `Set PICO_ALLOW_UNATTENDED_PLAN_APPROVAL=1 to auto-approve in batch runs, or end the turn to stop. ` +
@@ -273,11 +280,12 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
   // ---- /plan command (user-initiated equivalent of EnterPlanMode) -------
   pi.registerCommand("plan", {
-    description: "Enter plan mode (read-only research; ExitPlanMode to resume writes). /plan off exits plan mode.",
+    description: "Enter plan mode (read-only research; ExitPlanMode to resume writes). /plan off exits plan mode. /plan status shows current state.",
     handler: async (args, ctx) => {
+      const arg = args.trim().toLowerCase();
       // 2.5.6: `/plan` could previously only ENTER plan mode — a user who
       // wanted out had no command (only /reload). `/plan off` now exits.
-      if (args.trim().toLowerCase() === "off" || args.trim().toLowerCase() === "exit") {
+      if (arg === "off" || arg === "exit") {
         if (!planActive) {
           try { ctx.ui.notify("Plan mode is not active.", "info"); } catch {}
           return;
@@ -287,6 +295,18 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         publishPlanMode(false);
         try {
           ctx.ui.notify("Plan mode disabled. Write tools re-enabled.", "info");
+        } catch {}
+        return;
+      }
+      // D6/P2: `/plan status` must report the current state, not flip into
+      // plan mode — a status query that silently locked write tools would
+      // surprise the user.
+      if (arg === "status") {
+        const text = planActive
+          ? `Plan mode is active. Plan file: ${planFile ?? resolvePlanFile(ctx)}. Write tools are blocked.`
+          : "Plan mode is not active. Write tools are enabled.";
+        try {
+          ctx.ui.notify(text, "info");
         } catch {}
         return;
       }
@@ -350,6 +370,9 @@ export const planExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 export function __resetPlanStateForTests(): void {
   planActive = false;
   planFile = null;
+  // The extension flags non-interactive plan denials via process.exitCode;
+  // reset it along with the module state so tests stay isolated.
+  process.exitCode = 0;
 }
 
 export function __getPlanStateForTests(): { planActive: boolean; planFile: string | null } {

@@ -713,11 +713,39 @@ flowchart TD
 - **配置**：`evolution.enabled`（默认关）+ `provider/model` + `reviewEveryTurns` + `maxReviewsPerSession` + `maxSkillBytes`；env `PICO_EVOLUTION_ENABLED/PROVIDER/MODEL/DENY/REVIEW_EVERY_TURNS` 全部登记 envmap；/doctor 新增 `Evolution:` 段；`pico setup` integrations 节可开关 + summary 展示；`setup --reset` 键列表含 evolution。
 - **测试**：`tests/evolution.test.ts`（fakePi 集成：触发/落盘/频率限制/回合阈值/失败推进/shutdown 等待/resume 去重）+ `evolution-apply.test.ts`（消毒/注入/用户技能保护/mtime）+ `evolution-review.test.ts`（提示词/JSON 容错）共 35 条；setup 新增 3 条（启用/禁用/summary）。真实场景（pico -p + deepseek-v4-flash）验证链路全通。
 
+### 4.17 第十七轮整改（2026-08-15，全功能测试整改轮：19 域 ~189 用例实测，7 高 / 18 中 / 33 低，P 层全部修复附回归测试，1393 用例全绿）
+
+依据单会话全量测试总报告（D1–D19，`/tmp/pico-test-2JirDO/final-report.md`）修复。本轮修复均为测试实测复现的真实缺陷；U 层（上游 pi 受约束）与 M 层（模型行为）问题见 §5.2 与报告，P 侧仅做提示词/诊断缓解。
+
+- **signals（高）**：`/reload` 后 SIGINT 保护失效（单次 `kill -INT` 直接 exit 130）——`pi.on(session_start/session_shutdown)` 订阅移出 once-guard，每次工厂重跑注册到新 ExtensionAPI；`process.on` 仍进程级仅一次。回归：`tests/signals.test.ts`（工厂二次运行后订阅活跃 + 走取消分支；回退旧结构测试必红）。
+- **subagent（高，数据损坏级）**：parallel + `isolation:"worktree"` 且 `cwd≠ctx.cwd` 时从错误仓库检出、merge 污染主会话仓库（测试期实测把子代理改动提交进被测仓库，已恢复）——`prepareParallelWorktrees`/`mergeParallelWorktrees`/cleanup 改用任务解析 cwd（`t.cwd ?? ctx.cwd`）。回归：`tests/subagent.test.ts` 断言 ctx.cwd 仓库零改动。另修 single 失败 toolResult `details={}`（结构化返回 exitCode/stopReason/messages/sessionFile，throw 会被上游序列化为空 details）与 single+worktree 静默忽略（显式拒绝）。
+- **memory（高×2 + 中×2）**：① 缺省读路径只查 global scope（工具/命令检索对项目事实不可见、`/memory count` 失真）——`cwdForScope` 无显式 scope 且知 cwd 时提升 `SCOPE_PROJECT`，与 prefetch 对齐；② 秘密扫描漏检 `sk-` 短后缀（`sk-test-abcdef123456` 入库+进实体索引）——`sk-` 独立模式 `{8,}` 下限，读出侧同 scanner 生效；③ curated 容量熔断失效（turn_end 每 assistant 消息重置计数）——改 `agent_start`（每次用户轮恰好一次）重置，第 4 次超容量返回 `done` 终止错误；④ 纠错自动提取不关联原事实——`findCorrectionTarget` 按同 scope 文本重叠定位原事实并传 `correctionOf`（-0.30 降权）。另修 `onPreCompress` 归档分支（`session_before_compact` 负载形状适配，压缩时刻消息进记忆库）。回归：`tests/memory.test.ts` / `memory-deep.test.ts`。
+- **lsp（高）**：文件级路由死锁在探测失败的 `typescript-native`、已装 typescript-language-server 不被回退——`syncDocumentForFile` 遍历全部 primary 候选，探测失败/backoff 中候选跳过；另修 COMMAND_NOT_FOUND 类启动失败进 `/doctor` LSP 段（missingCommands 集合）+ 失败记录即发布 lsp_status 事件（doctor 快照实时刷新）。回归：`tests/lsp.test.ts` / `doctor.test.ts`。
+- **evolution（高）**：落盘技能 description 含 `": "` 破坏 frontmatter YAML → 下一会话技能被跳过、闭环失效——`renderSkillFile` 改用 YAML 双引号安全序列化（yamlQuote：转义 `"`/`\`/控制字符），`readSkillDescription` 反向兼容带引号值。回归：`tests/evolution-apply.test.ts`（用上游同款 yaml.parse 断言解析无错+字段保真）。
+- **skill（高）**：内置 ponytail 技能对 skill 工具不可见（`skillPathsFromArgv` 读 process.argv 而 bin 追加进 main() args）——改由扩展 DI 注入技能目录；另修根级 `agent/skills/*.md` 不被 scanSkillDir 发现（顶层兼容 .md）、YAML 折叠标量描述渲染为 `>`（`parseFrontmatterFields` 支持 `>`/`|` 块标量）、run 未命中空建议（给放置指引）。回归：`tests/skill.test.ts`（headless 实机对照 list 0→7）。
+- **cache-optimizer（中）**：拆散 AGENTS.md/CLAUDE.md 的 `<project_instructions>` 包装（wrapper 空、内容重排顶部）——`extractProjectInstructionBlocks` 把稳定上下文文件（AGENTS.md/CLAUDE.md 等）的完整 wrapper 块（开标签+内容+闭标签）作为候选整体提取入稳定前缀，删除裸 file.content 候选；PICO_CACHE_STABLE 标记段与模式相关文本行为不变。回归：`tests/cache-optimizer.test.ts`（包装完整断言 + 真实 AGENTS.md e2e）。
+- **ccstyle（中）**：全局渲染补丁吞掉 subagent 运行中面板（isPartial 运行态被 `↳ Pending…` 取代）——isPartial 渲染委派原工具 renderResult（运行中面板 `● agent (user) · 运行中…` + turns/usage 增长恢复）；`/ccstyle off` 与 `ccstyle.enabled=false` 现在完全关闭渲染补丁（enabled getter 共享，已挂载工具随下次 updateDisplay 回原生渲染）。回归：`tests/ccstyle.test.ts`。
+- **plan（中）**：headless 非交互拒绝后 `-p` 进程退出码 0（预期非 0，批量管道无法判别"计划未批准"）——拒绝分支设 `process.exitCode = 1`；另增 `/plan status` 状态显示（on/off + 锁状态，不进入模式）。回归：`tests/plan.test.ts`。
+- **settings（中）**：settings.json/models.json 运行时写不修复遗留宽权限（写后仍 664）——`writeSettings` 写后 statSync+chmodSync 0o600，`setup writeJson` rename 后显式 chmod 兜底。回归：`tests/policy.test.ts`。
+- **mcp（中×2）**：崩溃重连"指数退避"不可观测（成功即重置窗口，`retry in Ns` 不可达）——reconnectState 成功后仅重置 backoff 不清窗口，窗口内死亡走可见 retry 分支；respawn 失败后工具永久 not active 不自愈——按退避窗口周期自动重连、成功 repoint holder；并行调用死句柄竞态——`reconnectInFlight` 单飞表共享一次重连；schema 非法条目静默丢弃——保留为 FAILED 展示在 `/mcp`（含原因）。回归：`tests/mcp.test.ts`（19 条）。
+- **automode（低×2）**：fast 分类器输出归一化（`parseFastClassifierVerdict` 取首个独立 0/1 token，`allow`/空/多位数 fail-closed 且 reason 含原始文本）；配置形状陷阱（顶层 `automode.enabled` 静默不生效）——session_start 与 `/automode status` 浮出可行动告警（正确形状 `automode.autoMode.enabled`）。回归：`tests/automode.test.ts`。
+- **auto-thinking（低×3）**：`/thinking status` 分支（不再报 Unknown）；minimal 等钳制后通知显示实际生效级别（getThinkingLevel 回读 + "not supported…clamped" 说明）；ultrathink 不再持久改写 settings.json defaultThinkingLevel（提升前快照、agent_end 恢复后写回，仅当上游确实持久化过）。回归：`tests/auto-thinking.test.ts`。
+- **logo/theme（中×2 + 低）**：窄屏（72–98 列）logo header 盒宽溢出 1 字符折行——boxWidth 扣滚动条列 + 去 Text 冗余水平 padding；终端高度 ≤30 行 header 顶部裁剪——rows<38 用 2 行紧凑头；`--theme` 按名称传参不生效——`buildRuntimeArgs` 解析主题名为 `agent/themes/<name>.json` 或内置 `PI_PACKAGE_DIR/theme/<name>.json`，绝对路径/未知名称原样透传；L25 全新 PICO_HOME 首启主题告警——启动路径 `ensureBundledThemeFile` 预写主题文件（仅缺失时写，不覆盖手改）。回归：`tests/logo.test.ts` / `retro-theme.test.ts` / `runtime.test.ts`。
+- **undo-redo（低×3）**：`/undo-redo-clear-cache` 后立即 /undo 报 No undo history——清除前 preserveHistory 捕获当前叶快照与 undo/redo 栈，清后 restoreHistory 重建（含 `invalidateLeafCache` 防陈旧缓存回退文件）；redo 快捷键补 plain `ctrl+y`（与 ctrl+shift+y 并存，无键位冲突）；`/diff-stack` 新增叶对叶（v1↔v2）直接对比（`orderedLeaves` 相邻叶对，默认行为不变）。回归：`tests/undo-redo.test.ts` / `undo-redo-deep.test.ts`（70 条）。
+- **hooks（低×2）**：禁用告警渲染通道错误 + drain 死代码——session_start 主动预热 hooks 缓存 + 检测 `.pico/hooks.json` 存在且被禁时走标准 warning notify（含 /doctor 指引，对照 MCP/LSP 告警）；hook progress/失败消息经 pi 注入模型上下文致模型误判——`pi.sendMessage` 改为 `ctx.ui.notify`（TUI-only 零会话条目）+ headless console.warn 兜底。回归：`tests/hooks.test.ts`。
+- **vision（中，提示词层）**：SSRF 守卫可被模型 `bash curl` 下载私网图绕过——visionAnalyze 提示词禁令（image_url 私网被拒后严禁 curl/wget 下载再走 image_path）。回归：`tests/vision.test.ts`。
+- **todo（中，提示词层）**：3+ 步/编号清单 todoWrite 触发不稳定——`todo-tool.md` 硬性约束（≥3 条编号/逗号清单或 ≥3 步任务时首次工具调用批必须包含 todoWrite 逐条建条目，禁止跳过/归并/推迟）。回归：`tests/todo.test.ts`。
+- **footer（低）**：有失败服务器时 MCP 状态从 footer 静默丢失（fitStatuses 宽度超限整段丢弃尾部）——失败状态段（failed/fail/!）优先保留、仅剩它时省略号截断；compactStatus 失败态短格式 `MCP n ok m!`。回归：`tests/retro-theme.test.ts`。
+- **embedded-runtime（低）**：SIGKILL 后临时资源目录残留——临时目录 PID 标记化 + 启动时清理 PID 已不存在的过期目录（无 PID 标记的旧格式保留不动）。回归：`tests/runtime.test.ts`。
+
+**测试基线**：1321 → 1393 用例（+72，新增/更新回归测试全部落地于对应 `tests/<feature>.test.ts`）；`bun run verify` 0 错 0 失败。
+
 ## 5. 当前版本现状与已知局限
 
 ### 5.1 现状
 
-- 功能面完整：23 扩展、706 用例全绿、`bun run verify`（tsc + 全量测试）通过；
+- 功能面完整：30 扩展、1393 用例全绿、`bun run verify`（tsc + 全量测试）通过；
+- 第十七轮整改（2026-08-15，依据全功能测试总报告 `/tmp/pico-test-2JirDO/final-report.md`，19 域 ~189 用例实测，修复 7 高 / 18 中 / 33 低中的全部 P 层项，全部附回归测试）：见 §4.17；1393 用例全绿；
 - 第三轮 UX 整改（2026-08-05，依据 `docs/ux-walkthrough-review.md`）：离线 `/help` 与无模型/推理 400/崩溃恢复引导（guidance 扩展）、config.yml 双轨冲突检测、`<inline:N>` 启动噪音消除（InlineExtension hidden）、LSP 缺失命令警告去重与可执行建议、生成阶段动态反馈、计划模式挂起 todo 面板、CLI 品牌统一、MCP 状态可读化、logo 首启文案与真实会话、`/memory status` 类别分布、rtk 启用提示；全部附回归测试；
 - 安全默认值：项目 hooks/MCP 默认关、非交互项目代理默认拒、LSP 写动作默认阻断、计划自动批准默认关；
 - 工具错误语义对齐上游：失败一律 throw（agent loop 仅以异常判定 isError）；第四轮整改（2026-08-05，依据深度技术分析报告）修复 4 高 / 29 中 / 37 低，覆盖 LSP 写透传短路、worktree 冲突与分支保留、子代理退出码、vision SSRF、MCP 并行连接与进程组、事件订阅生命周期、异步化 gate、ANSI 终端注入等；
@@ -760,13 +788,15 @@ flowchart TD
 | L22 | **网络错误重试文案生硬**：`Error: Connection error.` + `Retrying (1/3) in 2s...` 中英混排、以 Error 样式混入会话区（重试机制本身可靠，实测 1 次即恢复） | 用户误判故障 | 受上游约束；建议上游本地化 |
 | L23 | **未知斜杠命令无本地拦截钩子**：上游 onSubmit 对未注册的 `/xxx` 无"未知命令"分支，直接作为普通消息发送 | 每条误输消耗一次 LLM 往返 | 已缓解：context 事件注入引导（一句话回答 + /help 指引、禁猜测、同命令只注入一次），pico 层无完全本地拦截能力 |
 | L24 | **模型请求等待期间无超时倒计时/进度提示**：挂起时仅 `thinking Ns` 计时器；超时值 `settings.httpIdleTimeoutMs` 默认 300s（0=禁用），pico 已校验 + /doctor 展示，但等待期 UX 与倒计时受上游 TUI 约束 | 长等待期用户无感知 | 受上游约束；已文档化配置键 |
-| L25 | **全新 PICO_HOME 首启主题加载时序**：TUI 初始化先于 retro-theme 的 session_start 主题文件同步，首启报一次 `Failed to load theme "claude-code-dark"` 并回退 dark，次启恢复正常 | 首启一次噪音告警 | 已知；可在首启路径预写主题文件消除 |
+| L25 | **全新 PICO_HOME 首启主题加载时序**：TUI 初始化先于 retro-theme 的 session_start 主题文件同步，首启报一次 `Failed to load theme "claude-code-dark"` 并回退 dark，次启恢复正常 | 首启一次噪音告警 | **已修**（第十七轮：启动路径 `ensureBundledThemeFile` 预写主题文件，仅缺失时写不覆盖手改；回归 `tests/retro-theme.test.ts`） |
 | L26 | **subagent toolResult `details.messages` 携带子代理完整会话**（实测单次 142KB/229KB）：主会话 JSONL 每次 subagent 调用 +150~250KB 存储膨胀 | 会话文件膨胀（磁盘/重放成本）；模型上下文仅收 content 摘要，无功能影响 | 渲染器依赖 messages 做工具轨迹展示与最终输出提取，截断会破坏功能；待改轻量 details 结构（如预聚合 DisplayItem）后落地 |
 | L27 | **ccstyle 无 rich diff 词级高亮**（edit/write diff 为行级着色，无 intra-line 反色）；无 hover 高亮（1003 all-motion 在 tmux 下不可靠）、无 show-more 全量预览、无回到底部按钮 | 展开 diff 可读性略逊上游、无 hover 提示 | v1 裁剪项（§4.15），可后续补 |
 | L28 | **ccstyle 全接管后 pico 定制工具折叠摘要统一为单行**：subagent 进度列表、memory 结果细节、todo 列表等定制多行反馈移入展开态（Input/Output） | 折叠态信息密度下降 | 全接管取舍；如需可单点放回定制渲染器 |
-| L29 | **`/ccstyle` 切换不重渲染已挂载工具**：分组/渲染补丁只对新挂载的工具生效，on/off 切换后旧工具卡保持原视图直至下次 updateDisplay | 切换后视觉不一致（新会话正常） | 扩展 API 无 TUI 句柄触发重渲染；v1 限制 |
+| L29 | **`/ccstyle` 切换不重渲染已挂载工具**：分组/渲染补丁只对新挂载的工具生效，on/off 切换后旧工具卡保持原视图直至下次 updateDisplay | 切换后视觉不一致（新会话正常） | **部分缓解**（第十七轮：`/ccstyle off` 与 `ccstyle.enabled=false` 完全关闭渲染补丁，已挂载工具随下次 updateDisplay 回原生渲染；主动强制重渲染仍无 TUI 句柄） |
 | L30 | **evolution 技能库无 curator 整理**：无自动合并重叠技能/淘汰长期未用技能（hermes curator 对应物）；技能只增不整理 | 技能库可能缓慢膨胀 | Phase 2 规划（见 docs/evolution-design.md §9）；当前靠审查纪律（类级技能、create≤1/会话）与手动清理 |
 | L31 | **evolution 审查质量依赖模型判断**：审查模型对"可复用方法论"的判定影响沉淀密度；技能内容未经人工审阅直接进入下一会话系统提示词 | 低质/重复技能可能沉淀 | 默认关闭 + 注入特征门禁 + 用户可随时删除技能/清清单（`/doctor` Evolution 段可见全量）；如不满意可换更强审查模型 |
+| L32 | **`/model` 选择器搜索无法匹配目录中真实模型**（deepseek-v4-flash 搜索 "No matching models"）；误 Enter 会把选择持久化进 settings.json defaultModel | 模型切换困难、误写配置 | 受上游搜索/过滤逻辑约束；pico 侧建议加确认弹窗与写前校验 |
+| L33 | **`/export --path` 参数解析**：上游把 `--path` 后的值解析为位置参数并生成同名文件（实测产生 `--path` 文件） | 导出误生成垃圾文件 | 受上游参数解析约束；pico 侧可预校验导出参数 |
 
 ### 5.3 待优化项与迭代规划（建议排序）
 

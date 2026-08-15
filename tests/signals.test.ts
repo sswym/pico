@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { handleSignal, signalsExtension, __resetSignalsForTests } from "../src/extensions/signals.ts";
+import {
+  handleSignal,
+  signalsExtension,
+  __getCurrentCtxForTests,
+  __resetSignalsForTests,
+} from "../src/extensions/signals.ts";
 
 function makeFakeCtx(overrides: { idle?: boolean } = {}) {
   const calls: { abort: number; shutdown: number; notify: string[] } = { abort: 0, shutdown: 0, notify: [] };
@@ -23,25 +28,72 @@ function makeFakeCtx(overrides: { idle?: boolean } = {}) {
   };
 }
 
-describe("signals extension", () => {
-  test("factory registers handlers once and tracks the session ctx", () => {
-    const handlers: Record<string, Array<(e?: unknown) => void>> = {};
-    const pi = {
-      on: (event: string, handler: (e?: unknown) => void) => {
+function makeFakePi() {
+  const handlers: Record<string, Array<(e?: unknown, ctx?: unknown) => void>> = {};
+  return {
+    handlers,
+    pi: {
+      on: (event: string, handler: (e?: unknown, ctx?: unknown) => void) => {
         (handlers[event] ??= []).push(handler);
       },
-    } as never;
-    signalsExtension(pi as never);
+    } as never,
+  };
+}
 
-    const sessionStart = handlers["session_start"]![0]! as (e: unknown, ctx: unknown) => void;
-    const fake = makeFakeCtx();
-    sessionStart(undefined, fake.ctx);
-    // Second factory run (simulated /reload) must not stack a third listener
-    // — hard to observe directly, but the module flag makes re-entry a no-op;
-    // calling the factory again must not throw.
-    signalsExtension(pi as never);
-    signalsExtension(pi as never);
-    expect(handlers["session_start"]!.length).toBe(1);
+describe("signals extension", () => {
+  test("process signal handlers are registered once across factory re-runs", () => {
+    const { pi: pi1 } = makeFakePi();
+    const sigintBefore = process.listeners("SIGINT").length;
+    const sigtermBefore = process.listeners("SIGTERM").length;
+    signalsExtension(pi1);
+    expect(process.listeners("SIGINT").length).toBe(sigintBefore + 1);
+    expect(process.listeners("SIGTERM").length).toBe(sigtermBefore + 1);
+
+    // Simulated /reload: the factory re-runs, but the process-level wiring
+    // must not stack (AGENTS.md: reload must not double SIGINT handlers).
+    const { pi: pi2 } = makeFakePi();
+    signalsExtension(pi2);
+    expect(process.listeners("SIGINT").length).toBe(sigintBefore + 1);
+    expect(process.listeners("SIGTERM").length).toBe(sigtermBefore + 1);
+
+    __resetSignalsForTests();
+  });
+
+  test("reload: factory re-run re-subscribes on the new api so SIGINT still cancels", () => {
+    const { handlers: handlers1, pi: pi1 } = makeFakePi();
+    const { handlers: handlers2, pi: pi2 } = makeFakePi();
+
+    // First factory run (startup): subscribes on api1.
+    signalsExtension(pi1);
+    expect(handlers1["session_start"]!.length).toBe(1);
+    expect(handlers1["session_shutdown"]!.length).toBe(1);
+
+    // Session starts on the old api.
+    const oldCtx = makeFakeCtx({ idle: false });
+    handlers1["session_start"]![0]!(undefined, oldCtx.ctx);
+    expect(__getCurrentCtxForTests()).toBe(oldCtx.ctx);
+
+    // /reload teardown: session_shutdown clears the ctx…
+    handlers1["session_shutdown"]![0]!();
+    expect(__getCurrentCtxForTests()).toBe(null);
+
+    // …then the factory re-runs against a FRESH ExtensionAPI. It must
+    // subscribe on the new api even though process handlers are already
+    // registered (before the fix the once-guard skipped this, so the new api
+    // had no session_start handler and currentCtx stayed null forever).
+    signalsExtension(pi2);
+    expect(handlers2["session_start"]!.length).toBe(1);
+    expect(handlers2["session_shutdown"]!.length).toBe(1);
+
+    const newCtx = makeFakeCtx({ idle: false });
+    handlers2["session_start"]![0]!(undefined, newCtx.ctx);
+    expect(__getCurrentCtxForTests()).toBe(newCtx.ctx);
+
+    // SIGINT driven exactly like the process.on closure does (module-level
+    // currentCtx) must cancel the reloaded run — not fall through to exit(130).
+    handleSignal("SIGINT", __getCurrentCtxForTests());
+    expect(newCtx.calls.abort).toBe(1);
+    expect(newCtx.calls.shutdown).toBe(0);
 
     __resetSignalsForTests();
   });

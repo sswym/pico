@@ -118,11 +118,34 @@ export function validateReviewOutput(out: ReviewOutput, config: EvolutionConfig)
   return v;
 }
 
+/**
+ * YAML 双引号标量序列化。description 来自审查模型，常含 `": "`（"X: Y" 式概括），
+ * 裸写会把 frontmatter 变成非法 YAML（上游 yaml.parse 抛 "Nested mappings are not
+ * allowed in compact mappings" → loadSkillFromFile 吞错 → 技能被跳过，自进化闭环失效）。
+ * 双引号包裹并转义 `"`、`\` 与控制字符（换行/制表符等）；其余字符在双引号标量内
+ * 无需转义（含冒号+空格、`#`、行首指示符、U+2028 等，见 YAML 1.2 c-printable）。
+ */
+function yamlQuote(value: string): string {
+  let out = '"';
+  for (const ch of value) {
+    const code = ch.codePointAt(0)!;
+    if (ch === '"') out += '\\"';
+    else if (ch === "\\") out += "\\\\";
+    else if (ch === "\n") out += "\\n";
+    else if (ch === "\r") out += "\\r";
+    else if (ch === "\t") out += "\\t";
+    else if (code < 0x20) out += `\\x${code.toString(16).padStart(2, "0")}`;
+    else out += ch;
+  }
+  out += '"';
+  return out;
+}
+
 function renderSkillFile(name: string, description: string, content: string): string {
   const frontmatter = [
     "---",
     `name: ${name}`,
-    `description: ${description}`,
+    `description: ${yamlQuote(description)}`,
     "x-pico-evolved: true",
     "---",
     "",
@@ -140,7 +163,33 @@ function readSkillDescription(filePath: string): string {
       const sep = line.indexOf(":");
       if (sep < 0) continue;
       if (line.slice(0, sep).trim().toLowerCase() === "description") {
-        return line.slice(sep + 1).trim().replace(/^["']|["']$/g, "");
+        const raw = line.slice(sep + 1).trim();
+        // 兼容 renderSkillFile 写入的双引号样式：剥掉外层引号并反转义（`\"`、`\\`、
+        // `\n`/`\r`/`\t`、`\xHH`），保证 update 路径字段值保真；其他值维持原 strip 行为。
+        if (raw.startsWith('"') && raw.endsWith('"') && raw.length >= 2) {
+          return raw
+            .slice(1, -1)
+            // 先反转义 `\\`/`\"`/`\n`/`\r`/`\t`（`\\x` 不在此列，留给下一步），
+            // 再处理 `\xHH` 控制字符；顺序不能反，否则字面 `\x41` 会被误吞转义反斜杠。
+            .replace(/\\(["\\nrt])/g, (m, ch: string) => {
+              switch (ch) {
+                case '"':
+                  return '"';
+                case "\\":
+                  return "\\";
+                case "n":
+                  return "\n";
+                case "r":
+                  return "\r";
+                case "t":
+                  return "\t";
+                default:
+                  return m;
+              }
+            })
+            .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+        }
+        return raw.replace(/^["']|["']$/g, "");
       }
     }
   } catch {

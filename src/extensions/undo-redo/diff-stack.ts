@@ -12,6 +12,7 @@ interface UiDiffItem {
 	leafId: string;
 	path: string;
 	change: "A" | "M" | "D";
+	previousLeafId?: string;
 }
 
 function describeChange(
@@ -183,6 +184,44 @@ function collectUiDiffItems(
 	return items;
 }
 
+/** Diff items between two adjacent leaves (newer leaf vs its predecessor). */
+function collectLeafPairItems(
+	prevLeafId: string,
+	prevManifest: Manifest,
+	nextLeafId: string,
+	nextManifest: Manifest,
+): UiDiffItem[] {
+	const items: UiDiffItem[] = [];
+	const filePaths = new Set<string>([
+		...prevManifest.keys(),
+		...nextManifest.keys(),
+	]);
+	for (const filePath of filePaths) {
+		const change = describeChange(
+			prevManifest.get(filePath),
+			nextManifest.get(filePath),
+		);
+		if (!change) continue;
+		items.push({
+			leafId: nextLeafId,
+			previousLeafId: prevLeafId,
+			path: filePath,
+			change,
+			label: `[${nextLeafId}] ${change} ${filePath} (vs ${prevLeafId})`,
+		});
+	}
+	return items;
+}
+
+/** Session history order, oldest first, deduplicated. */
+function orderedLeaves(leafOrder: string[]): string[] {
+	const order: string[] = [];
+	for (const leafId of leafOrder) {
+		if (leafId && !order.includes(leafId)) order.push(leafId);
+	}
+	return order;
+}
+
 export async function listDiffItems(
 	tracker: SnapshotTracker,
 	cache: Cache,
@@ -214,6 +253,7 @@ export async function showDiffStack(
 	ctx: ExtensionCommandContext,
 	tracker: SnapshotTracker,
 	cache: Cache,
+	leafOrder: string[] = [],
 ): Promise<void> {
 	if (!ctx.hasUI) {
 		ctx.ui.notify("No UI available", "error");
@@ -223,11 +263,33 @@ export async function showDiffStack(
 	const baseManifest = tracker.getBaseManifest();
 	const leafIds = await cache.listLeafIds();
 	const items: UiDiffItem[] = [];
+	const manifests = new Map<string, Manifest>();
 
 	for (const leafId of leafIds) {
 		const leafManifest = await cache.readLeaf(leafId);
 		if (!leafManifest) continue;
+		manifests.set(leafId, leafManifest);
 		items.push(...collectUiDiffItems(baseManifest, leafId, leafManifest));
+	}
+
+	// Leaf-to-leaf diffs between adjacent leaves in session history.
+	const ordered = orderedLeaves(leafOrder);
+	for (let index = 1; index < ordered.length; index += 1) {
+		const prevLeafId = ordered[index - 1]!;
+		const nextLeafId = ordered[index]!;
+		const prevManifest =
+			manifests.get(prevLeafId) ?? (await cache.readLeaf(prevLeafId));
+		const nextManifest =
+			manifests.get(nextLeafId) ?? (await cache.readLeaf(nextLeafId));
+		if (!prevManifest || !nextManifest) continue;
+		items.push(
+			...collectLeafPairItems(
+				prevLeafId,
+				prevManifest,
+				nextLeafId,
+				nextManifest,
+			),
+		);
 	}
 
 	if (items.length === 0) {
@@ -241,22 +303,41 @@ export async function showDiffStack(
 	const item = items.find((candidate) => candidate.label === selection);
 	if (!item) return;
 
-	const leafManifest = await cache.readLeaf(item.leafId);
-	if (!leafManifest) {
+	const nextManifest = await cache.readLeaf(item.leafId);
+	if (!nextManifest) {
 		ctx.ui.notify("Diff no longer available", "warning");
 		return;
 	}
 
-	const baseEntry = baseManifest.get(item.path);
-	const leafEntry = leafManifest.get(item.path);
+	let baseEntry: FileState | undefined;
+	if (item.previousLeafId) {
+		const prevManifest = await cache.readLeaf(item.previousLeafId);
+		if (!prevManifest) {
+			ctx.ui.notify("Diff no longer available", "warning");
+			return;
+		}
+		baseEntry = prevManifest.get(item.path);
+	} else {
+		baseEntry = baseManifest.get(item.path);
+	}
+
+	const leafEntry = nextManifest.get(item.path);
 	const diffText = await formatDiffText(cache, baseEntry, leafEntry);
-	const header = `Diff for ${item.path} (leaf ${item.leafId})`;
+	const header = item.previousLeafId
+		? `Diff for ${item.path} (leaf ${item.previousLeafId} \u2192 ${item.leafId})`
+		: `Diff for ${item.path} (leaf ${item.leafId})`;
 	pi.sendMessage(
 		{
 			customType: "undo-redo.diff",
 			content: `${header}\n\n${diffText}`,
 			display: true,
-			details: { leafId: item.leafId, path: item.path },
+			details: {
+				leafId: item.leafId,
+				path: item.path,
+				...(item.previousLeafId
+					? { previousLeafId: item.previousLeafId }
+					: {}),
+			},
 		},
 		{ triggerTurn: false },
 	);

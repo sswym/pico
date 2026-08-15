@@ -218,9 +218,15 @@ test("ExitPlanMode in non-UI mode stays locked when not approved", async () => {
   // 8.x: a non-interactive denial keeps write tools BLOCKED — re-enabling
   // them and relying on the model to self-restrain let unapproved plans
   // execute (observed in batch runs). Failure is expressed by throwing.
+  process.exitCode = 0;
   await expect(exit.execute("c2", {}, undefined, undefined, ctx)).rejects.toThrow(/NOT approved \(non-interactive\)/);
   await expect(exit.execute("c3", {}, undefined, undefined, ctx)).rejects.toThrow(/PICO_ALLOW_UNATTENDED_PLAN_APPROVAL/);
   expect(__getPlanStateForTests().planActive).toBe(true);
+
+  // D6/P1: a batch run whose plan was not approved must not exit 0 — the
+  // caller needs a non-zero exit code to tell "plan not approved" apart
+  // from a clean run.
+  expect(process.exitCode).not.toBe(0);
 
   // Writes stay blocked while plan mode is active.
   const block = pi.handlers["tool_call"]![0]!({ toolName: "bash" }, {}) as { block: boolean };
@@ -400,6 +406,36 @@ test("/plan off exits plan mode", async () => {
   await handler("off", ctx);
   expect(__getPlanStateForTests().planActive).toBe(false);
   expect(__getPlanStateForTests().planFile).toBeNull();
+});
+
+test("/plan status reports current state without entering plan mode", async () => {
+  const pi = makeFakePi();
+  planExtension(pi as any);
+  const ctx = makeCtx({ sessionId: "plan-status-test" });
+  const handler = pi.commands.get("plan")!.handler;
+  const notifications: string[] = [];
+  const notifyCtx = { ...ctx, ui: { notify: (text: string) => notifications.push(text) } };
+
+  // Inactive: reports "not active" and must NOT flip into plan mode.
+  await handler("status", notifyCtx);
+  expect(notifications.at(-1)).toMatch(/not active/i);
+  expect(__getPlanStateForTests().planActive).toBe(false);
+
+  // Active: reports the plan file and the write lock, and leaves the toggle on.
+  await handler("", notifyCtx);
+  expect(__getPlanStateForTests().planActive).toBe(true);
+  await handler("status", notifyCtx);
+  const activeText = notifications.at(-1)!;
+  expect(activeText).toMatch(/Plan mode is active/i);
+  expect(activeText).toContain("plan-status-test.md");
+  expect(activeText).toMatch(/blocked/i);
+  expect(__getPlanStateForTests().planActive).toBe(true);
+
+  // Lock state shows up both ways: after /plan off, status reports inactive.
+  await handler("off", notifyCtx);
+  await handler("status", notifyCtx);
+  expect(notifications.at(-1)).toMatch(/not active/i);
+  expect(__getPlanStateForTests().planActive).toBe(false);
 });
 
 test("/reload sequence (session_shutdown) resets stale plan mode", async () => {

@@ -138,6 +138,12 @@ export class SnapshotTracker {
 		return undefined;
 	}
 
+	/** Drop a leaf manifest from the in-memory cache so the next loadLeaf
+	 * re-reads it from disk (used after restoring preserved history). */
+	invalidateLeafCache(leafId: string): void {
+		this.leafCache.delete(leafId);
+	}
+
 	async restoreLeaf(
 		leafId: string | null,
 		applyRoots: string[],

@@ -36,6 +36,7 @@ export function createVisionExtension(deps: VisionAnalyzeDeps = defaultVisionDep
           "visionAnalyze — inspect an image via the configured auxiliary vision model. Accepts image_path, image_base64, or image_url.",
         promptGuidelines: [
           "Use visionAnalyze when you need visual details from an image and the active model cannot inspect images directly.",
+          "SSRF 安全禁令：visionAnalyze 的 image_url 会拒绝私网/内网地址（localhost、127.0.0.1、169.254.169.254 元数据服务、10.x/172.16-31.x/192.168.x 等）。若 image_url 因私网地址被拒，严禁改用 bash curl/wget 等 shell 命令下载该 URL 再通过 image_path 传入绕过防护——私网内容不得经视觉模型外发分析。遇到私网/内网图片地址时必须拒绝并报告拒绝原因，不得尝试绕过。",
         ],
         parameters: VisionAnalyzeParams,
         renderCall(args, theme, context) {

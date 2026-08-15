@@ -8,8 +8,9 @@ import { readFileSync, existsSync, promises as fsPromises } from "node:fs";
 import { spawn } from "node:child_process";
 import { dirname, join, extname } from "node:path";
 import type { LspServerConfig, LspConfig } from "./config.ts";
-import { loadConfig, getPrimaryServerForFile, detectServers, resolveCommand, hasRootMarkers } from "./config.ts";
+import { loadConfig, getServersForFile, detectServers, resolveCommand, hasRootMarkers } from "./config.ts";
 import { LspClient, locationToDisplay, lspPositionToDisplay, LspError, COMMAND_NOT_FOUND } from "./client.ts";
+import { publishExtensionEvent } from "../events.ts";
 
 // ── Runtime state ───────────────────────────────────────────────────────────
 
@@ -23,6 +24,11 @@ interface LspManagerRuntime {
   idleTimeoutMs: number | null;
   idleCheckInterval: ReturnType<typeof setInterval> | null;
   initFailures: Map<string, { at: number; message: string }>;
+  /** Command-not-found startup failures, kept separate from initFailures:
+   *  a missing binary must stay retryable (the install offer depends on the
+   *  COMMAND_NOT_FOUND error being thrown again), so it never participates in
+   *  the init-failure backoff. Still surfaced in /doctor via getInitFailures. */
+  missingCommands: Map<string, { at: number; message: string }>;
   /** In-flight shutdowns (idle reaper) keyed by server name — a new ensure
    *  must wait for the old process to die before spawning a replacement,
    *  otherwise two servers race on the same name/ports. */
@@ -80,8 +86,29 @@ function checkInitBackoff(state: LspManagerState, serverName: string): void {
   state.runtime.initFailures.delete(serverName);
 }
 
+/**
+ * Push the current failure snapshot onto the extension event bus. Every
+ * failure recording republishes, so /doctor's cached LSP section stays fresh
+ * without requiring a manual `lsp status` (P3).
+ */
+function publishLspStatusSnapshot(state: LspManagerState): void {
+  publishExtensionEvent("lsp_status", { failures: getInitFailures(state) });
+}
+
 function recordInitFailure(state: LspManagerState, serverName: string, message: string): void {
   state.runtime.initFailures.set(serverName, { at: Date.now(), message });
+  publishLspStatusSnapshot(state);
+}
+
+/**
+ * Record a command-not-found startup failure. Kept out of initFailures so the
+ * backoff window never suppresses the COMMAND_NOT_FOUND error that the
+ * install-offer flow (withMissingServerInstall) depends on, but merged into
+ * getInitFailures output so /doctor shows why the server never came up.
+ */
+function recordMissingCommand(state: LspManagerState, serverName: string, message: string): void {
+  state.runtime.missingCommands.set(serverName, { at: Date.now(), message });
+  publishLspStatusSnapshot(state);
 }
 
 /**
@@ -380,6 +407,7 @@ export function createLspManager(): LspManagerState {
       idleTimeoutMs: null,
       idleCheckInterval: null,
       initFailures: new Map(),
+      missingCommands: new Map(),
       shuttingDown: new Map(),
     },
   };
@@ -510,8 +538,10 @@ export async function ensureServer(
       // A missing binary must not end the search — keep the FIRST
       // command-not-found as the install-able culprit, then try the next
       // candidate server (e.g. typescript-native(tsc) missing while
-      // typescript-language-server is installed).
+      // typescript-language-server is installed). Record it for /doctor:
+      // a startup failure must be diagnosable after the fact (P2).
       if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) {
+        recordMissingCommand(state, name, err.message);
         if (firstCommandNotFound === null) firstCommandNotFound = err;
         continue;
       }
@@ -618,7 +648,13 @@ export async function ensureNamedServer(
   try {
     await newManaged.initializing;
   } catch (err) {
-    if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) throw err;
+    if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) {
+      // Record for /doctor — COMMAND_NOT_FOUND is a startup failure the
+      // user must be able to look up later (P2). The error still propagates
+      // so withMissingServerInstall can offer to install the binary.
+      recordMissingCommand(state, name, err.message);
+      throw err;
+    }
   }
   return newManaged.client.ready ? newManaged.client : null;
 }
@@ -641,6 +677,7 @@ export async function stopServer(state: LspManagerState): Promise<void> {
   // verdicts are re-computed cheaply; a tool installed between sessions must
   // not stay blocked by a stale "unsupported" cache entry.
   state.runtime.initFailures.clear();
+  state.runtime.missingCommands.clear();
   unsupportedProbeCache.clear();
 }
 
@@ -658,6 +695,11 @@ export interface LspInitFailure {
 export function getInitFailures(state: LspManagerState): LspInitFailure[] {
   const failures: LspInitFailure[] = [];
   for (const [server, record] of state.runtime.initFailures) {
+    failures.push({ server, at: record.at, message: record.message });
+  }
+  // Command-not-found startup failures are merged in so /doctor's LSP
+  // section also surfaces binaries that were never found (P2).
+  for (const [server, record] of state.runtime.missingCommands) {
     failures.push({ server, at: record.at, message: record.message });
   }
   return failures;
@@ -719,6 +761,17 @@ export function syncDocument(
 /**
  * Ensure the primary server for a file is running, synchronize current disk
  * contents to that exact server, and return the matching client with the URI.
+ *
+ * Unlike the single-candidate getPrimaryServerForFile route, this walks every
+ * primary server that handles the file (linters only when no primary exists,
+ * mirroring getPrimaryServerForFile's fallback): a candidate whose startup
+ * already failed this session (probe verdict like typescript-native's tsc
+ * --lsp check, or a hard init failure) must not deadlock file-level routing —
+ * it is skipped (via ensureNamedServer's backoff) and the next candidate
+ * (e.g. the installed typescript-language-server) serves the file instead
+ * (H5). Command-not-found candidates keep throwing so the caller can offer
+ * to install them, mirroring ensureServer; if nothing else works the first
+ * missing command is rethrown.
  */
 export async function syncDocumentForFile(
   state: LspManagerState,
@@ -732,17 +785,37 @@ export async function syncDocumentForFile(
   }
 
   const absPath = filePath.startsWith("/") ? filePath : join(workspaceRoot, filePath);
-  const primary = getPrimaryServerForFile(state.config, absPath);
-  if (!primary) return null;
+  const servers = getServersForFile(state.config, absPath);
+  // Primary (non-linter) servers only — a linter is used solely when the
+  // file has no primary candidate at all (mirrors getPrimaryServerForFile:
+  // linters answer diagnostics, not hover/definition/references).
+  const primaries = servers.filter(([, serverConfig]) => serverConfig.isLinter !== true);
+  const candidates = primaries.length > 0 ? primaries : servers;
+  let firstCommandNotFound: LspError | null = null;
 
-  await ensureNamedServer(state, primary[0], workspaceRoot);
-  const managed = state.servers.get(primary[0]);
-  if (!managed?.client.ready) return null;
+  for (const [name, serverConfig] of candidates) {
+    try {
+      await ensureNamedServer(state, name, workspaceRoot);
+    } catch (err) {
+      // A missing binary must not end the search — remember the first one
+      // so the caller can still offer to install it when nothing at all
+      // starts (matches ensureServer's warmup behavior).
+      if (err instanceof LspError && err.errorCode === COMMAND_NOT_FOUND) {
+        if (firstCommandNotFound === null) firstCommandNotFound = err;
+        continue;
+      }
+      throw err;
+    }
+    const managed = state.servers.get(name);
+    if (!managed?.client.ready) continue;
+    const uri = syncDocumentToServer(managed, absPath);
+    if (!uri) continue;
+    managed.lastActivity = Date.now();
+    return { uri, client: managed.client, serverName: managed.name };
+  }
 
-  const uri = syncDocumentToServer(managed, absPath);
-  if (!uri) return null;
-  managed.lastActivity = Date.now();
-  return { uri, client: managed.client, serverName: managed.name };
+  if (firstCommandNotFound !== null) throw firstCommandNotFound;
+  return null;
 }
 
 function syncDocumentToServer(managed: ManagedServer, absPath: string): string | null {

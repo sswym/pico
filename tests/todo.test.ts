@@ -7,7 +7,7 @@
  * which we cover via shape, not pixel-by-pixel.
  */
 import { expect, test } from "bun:test";
-import { formatTodoList } from "../src/extensions/todo/prompt.ts";
+import { formatTodoList, TODO_PROMPT } from "../src/extensions/todo/prompt.ts";
 import { TodoStore } from "../src/extensions/todo/store.ts";
 
 const KEY = "session-1";
@@ -127,4 +127,14 @@ test("plan-mode collapse is restored when the mode exits", () => {
   } finally {
     resetTodoWidgetStateForTests();
   }
+});
+
+test("todo prompt hard-requires todoWrite on the first tool batch for numbered 3+ step lists", () => {
+  // D3-M5 regression: compliance was unstable — the prompt must carry a hard
+  // MUST ("必须"), the first-tool-batch binding, and a no-skip rule so a
+  // numbered list / multi-step task cannot silently start without a list.
+  expect(TODO_PROMPT).toMatch(/首次工具调用批/);
+  expect(TODO_PROMPT).toMatch(/必须包含 `?todoWrite`?/);
+  expect(TODO_PROMPT).toMatch(/禁止跳过|禁止归并|禁止推迟/);
+  expect(TODO_PROMPT).toContain("违反即违规");
 });

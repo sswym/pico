@@ -7,7 +7,7 @@
 import { expect, test } from "bun:test";
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describeSiblingResults, runSubagentRequest, waitForSubagentJobs, __resetSessionSpawnCountsForTests } from "../src/extensions/subagent/orchestrator.ts";
@@ -1303,6 +1303,109 @@ test("gate helpers summarize failures and build repair task", () => {
   expect(repairTask).toContain("The same checks will run again.");
 });
 
+// ── P1 (H1): worktree isolation resolves the task repo, not the session cwd ─
+
+test("P1: parallel worktree isolation checks out from and merges into the task repo, not the session cwd", async () => {
+  await withSubagentHome(async () => {
+    const mainRepo = mkdtempSync(join(tmpdir(), "pico-wt-session-"));
+    const taskRepo = mkdtempSync(join(tmpdir(), "pico-wt-task-"));
+    try {
+      runGit(mainRepo, ["init", "-q", "-b", "main"]);
+      runGit(mainRepo, ["config", "user.email", "test@example.com"]);
+      runGit(mainRepo, ["config", "user.name", "pico test"]);
+      writeFileSync(join(mainRepo, "session-marker.txt"), "session\n");
+      runGit(mainRepo, ["add", "-A"]);
+      runGit(mainRepo, ["commit", "-qm", "session init"]);
+      const sessionHead = runGit(mainRepo, ["rev-parse", "HEAD"]).trim();
+
+      runGit(taskRepo, ["init", "-q", "-b", "main"]);
+      runGit(taskRepo, ["config", "user.email", "test@example.com"]);
+      runGit(taskRepo, ["config", "user.name", "pico test"]);
+      writeFileSync(join(taskRepo, "task-marker.txt"), "task\n");
+      runGit(taskRepo, ["add", "-A"]);
+      runGit(taskRepo, ["commit", "-qm", "task init"]);
+
+      const spawns: Array<{ cwd: string; proc: FakeProcess }> = [];
+      const seenTaskMarker: boolean[] = [];
+      const seenSessionMarker: boolean[] = [];
+      const ctx = {
+        cwd: mainRepo,
+        hasUI: false,
+        ui: { confirm: async () => true },
+        sessionManager: undefined,
+        spawnProcess: (_command: string, _args: string[], options: { cwd: string }) => {
+          const proc = new FakeProcess();
+          spawns.push({ cwd: options.cwd, proc });
+          // The worktree must be a checkout of the TASK repo's tree, not the
+          // session repo's — the data-corruption regression this guards.
+          seenTaskMarker.push(existsSync(join(options.cwd, "task-marker.txt")));
+          seenSessionMarker.push(existsSync(join(options.cwd, "session-marker.txt")));
+          // The subagent edits its worktree. One distinct file per task so
+          // the two branches merge cleanly (no add/add conflict).
+          writeFileSync(join(options.cwd, spawns.length === 1 ? "a.txt" : "b.txt"), `task ${spawns.length}\n`);
+          return proc;
+        },
+      };
+
+      const run = runSubagentRequest(
+        {
+          tasks: [
+            { agent: "worker", task: "t1", cwd: taskRepo },
+            { agent: "worker", task: "t2", cwd: taskRepo },
+          ],
+          isolation: "worktree",
+        },
+        undefined,
+        undefined,
+        ctx,
+      );
+      // Both tasks spawn concurrently; drive them to a successful exit (the
+      // fake process's handlers are registered synchronously after each
+      // spawn, so only close AFTER both are observed).
+      await tickUntil(() => spawns.length === 2);
+      for (const s of spawns) {
+        s.proc.stdoutData('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}}\n');
+        s.proc.close(0);
+      }
+      const result = await run;
+
+      // Both subagents ran inside real git worktrees, not the repos directly.
+      expect(spawns.length).toBe(2);
+      for (const s of spawns) {
+        expect(s.cwd).not.toBe(mainRepo);
+        expect(s.cwd).not.toBe(taskRepo);
+        expect(s.cwd).toContain("pico-worktree-");
+      }
+      // Worktrees were checked out from the task repo (task marker present,
+      // session repo marker absent).
+      expect(seenTaskMarker).toEqual([true, true]);
+      expect(seenSessionMarker).toEqual([false, false]);
+
+      // Merges landed in the task repo: both edits are committed to its HEAD.
+      expect(runGit(taskRepo, ["log", "--oneline", "--all"])).toContain("subagent worktree changes");
+      expect(readFileSync(join(taskRepo, "a.txt"), "utf8")).toBe("task 1\n");
+      expect(readFileSync(join(taskRepo, "b.txt"), "utf8")).toBe("task 2\n");
+      expect(runGit(taskRepo, ["status", "--porcelain"]).trim()).toBe("");
+
+      // The session repo (ctx.cwd) must be untouched — zero changes, same
+      // HEAD, no subagent commits.
+      expect(runGit(mainRepo, ["status", "--porcelain"]).trim()).toBe("");
+      expect(runGit(mainRepo, ["rev-parse", "HEAD"]).trim()).toBe(sessionHead);
+      expect(runGit(mainRepo, ["log", "--oneline", "--all"])).not.toContain("subagent worktree changes");
+
+      // The summary reports the merges back into the task repo.
+      const text = result.content.find((p) => p.type === "text")?.text ?? "";
+      expect(text).toContain("merged");
+      expect(result.details.mode).toBe("parallel");
+    } finally {
+      rmSync(mainRepo, { recursive: true, force: true });
+      rmSync(taskRepo, { recursive: true, force: true });
+      __resetChildSlotsForTests();
+      __resetSessionSpawnCountsForTests();
+    }
+  });
+});
+
 test("markGateFailed annotates result with gate failure stop reason", () => {
   const result: SingleResult = {
     agent: "worker",
@@ -2271,15 +2374,160 @@ test("P2: maxSubagentSpawnsPerSession refuses extra spawns in a session", async 
       await first;
       expect(procs.length).toBe(1);
 
-      await expect(
-        runSubagentRequest({ agent: "worker", task: "two" }, undefined, undefined, ctx),
-      ).rejects.toThrow(/Max subagent spawns per session \(1\) exceeded/);
+      // M9: the refused spawn surfaces as a failed single-mode result
+      // (details preserved) instead of a thrown exception.
+      const second = await runSubagentRequest({ agent: "worker", task: "two" }, undefined, undefined, ctx);
+      const text = second.content.find((p) => p.type === "text")?.text ?? "";
+      expect(text).toContain("Max subagent spawns per session (1) exceeded");
+      expect(second.details.results[0]?.exitCode).toBe(1);
+      expect(second.details.results[0]?.stopReason).toBe("error");
       expect(procs.length).toBe(1);
     } finally {
       for (const p of procs) if (!p.killed) p.close(0);
       __resetChildSlotsForTests();
       __resetSessionSpawnCountsForTests();
     }
+  });
+});
+
+// ── P3 (M9): single-mode failures keep structured details ───────────────────
+
+test("P3: single failure keeps exitCode/stopReason/sessionFile in toolResult details", async () => {
+  await withSubagentHome(async () => {
+    const procs: FakeProcess[] = [];
+    const ctx = plainCtx(() => {
+      const p = new FakeProcess();
+      procs.push(p);
+      return p;
+    });
+    try {
+      const run = runSubagentRequest({ agent: "worker", task: "do it" }, undefined, undefined, ctx);
+      await tickUntil(() => procs.length === 1);
+      // Child dies mid-run (e.g. external SIGTERM): exit code non-zero plus
+      // its last message_end. The failed toolResult must carry the full
+      // structured result — not the old `throw new Error` which the agent
+      // loop serialized as details:{}.
+      procs[0]!.stdoutData('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"partial work"}],"stopReason":"error","errorMessage":"boom"}}\n');
+      procs[0]!.close(1);
+      const result = await run;
+      const text = result.content.find((p) => p.type === "text")?.text ?? "";
+      expect(text).toContain("Agent error");
+      expect(text).toContain("boom");
+      expect(result.details.mode).toBe("single");
+      const r = result.details.results[0]!;
+      expect(r.exitCode).toBe(1);
+      expect(r.stopReason).toBe("error");
+      expect(r.errorMessage).toBe("boom");
+      // Failed runs keep the session file so the run can be resumed; the
+      // hint must still reach the caller.
+      expect(r.sessionFile).toBeTruthy();
+      expect(text).toContain("Session saved for continuation");
+    } finally {
+      for (const p of procs) if (!p.killed) p.close(0);
+      __resetChildSlotsForTests();
+      __resetSessionSpawnCountsForTests();
+    }
+  });
+});
+
+test("P3: single gate_failed run keeps details instead of details:{}", async () => {
+  await withSubagentHome(async () => {
+    const procs: FakeProcess[] = [];
+    const ctx = plainCtx(() => {
+      const p = new FakeProcess();
+      procs.push(p);
+      return p;
+    });
+    try {
+      const run = runSubagentRequest({ agent: "worker", task: "gated" }, undefined, undefined, ctx);
+      await tickUntil(() => procs.length === 1);
+      // The child's acceptance gate failed: exit 0 but stopReason
+      // gate_failed. Previously the single-mode branch threw and the agent
+      // loop serialized the toolResult as details:{} — the stop reason and
+      // messages vanished from the session JSONL.
+      procs[0]!.stdoutData('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"work"}],"stopReason":"gate_failed","errorMessage":"Acceptance gate failed. Failed criteria: x"}}\n');
+      procs[0]!.close(0);
+      const result = await run;
+      const text = result.content.find((p) => p.type === "text")?.text ?? "";
+      expect(text).toContain("Agent gate_failed");
+      const r = result.details.results[0]!;
+      expect(r.stopReason).toBe("gate_failed");
+      expect(r.errorMessage).toContain("Failed criteria");
+      expect(r.messages.length).toBeGreaterThan(0);
+      expect(r.sessionFile).toBeTruthy();
+    } finally {
+      for (const p of procs) if (!p.killed) p.close(0);
+      __resetChildSlotsForTests();
+      __resetSessionSpawnCountsForTests();
+    }
+  });
+});
+
+test("P3: single timeout failure keeps exitCode/stopReason in details", async () => {
+  await withSubagentHome(async (home) => {
+    const agentsDir = join(home, "agent", "agents");
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(
+      join(agentsDir, "quick.md"),
+      ["---", "name: quick", "description: quick agent", "maxExecutionTimeMs: 30", "---", "body"].join("\n"),
+    );
+    const procs: FakeProcess[] = [];
+    const ctx = plainCtx(() => {
+      const p = new FakeProcess();
+      procs.push(p);
+      return p;
+    });
+    try {
+      const run = runSubagentRequest({ agent: "quick", task: "slow" }, undefined, undefined, ctx);
+      await tickUntil(() => procs.length === 1);
+      // maxExecutionTimeMs=30 fires the timeout kill; the child then exits
+      // with 143 (SIGTERM). The structured timeout result must survive.
+      await tickUntil(() => procs[0]!.killed);
+      procs[0]!.close(143);
+      const result = await run;
+      const text = result.content.find((p) => p.type === "text")?.text ?? "";
+      expect(text).toContain("Agent timeout");
+      expect(text).toContain("maxExecutionTimeMs (30ms)");
+      const r = result.details.results[0]!;
+      expect(r.exitCode).toBe(143);
+      expect(r.stopReason).toBe("timeout");
+      expect(r.errorMessage).toContain("maxExecutionTimeMs");
+      expect(r.sessionFile).toBeTruthy();
+    } finally {
+      for (const p of procs) if (!p.killed) p.close(0);
+      __resetChildSlotsForTests();
+      __resetSessionSpawnCountsForTests();
+    }
+  });
+});
+
+// ── P4: single mode refuses isolation instead of silently ignoring it ───────
+
+test("P4: single mode with isolation:worktree is refused with a clear message and no spawn", async () => {
+  await withSubagentHome(async () => {
+    const procs: FakeProcess[] = [];
+    const ctx = plainCtx(() => {
+      const p = new FakeProcess();
+      procs.push(p);
+      return p;
+    });
+    const result = await runSubagentRequest(
+      { agent: "worker", task: "x", isolation: "worktree" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const text = result.content.find((p) => p.type === "text")?.text ?? "";
+    expect(text).toContain("isolation");
+    expect(text).toContain("parallel");
+    expect(text).toContain("worktree");
+    expect(procs.length).toBe(0);
+    // isolation:"none" is the default and stays accepted.
+    const ok = runSubagentRequest({ agent: "worker", task: "x", isolation: "none" }, undefined, undefined, ctx);
+    await tickUntil(() => procs.length === 1);
+    procs[0]!.close(0);
+    const okResult = await ok;
+    expect(okResult.details.mode).toBe("single");
   });
 });
 

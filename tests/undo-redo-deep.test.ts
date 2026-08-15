@@ -295,6 +295,72 @@ describe("showDiffStack — selection flow", () => {
     expect(pi.messages).toHaveLength(0);
   });
 
+  test("leaf-pair items diff adjacent leaves directly (v1 vs v2)", async () => {
+    const cache = createCache("session-b7");
+    await cache.ensure();
+    const hV0 = hashBuffer(Buffer.from("v0 base"));
+    const hV1 = hashBuffer(Buffer.from("v1 content"));
+    const hV2 = hashBuffer(Buffer.from("v2 content"));
+    await cache.writeBlob(hV0, Buffer.from("v0 base"));
+    await cache.writeBlob(hV1, Buffer.from("v1 content"));
+    await cache.writeBlob(hV2, Buffer.from("v2 content"));
+    await cache.writeBase(new Map([["a.txt", { exists: true, hash: hV0 }]]));
+    await cache.writeLeaf(
+      "leaf-1",
+      new Map([["a.txt", { exists: true, hash: hV1 }]]),
+    );
+    await cache.writeLeaf(
+      "leaf-2",
+      new Map([["a.txt", { exists: true, hash: hV2 }]]),
+    );
+    const tracker = new SnapshotTracker(
+      cache,
+      projDir,
+      join(testHome, "sb"),
+      () => {},
+    );
+    await tracker.loadBase();
+
+    const pi = makePi();
+    const selectCalls: string[][] = [];
+    const ctx = {
+      hasUI: true,
+      ui: {
+        notify: () => {},
+        select: async (_title: string, labels: string[]) => {
+          selectCalls.push(labels);
+          const pair = labels.find((label: string) =>
+            label.includes("(vs leaf-1)"),
+          );
+          return pair ?? null;
+        },
+      },
+    } as never;
+
+    await showDiffStack(pi as never, ctx as never, tracker, cache, [
+      "leaf-1",
+      "leaf-2",
+    ]);
+
+    // Both leaf-vs-base and leaf-to-leaf entries are offered.
+    const labels = selectCalls[0]!;
+    expect(labels).toContain("[leaf-1] M a.txt");
+    expect(labels).toContain("[leaf-2] M a.txt");
+    expect(labels).toContain("[leaf-2] M a.txt (vs leaf-1)");
+
+    expect(pi.messages).toHaveLength(1);
+    const msg = pi.messages[0]!;
+    expect(msg.customType).toBe("undo-redo.diff");
+    expect(msg.content).toContain("Diff for a.txt (leaf leaf-1 \u2192 leaf-2)");
+    expect(msg.content).toContain("-1 v1 content");
+    expect(msg.content).toContain("+1 v2 content");
+    expect(msg.details).toEqual({
+      leafId: "leaf-2",
+      path: "a.txt",
+      previousLeafId: "leaf-1",
+    });
+  });
+
   test("leaf deleted between listing and selection → Diff no longer available", async () => {
     const cache = createCache("session-b6");
     await cache.ensure();
@@ -1026,6 +1092,49 @@ describe("extension init / cache lifecycle", () => {
     expect(ctx.notices.at(-1)?.msg).toContain("cache cleared");
     expect(existsSync(join(cache.root, "leaves", "stale-leaf.json"))).toBe(false);
     expect(existsSync(join(cache.root, "sandbox"))).toBe(true);
+  });
+
+  test("clear-cache keeps the current leaf snapshot and undo history", async () => {
+    const cache = await seedSessionCache(
+      [["a.txt", "v0 base"]],
+      {
+        "leaf-1": [["a.txt", "v1 content"]],
+        "leaf-2": [["a.txt", "v2 content"]],
+      },
+    );
+    const ctx = makeCtx();
+    ctx.waitForIdle = async () => {};
+    ctx.navigateTree = async (id: string, opts: unknown) => {
+      ctx.navCalls.push([id, opts]);
+      return { cancelled: false };
+    };
+    const { pi } = await setupUndoRedo(ctx);
+
+    // Two rounds of edits (leaf-1 → leaf-2); the file is currently at v2.
+    ctx.sessionManager.setLeaf("leaf-2");
+    await pi.handlers["session_tree"]![0]!({
+      oldLeafId: "leaf-1",
+      newLeafId: "leaf-2",
+    });
+    expect(readFileSync(join(projDir, "a.txt"), "utf8")).toBe("v2 content");
+
+    await pi.commands.get("undo-redo-clear-cache").handler("", ctx);
+    expect(ctx.notices.at(-1)?.msg).toContain("cache cleared");
+
+    // The current-leaf snapshot survived the cache wipe.
+    expect(readFileSync(join(projDir, "a.txt"), "utf8")).toBe("v2 content");
+    expect(existsSync(join(cache.root, "leaves", "leaf-2.json"))).toBe(true);
+
+    // /undo still restores the most recent step (v2 → v1).
+    await pi.commands.get("undo").handler("", ctx);
+    expect(ctx.navCalls.map((c: [string, unknown]) => c[0])).toEqual([
+      "leaf-1",
+    ]);
+    await pi.handlers["session_tree"]![0]!({
+      oldLeafId: "leaf-2",
+      newLeafId: "leaf-1",
+    });
+    expect(readFileSync(join(projDir, "a.txt"), "utf8")).toBe("v1 content");
   });
 
   test.skipIf(process.getuid?.() === 0)(

@@ -1,7 +1,7 @@
 import type { MemoryProvider } from "./provider.ts";
 import type { ProviderManager } from "./provider-manager.ts";
 import type { CuratedMemoryStore, CuratedTarget } from "./curated-store.ts";
-import { VALID_CATEGORIES, type Category, type Scope } from "./schema.ts";
+import { SCOPE_PROJECT, VALID_CATEGORIES, type Category, type Scope } from "./schema.ts";
 import { projectScopeKey } from "./query-scope.ts";
 import { isTaskDirective } from "./extract.ts";
 import { toolError, type ErrorCode } from "../errors.ts";
@@ -79,6 +79,19 @@ function cwdForScope(scope: Scope | undefined, currentCwd: string | null, isRead
   return undefined;
 }
 
+/**
+ * Resolve the effective scope for a read. 2.3.1: reads with no explicit
+ * scope default to the CURRENT PROJECT scope (project + global) when a cwd
+ * is known. Passing a cwd alone is NOT enough — scopeFilter treats an
+ * undefined scope as global-only, so the store layer must receive an actual
+ * `scope: "project"` for the union to kick in. Mirrors before_agent_start's
+ * prefetch, which already passes SCOPE_PROJECT explicitly.
+ */
+function readScope(scope: Scope | undefined, currentCwd: string | null): Scope | undefined {
+  if (scope !== undefined) return scope;
+  return currentCwd ? SCOPE_PROJECT : undefined;
+}
+
 function parseCuratedTarget(raw: unknown): CuratedTarget {
   return raw === "user" ? "user" : "memory";
 }
@@ -154,7 +167,7 @@ export function executeMemoryToolAction(
           category: cat,
           minTrust: params.min_trust,
           limit: params.limit,
-          scope,
+          scope: readScope(scope, currentCwd),
           cwd: cwdForScope(scope, currentCwd, true),
         });
         return jsonResult({ count: results.length, results });
@@ -168,7 +181,7 @@ export function executeMemoryToolAction(
           category: cat,
           minTrust: params.min_trust,
           limit: params.limit,
-          scope,
+          scope: readScope(scope, currentCwd),
           cwd: cwdForScope(scope, currentCwd, true),
         });
         return jsonResult({ count: results.length, results });
@@ -180,7 +193,7 @@ export function executeMemoryToolAction(
           category: cat,
           minTrust: params.min_trust,
           limit: params.limit,
-          scope,
+          scope: readScope(scope, currentCwd),
           cwd: cwdForScope(scope, currentCwd, true),
         });
         return jsonResult({ count: results.length, facts: results });
@@ -194,7 +207,7 @@ export function executeMemoryToolAction(
           category: cat,
           minTrust: params.min_trust,
           limit: params.limit,
-          scope,
+          scope: readScope(scope, currentCwd),
           cwd: cwdForScope(scope, currentCwd, true),
         });
         return jsonResult({ count: results.length, results });
@@ -207,7 +220,7 @@ export function executeMemoryToolAction(
           category: cat,
           minTrust: params.min_trust,
           limit: params.limit,
-          scope,
+          scope: readScope(scope, currentCwd),
           cwd: cwdForScope(scope, currentCwd, true),
         });
         return jsonResult({ count: results.length, results });
@@ -218,7 +231,7 @@ export function executeMemoryToolAction(
         const results = provider.contradict({
           category: cat,
           limit: params.limit,
-          scope,
+          scope: readScope(scope, currentCwd),
           cwd: cwdForScope(scope, currentCwd, true),
         });
         return jsonResult({ count: results.length, contradictions: results });

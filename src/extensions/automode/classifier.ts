@@ -197,6 +197,33 @@ function extractAssistantText(message: AssistantMessage, trim = true): string {
   return trim ? text.trim() : text;
 }
 
+export type FastClassifierVerdict = { verdict: 0 | 1 };
+
+/**
+ * Normalize the fast classifier's raw response text to a 0/1 verdict.
+ *
+ * The fast prompt asks for a single digit, but reasoning models sometimes
+ * leak thinking or trailing punctuation into the visible text block (e.g.
+ * "0.", "1 - safe", "0\n\n<thinking>…"). Extract the first standalone 0/1
+ * token and ignore surrounding noise. Anything without a standalone 0/1
+ * token ("allow", empty, multi-digit numbers like "10") is unparseable —
+ * the caller must fail closed rather than guess, so a malformed fast
+ * response can never silently allow an action.
+ */
+export function parseFastClassifierVerdict(
+  text: string,
+): FastClassifierVerdict | undefined {
+  const match = /\b([01])\b/.exec(text);
+  if (!match) return undefined;
+  return { verdict: match[1] === "0" ? 0 : 1 };
+}
+
+/** Collapse a raw classifier response to a single-line, bounded snippet for reasons. */
+function truncateForReason(text: string, max = 80): string {
+  const single = text.replace(/\s+/g, " ").trim();
+  return single.length > max ? `${single.slice(0, max)}…` : single;
+}
+
 /** Parse the exact detailed-stage JSON contract; any wrapper or shape drift fails closed. */
 export function parseClassifierDecision(
   message: AssistantMessage,
@@ -448,19 +475,24 @@ export async function classifyInStages(
     ),
   );
   if (failure) return failure;
-  if (fastText === "0") {
+
+  // Tolerate noise around the required digit (trailing punctuation, leaked
+  // reasoning, newlines) but never guess: an unparseable response fails
+  // closed with the raw text so the drift is diagnosable.
+  const verdict = parseFastClassifierVerdict(fastText);
+  if (verdict?.verdict === 0) {
     return {
       decision: "allow",
       tier: "none",
       reason: "Fast classifier found no policy-relevant risk.",
     };
   }
-  if (fastText !== "1") {
+  if (verdict?.verdict !== 1) {
     return {
       decision: "block",
       tier: "none",
       reason:
-        "Fast classifier response was not 0 or 1 after trimming whitespace; auto mode fails closed.",
+        `Fast classifier response was not 0 or 1 (unparseable, got "${truncateForReason(fastText)}"); auto mode fails closed.`,
     };
   }
 

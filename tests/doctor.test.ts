@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildDoctorReport, doctorExtension, migrateConfigYmlSafetyKeys } from "../src/extensions/doctor/index.ts";
 import { publishExtensionEvent } from "../src/extensions/events.ts";
+import { createLspManager, ensureNamedServer, stopServer } from "../src/extensions/lsp/manager.ts";
 import { detectMissingDefaultModel } from "../src/extensions/doctor/config-scan.ts";
 import {
   allowProjectHooks,
@@ -261,6 +262,49 @@ test("buildDoctorReport surfaces LSP init failures after lsp_status event", () =
     // A clean snapshot clears the section back to the neutral line.
     publishExtensionEvent("lsp_status", { failures: [] });
     expect(buildDoctorReport(home)).toContain("no init failures recorded");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("buildDoctorReport reflects mid-session LSP failures without a manual status refresh", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-doctor-lsp-live-"));
+  process.env.PICO_HOME = home;
+  try {
+    const pi = {
+      on: () => {},
+      registerCommand: () => {},
+    } as never;
+    doctorExtension(pi);
+
+    // Nothing failed yet — neutral section.
+    expect(buildDoctorReport(home)).toContain("no init failures recorded");
+
+    // A real mid-session startup failure (bad command binary): the lsp
+    // manager records it AND publishes the fresh snapshot immediately.
+    // No `lsp status` / restart is needed for /doctor to see it (P2+P3).
+    const state = createLspManager();
+    state.config = {
+      servers: {
+        "bad-cmd": {
+          command: "pico-no-such-doctor-lsp-bin-xyz",
+          args: [],
+          fileTypes: [".ts"],
+          rootMarkers: [],
+        },
+      },
+      formatOnWrite: false,
+    } as never;
+    await expect(ensureNamedServer(state, "bad-cmd", home)).rejects.toThrow(/not found/);
+    await stopServer(state);
+
+    const report = buildDoctorReport(home);
+    expect(report).toContain("bad-cmd: init failed");
+    expect(report).toContain("pico-no-such-doctor-lsp-bin-xyz");
+
+    // Restore the neutral snapshot so the module-level cache stays isolated
+    // for any later test in this file.
+    publishExtensionEvent("lsp_status", { failures: [] });
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

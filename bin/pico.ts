@@ -26,6 +26,7 @@ import { main, VERSION as UPSTREAM_VERSION } from "@earendil-works/pi-coding-age
 import picoPkg from "../package.json" with { type: "json" };
 import { buildRuntimeArgs, isNonTuiArg } from "../src/runtime/args.ts";
 import { isBunBinaryRuntime, prepareEmbeddedRuntime } from "../src/runtime/embedded-runtime.ts";
+import { ensureBundledThemeFile } from "../src/extensions/retro-theme/index.ts";
 import { createDefaultExtensionRegistry } from "../src/runtime/extensions.ts";
 import { runSetupCommandIfRequested } from "../src/runtime/setup.ts";
 
@@ -113,6 +114,16 @@ if (!isHelpOrVersion && missingPrintPrompt(rawArgs)) {
   console.error('pico: -p/--print 缺少提示词（例如 pico -p "你的需求"）。');
   process.exit(2);
 }
+
+// ── L25: materialize the bundled theme before pi's TUI init ─────────────
+// pi's theme controller resolves the configured theme during TUI startup —
+// before extension session_start events fire. A pristine home would
+// otherwise fail its first launch with "Failed to load theme ... Theme not
+// found: claude-code-dark" and fall back to dark. Pre-writing the bundled
+// theme file (only when missing) makes the first launch resolve it; the
+// retro-theme extension's own session_start sync keeps it fresh afterwards.
+// Also lets --theme <name> resolve below (M2).
+ensureBundledThemeFile();
 
 const args = buildRuntimeArgs({
   rawArgs,

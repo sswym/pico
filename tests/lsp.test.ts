@@ -39,6 +39,7 @@ import {
   ensureNamedServer,
   ensureServer,
   findLocalTypescriptDir,
+  getInitFailures,
   loadConfig,
   setIdleTimeout,
   syncDocument,
@@ -1563,6 +1564,93 @@ test("ensureServer surfaces command-not-found when every candidate is missing", 
   // first missing command is rethrown (matches the old behavior).
   expect(error).toBeInstanceOf(LspError);
   expect((error as LspError).errorCode).toBe(COMMAND_NOT_FOUND);
+
+  // The missing commands are recorded so /doctor can show why no server
+  // started — COMMAND_NOT_FOUND is a startup failure, not a silent skip.
+  const failures = getInitFailures(state);
+  expect(failures.some((f) => f.server === "missing-a")).toBe(true);
+  expect(failures.some((f) => f.server === "missing-b")).toBe(true);
+});
+
+test("ensureNamedServer records COMMAND_NOT_FOUND for /doctor", async () => {
+  const state = createLspManager();
+  state.config = {
+    servers: {
+      "bad-cmd": {
+        command: "pico-no-such-lsp-binary-xyz",
+        args: [],
+        fileTypes: [".ts"],
+        rootMarkers: [],
+      },
+    },
+    formatOnWrite: false,
+  } as never;
+
+  try {
+    await expect(ensureNamedServer(state, "bad-cmd", process.cwd())).rejects.toThrow(/not found/);
+    // P2: a command-not-found startup failure must land in the failure
+    // snapshot consumed by /doctor, without ever entering the init backoff
+    // (the COMMAND_NOT_FOUND error must stay throwable for install offers).
+    const failures = getInitFailures(state);
+    expect(failures.length).toBeGreaterThan(0);
+    const missing = failures.find((f) => f.server === "bad-cmd");
+    expect(missing).toBeDefined();
+    expect(missing!.message).toContain("not found");
+    // Not backoff-blocked: a retry still throws COMMAND_NOT_FOUND (the
+    // install offer depends on this surviving past a recorded failure).
+    await expect(ensureNamedServer(state, "bad-cmd", process.cwd())).rejects.toThrow(/not found/);
+  } finally {
+    await stopServer(state);
+  }
+});
+
+test("syncDocumentForFile falls through a probe-failed primary to the next candidate", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pico-lsp-file-fallback-"));
+  const oldTsc = join(dir, "tsc-shim");
+
+  try {
+    // A classic JS tsc (no --lsp) as the primary candidate, plus a working
+    // typescript-language-server: the exact deadlock from the D7 report.
+    writeFileSync(oldTsc, "#!/bin/sh\necho 'Version 5.9.0'\n", "utf8");
+    chmodSync(oldTsc, 0o755);
+    writeFileSync(join(dir, "a.ts"), "export const x = 1;\n", "utf8");
+
+    const state = createLspManager();
+    state.config = {
+      servers: {
+        "typescript-native": {
+          command: oldTsc,
+          args: ["--lsp", "--stdio"],
+          fileTypes: [".ts"],
+          rootMarkers: [],
+        },
+        "typescript-language-server": {
+          command: process.execPath,
+          args: ["-e", MINI_LSP_SERVER],
+          fileTypes: [".ts"],
+          rootMarkers: [],
+        },
+      },
+      formatOnWrite: false,
+    } as never;
+
+    try {
+      const synced = await syncDocumentForFile(state, dir, "a.ts");
+      // The probe-failed primary must not deadlock file-level routing — the
+      // installed second candidate serves the file.
+      expect(synced).not.toBeNull();
+      expect(synced!.serverName).toBe("typescript-language-server");
+
+      // The probe verdict is recorded so /doctor explains the skip.
+      const probe = getInitFailures(state).find((f) => f.server === "typescript-native");
+      expect(probe).toBeDefined();
+      expect(probe!.message).toContain("does not advertise TypeScript native LSP support");
+    } finally {
+      await stopServer(state);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 describe("friendlyLspInitError", () => {

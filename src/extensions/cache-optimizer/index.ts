@@ -184,6 +184,42 @@ function extractMarkedStableSections(prompt: string): string[] {
   return sections;
 }
 
+/**
+ * Extract complete `<project_instructions path="…">…</project_instructions>`
+ * blocks whose path is a stable context file.
+ *
+ * The system-prompt builder wraps every context file's content in this tag
+ * pair. Hoisting the bare `file.content` (the previous candidate) carved the
+ * content out of the wrapper's middle and left an empty wrapper behind —
+ * content was reordered to the top of the prompt while any consumer parsing
+ * the structure saw an empty block. Matching the whole block — opening tag,
+ * content, closing tag — keeps the pair together with the content inside it,
+ * byte-identical, and in its original order.
+ */
+function extractProjectInstructionBlocks(prompt: string, opts: BuildSystemPromptOptions): string[] {
+  const stablePaths = new Set(
+    (opts.contextFiles ?? [])
+      .filter((file) => isStableContextFilePath(file.path))
+      .map((file) => normalizedPath(file.path)),
+  );
+  if (stablePaths.size === 0) return [];
+
+  const blocks: string[] = [];
+  const pattern = /<project_instructions\s+path="([^"]*)"[^>]*>[\s\S]*?<\/project_instructions>/gi;
+  for (const match of prompt.matchAll(pattern)) {
+    const closeTag = "</project_instructions>";
+    const openTagEnd = match[0].indexOf(">") + 1;
+    const closeIdx = match[0].length - closeTag.length;
+    if (openTagEnd > closeIdx) continue;
+    const inner = match[0].slice(openTagEnd, closeIdx);
+    if (!inner.trim()) continue; // already-hollowed wrapper: nothing to lift
+    if (stablePaths.has(normalizedPath(match[1] ?? ""))) {
+      blocks.push(match[0]);
+    }
+  }
+  return blocks;
+}
+
 function buildStableCandidates(opts: BuildSystemPromptOptions): string[] {
   const candidates: string[] = [];
   if (opts.customPrompt) candidates.push(opts.customPrompt);
@@ -204,7 +240,6 @@ function buildStableCandidates(opts: BuildSystemPromptOptions): string[] {
   for (const file of opts.contextFiles ?? []) {
     if (!isStableContextFilePath(file.path)) continue;
     candidates.push(`## ${file.path}\n\n${file.content}`);
-    candidates.push(file.content);
   }
 
   if (opts.skills && opts.skills.length > 0) {
@@ -235,7 +270,11 @@ export interface OptimizedSystemPrompt {
 export function optimizeSystemPrompt(original: string, opts: BuildSystemPromptOptions): OptimizedSystemPrompt {
   const candidates: string[] = [];
   const seen = new Set<string>();
-  for (const candidate of [...buildStableCandidates(opts), ...extractMarkedStableSections(original)]) {
+  for (const candidate of [
+    ...buildStableCandidates(opts),
+    ...extractMarkedStableSections(original),
+    ...extractProjectInstructionBlocks(original, opts),
+  ]) {
     const part = candidate.trim();
     if (!part || part.length < MIN_STABLE_CANDIDATE_LENGTH || seen.has(part)) continue;
     seen.add(part);

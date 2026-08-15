@@ -16,13 +16,22 @@ import { createPiAutomode } from "../src/extensions/automode/extension.ts";
 import {
   buildEffectiveConfigFromSources,
   loadEffectiveConfig,
+  loadEffectiveConfigWithDiagnostics,
+  validateSettingsFile,
   writeGlobalClassifierModel,
 } from "../src/extensions/automode/config.ts";
+import {
+  classifyInStages,
+  parseFastClassifierVerdict,
+  type ClassifierCompletionFn,
+} from "../src/extensions/automode/classifier.ts";
+import { CLASSIFIER_DETAILED_INSTRUCTION } from "../src/extensions/automode/constants.ts";
 import { deterministicHardDeny } from "../src/extensions/automode/hard-deny.ts";
 import { matchesToolPattern, parseToolPattern } from "../src/extensions/automode/permissions.ts";
 import { isSafetyControlPath } from "../src/extensions/automode/paths.ts";
 import { statusLine } from "../src/extensions/automode/state.ts";
-import type { EffectiveConfig } from "../src/extensions/automode/types.ts";
+import type { AssistantMessage, StopReason } from "@earendil-works/pi-ai";
+import type { EffectiveConfig, SettingsFile } from "../src/extensions/automode/types.ts";
 
 // ── fakes ────────────────────────────────────────────────────────────────
 
@@ -351,3 +360,234 @@ describe("automode settings namespace", () => {
     }
   });
 });
+
+// ── fast classifier response normalization (D10-P1) ──────────────────────
+
+function fastMessage(text: string, stopReason: StopReason = "stop"): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: "openai-completions",
+    provider: "openai",
+    model: "classifier",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason,
+    timestamp: Date.now(),
+  };
+}
+
+const classifierModel = {
+  id: "classifier",
+  name: "classifier",
+  provider: "openai",
+  api: "openai-completions",
+  baseUrl: "https://example.test/v1",
+  reasoning: false,
+  input: ["text"] as ("text" | "image")[],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 100000,
+  maxTokens: 4096,
+};
+
+describe("automode fast classifier normalization", () => {
+  test("parseFastClassifierVerdict tolerates noise around the digit", () => {
+    expect(parseFastClassifierVerdict("0")?.verdict).toBe(0);
+    expect(parseFastClassifierVerdict("0.")?.verdict).toBe(0);
+    expect(parseFastClassifierVerdict("0\n\n(thinking leaked)")?.verdict).toBe(0);
+    expect(parseFastClassifierVerdict("1 - safe")?.verdict).toBe(1);
+    expect(parseFastClassifierVerdict(" 1 ")?.verdict).toBe(1);
+    // The fast prompt says "err on 1": a decimal like 0.5 still yields the
+    // first standalone token ("0"), but a standalone 0/1 must exist.
+    expect(parseFastClassifierVerdict("0.5")?.verdict).toBe(0);
+  });
+
+  test("parseFastClassifierVerdict fails closed on unparseable output", () => {
+    expect(parseFastClassifierVerdict("allow")).toBeUndefined();
+    expect(parseFastClassifierVerdict("")).toBeUndefined();
+    expect(parseFastClassifierVerdict("   ")).toBeUndefined();
+    expect(parseFastClassifierVerdict("10")).toBeUndefined();
+    expect(parseFastClassifierVerdict("no risk")).toBeUndefined();
+  });
+
+  async function runFast(completeFn: ClassifierCompletionFn) {
+    return classifyInStages(
+      completeFn,
+      { model: classifierModel, apiKey: "k" },
+      {
+        systemPrompt: "classify",
+        contextMessage: {
+          role: "user",
+          content: [{ type: "text", text: "action" }],
+          timestamp: 0,
+        },
+      },
+      undefined,
+      { sessionId: "test", onAttempt: () => {} },
+    );
+  }
+
+  test("fast response '0.' is normalized to allow without touching the detailed stage", async () => {
+    let detailedCalls = 0;
+    const completeFn: ClassifierCompletionFn = async () => {
+      detailedCalls += 1;
+      return fastMessage("0.");
+    };
+    const decision = await runFast(completeFn);
+    expect(decision.decision).toBe("allow");
+    expect(detailedCalls).toBe(1); // fast stage only
+  });
+
+  test("fast response '1 - suspicious' proceeds to the detailed stage", async () => {
+    const completeFn: ClassifierCompletionFn = async (_model, options) => {
+      const texts = options.messages.flatMap((m) =>
+        (Array.isArray(m.content) ? m.content : [])
+          .filter((b): b is { type: "text"; text: string } => b.type === "text")
+          .map((b) => b.text),
+      );
+      if (texts.includes(CLASSIFIER_DETAILED_INSTRUCTION)) {
+        return fastMessage('{"decision":"block","tier":"soft_deny","reason":"upload of secrets"}');
+      }
+      return fastMessage("1 - suspicious");
+    };
+    const decision = await runFast(completeFn);
+    expect(decision).toMatchObject({ decision: "block", tier: "soft_deny" });
+  });
+
+  test("unparseable fast response blocks with a visible reason, never silently allows", async () => {
+    for (const raw of ["allow", ""]) {
+      const completeFn: ClassifierCompletionFn = async () => fastMessage(raw);
+      const decision = await runFast(completeFn);
+      expect(decision.decision).toBe("block");
+      expect(decision.reason).toMatch(/not 0 or 1/);
+      expect(decision.reason).toContain("fails closed");
+      // The raw response is included so the drift is diagnosable.
+      expect(decision.reason).toContain(raw);
+    }
+  });
+});
+
+// ── automode config shape trap (D10-P2) ──────────────────────────────────
+
+describe("automode config shape diagnostics", () => {
+  test("top-level automode.enabled yields an actionable diagnostic and stays disabled", () => {
+    // The wrong shape from the task-card example silently no-ops today; the
+    // diagnostic must point at the correct shape.
+    // The trap shape ({enabled: true}) is not representable in SettingsFile.
+    const diagnostics = validateSettingsFile(
+      { enabled: true } as unknown as SettingsFile,
+      "settings.json:automode",
+    );
+    expect(diagnostics.length).toBeGreaterThan(0);
+    const enabledDiag = diagnostics.find((d) => d.includes("enabled"));
+    expect(enabledDiag).toBeDefined();
+    expect(enabledDiag).toContain("autoMode.enabled");
+  });
+
+  test("loadEffectiveConfigWithDiagnostics reports the shape trap end to end", () => {
+    const oldHome = process.env.PICO_HOME;
+    const home = mkdtempSync(join(tmpdir(), "pico-auto-shape-"));
+    process.env.PICO_HOME = home;
+    try {
+      mkdirSync(join(home, "agent"), { recursive: true });
+      writeFileSync(join(home, "agent", "settings.json"), JSON.stringify({
+        automode: { enabled: true },
+      }));
+      const loaded = loadEffectiveConfigWithDiagnostics("/tmp/proj");
+      expect(loaded.config.enabled).toBe(false); // the trap: silent no-op
+      expect(loaded.diagnostics.some((d) => d.includes("autoMode.enabled"))).toBe(true);
+    } finally {
+      if (oldHome === undefined) delete process.env.PICO_HOME;
+      else process.env.PICO_HOME = oldHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("session_start surfaces config diagnostics as a warning notify", async () => {
+    const oldHome = process.env.PICO_HOME;
+    const home = mkdtempSync(join(tmpdir(), "pico-auto-shape-"));
+    process.env.PICO_HOME = home;
+    try {
+      mkdirSync(join(home, "agent"), { recursive: true });
+      writeFileSync(join(home, "agent", "settings.json"), JSON.stringify({
+        automode: { enabled: true },
+      }));
+      const notices: string[] = [];
+      const levels: string[] = [];
+      const pi = makeFakePi();
+      const ext = createPiAutomode();
+      // Structural stand-in for the extension's ExtensionAPI parameter.
+      ext(pi as unknown as Parameters<typeof ext>[0]);
+      const ctx = makeFakeCtx({
+        hasUI: true,
+        ui: {
+          notify: (text: string, level?: string) => {
+            notices.push(text);
+            levels.push(level ?? "info");
+          },
+          setStatus: () => {},
+          confirm: async () => true,
+          theme: { fg: () => (text: string) => text },
+        },
+      });
+      await pi.handlers.session_start?.[0]?.({}, ctx);
+      expect(levels).toContain("warning");
+      expect(notices.some((n) => n.includes("autoMode.enabled"))).toBe(true);
+    } finally {
+      if (oldHome === undefined) delete process.env.PICO_HOME;
+      else process.env.PICO_HOME = oldHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("/automode status surfaces config diagnostics as a warning notify", async () => {
+    const oldHome = process.env.PICO_HOME;
+    const home = mkdtempSync(join(tmpdir(), "pico-auto-shape-"));
+    process.env.PICO_HOME = home;
+    try {
+      mkdirSync(join(home, "agent"), { recursive: true });
+      writeFileSync(join(home, "agent", "settings.json"), JSON.stringify({
+        automode: { enabled: true },
+      }));
+      const notices: string[] = [];
+      const levels: string[] = [];
+      const pi = makeFakePi();
+      const ext = createPiAutomode();
+      // Structural stand-in for the extension's ExtensionAPI parameter.
+      ext(pi as unknown as Parameters<typeof ext>[0]);
+      const ctx = makeFakeCtx({
+        hasUI: true,
+        ui: {
+          notify: (text: string, level?: string) => {
+            notices.push(text);
+            levels.push(level ?? "info");
+          },
+          setStatus: () => {},
+          confirm: async () => true,
+          theme: { fg: () => (text: string) => text },
+        },
+      });
+      await pi.handlers.session_start?.[0]?.({}, ctx);
+      notices.length = 0;
+      levels.length = 0;
+
+      const cmd = pi.commands.get("automode") as {
+        handler: (args: string, c: unknown) => Promise<void>;
+      };
+      await cmd.handler("status", ctx);
+      expect(levels).toContain("warning");
+      expect(notices.some((n) => n.includes("autoMode.enabled"))).toBe(true);
+    } finally {
+      if (oldHome === undefined) delete process.env.PICO_HOME;
+      else process.env.PICO_HOME = oldHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+

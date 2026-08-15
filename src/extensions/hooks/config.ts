@@ -45,15 +45,19 @@ const TIMEOUT_DEFAULT = 30_000;
 const TIMEOUT_MAX = 120_000;
 
 const warnedPaths = new Set<string>();
-/** Config errors accumulated since the last drain — surfaced to the TUI at
- *  session_start (2.5.8): a malformed security-hook config must not vanish
- *  into stderr where TUI users never see it. */
+/** Config errors accumulated since the last drain — surfaced at session_start
+ *  (2.5.8): a malformed security-hook config must not vanish into raw stderr,
+ *  where it would overlap the TUI input line and be truncated. The extension
+ *  eager-loads hooks in its session_start handler and then drains, so these
+ *  lines reach the user through the TUI notification channel. */
 const recentErrors: string[] = [];
 
 function warnOnce(path: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
   const line = `[pico hooks] ignoring ${path}: ${msg}`;
-  console.warn(line);
+  // No immediate console.warn here: in the TUI, raw stderr overlaps the
+  // input line (D13-F1). Output is deferred to drainHookConfigErrors(), which
+  // the extension surfaces via ctx.ui.notify (TUI) or stderr (headless).
   recentErrors.push(line);
   if (warnedPaths.has(path)) return;
   warnedPaths.add(path);
@@ -152,13 +156,6 @@ function loadHomeHooks(): Hook[] {
  */
 export function loadHooks(cwd: string): Hook[] {
   const [homePath, cwdPath] = hookConfigPaths(cwd);
-  // 2.2.3: a project hooks.json that is silently ignored looks like a broken
-  // security setup — note it (drained & surfaced at session_start).
-  if (!allowProjectHooks() && existsSync(cwdPath!)) {
-    const line = "[pico hooks] 检测到项目 hooks 配置（.pico/hooks.json），但当前被安全策略禁用（PICO_ENABLE_PROJECT_HOOKS 未开启）。";
-    recentErrors.push(line);
-    console.warn(line);
-  }
   const merged = [
     ...loadHomeHooks(),
     ...(allowProjectHooks() ? loadOne(cwdPath!) : []),

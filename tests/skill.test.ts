@@ -105,6 +105,33 @@ test("parseSkillFile defaults description to an empty string", () => {
   }
 });
 
+test("parseSkillFile resolves YAML folded block scalars (description: >) into the folded paragraph", () => {
+  const dir = mkdtempSync(join(tmpdir(), "skill-folded-"));
+  try {
+    const filePath = makeSkillFile(
+      dir,
+      "---\nname: ponytail\ndescription: >\n  Forces the laziest solution that actually works.\n  Channels a senior dev.\n\n  Second paragraph.\n---\n\nBody",
+    );
+    const info = parseSkillFile(filePath, "user");
+    expect(info?.description).toBe(
+      "Forces the laziest solution that actually works. Channels a senior dev.\nSecond paragraph.",
+    );
+    expect(info?.description).not.toBe(">");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseSkillFile resolves YAML literal block scalars (description: |) preserving newlines", () => {
+  const dir = mkdtempSync(join(tmpdir(), "skill-literal-"));
+  try {
+    const filePath = makeSkillFile(dir, "---\nname: lit\ndescription: |\n  Line one.\n  Line two.\n---\n\nBody");
+    expect(parseSkillFile(filePath, "user")?.description).toBe("Line one.\nLine two.");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("parseSkillFile returns null for unreadable or non-frontmatter files", () => {
   const dir = mkdtempSync(join(tmpdir(), "skill-parse-"));
   try {
@@ -123,7 +150,7 @@ test("parseSkillFile returns null for unreadable or non-frontmatter files", () =
 // scanSkillDir
 // ---------------------------------------------------------------------------
 
-test("scanSkillDir discovers nested SKILL.md files and ignores other .md files", () => {
+test("scanSkillDir discovers SKILL.md files and top-level .md files, ignoring nested non-SKILL.md files", () => {
   const dir = mkdtempSync(join(tmpdir(), "skill-scan-"));
   try {
     mkdirSync(join(dir, "a", "nested"), { recursive: true });
@@ -131,10 +158,27 @@ test("scanSkillDir discovers nested SKILL.md files and ignores other .md files",
     writeSkill(dir, "root-skill", "---\nname: root-skill\n---");
     writeSkill(join(dir, "a", "nested"), "deep-skill", "---\nname: deep\n---");
     writeSkill(join(dir, "b"), "bee", "---\nname: bee\n---");
-    writeFileSync(join(dir, "ignored.md"), "---\nname: ignored\n---\nbody");
+    // 顶层根级 .md 视为技能（与上游 includeRootFiles 对齐）……
+    writeFileSync(join(dir, "top.md"), "---\nname: top\n---\nbody");
+    // ……嵌套目录里的非 SKILL.md 仍忽略。
+    writeFileSync(join(dir, "a", "nested", "skip.md"), "---\nname: skip\n---\nbody");
 
     const found = scanSkillDir(dir, "user");
-    expect(found.map((s) => s.name).sort()).toEqual(["bee", "deep", "root-skill"]);
+    expect(found.map((s) => s.name).sort()).toEqual(["bee", "deep", "root-skill", "top"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scanSkillDir discovers a root-level .md skill (includeRootFiles parity with upstream)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "skill-root-"));
+  try {
+    const filePath = join(dir, "d18-demo.md");
+    writeFileSync(filePath, "---\nname: d18-demo\ndescription: Demo skill.\n---\n\nDo the demo.\n");
+
+    const found = scanSkillDir(dir, "user");
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ name: "d18-demo", description: "Demo skill.", filePath, source: "user" });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -350,8 +394,15 @@ test("action=run with an unknown skill name throws invalid_request listing avail
     expect(err).toBeInstanceOf(ToolError);
     expect((err as ToolError).code).toBe("invalid_request");
     expect((err as ToolError).message).toContain('Skill "nope" not found');
-    expect((err as ToolError).message).toContain("Available skills: zap");
-    expect((err as ToolError).structured).toEqual({ code: "invalid_request", available: ["zap"] });
+    expect((err as ToolError).message).toContain("Available skills:");
+    expect((err as ToolError).message).toContain("zap");
+    expect((err as ToolError).message).toContain("ponytail");
+    const available = (err as ToolError).structured?.available;
+    expect(Array.isArray(available)).toBe(true);
+    if (!Array.isArray(available)) throw new Error("expected available to be an array");
+    expect(available).toContain("zap");
+    expect(available).toContain("ponytail");
+    expect(available).toContain("ponytail-review");
   }
 });
 
@@ -375,12 +426,13 @@ test("action=run with an isError executor result throws server_error with the re
   }
 });
 
-test("action=list returns the discovered skill names and count", async () => {
+test("action=list returns the discovered user skill names and count (no extra dirs injected)", async () => {
   const userDir = userSkillsDir();
   makeSkillFile(userDir, "---\nname: zap\ndescription: Zaps things\n---\nZap body.");
   writeSkill(userDir, "wow", "---\nname: wow\n---\nWow body.");
 
-  const factory = createSkillExtension(neverCalled);
+  // extraSkillDirs: [] 隔离用户目录发现逻辑，不受内置技能影响。
+  const factory = createSkillExtension(neverCalled, { extraSkillDirs: [] });
   const fakePi = makeFakePi();
   factory(fakePi as unknown as Parameters<typeof factory>[0]);
 
@@ -398,7 +450,8 @@ test("action=list returns the discovered skill names and count", async () => {
 });
 
 test("action=list with no skills suggests where to place SKILL.md files", async () => {
-  const factory = createSkillExtension(neverCalled);
+  // extraSkillDirs: [] 模拟无内置技能环境。
+  const factory = createSkillExtension(neverCalled, { extraSkillDirs: [] });
   const fakePi = makeFakePi();
   factory(fakePi as unknown as Parameters<typeof factory>[0]);
 
@@ -411,5 +464,71 @@ test("action=list with no skills suggests where to place SKILL.md files", async 
     expect(result.details).toEqual({ action: "list", count: 0 });
   } finally {
     rmSync(emptyCwd, { recursive: true, force: true });
+  }
+});
+
+test("action=list surfaces the six bundled ponytail skills without any --skill flag (H7)", async () => {
+  // 默认工厂（无 options）：必须自发现内置 src/skills，不能依赖 process.argv。
+  const factory = createSkillExtension(neverCalled);
+  const fakePi = makeFakePi();
+  factory(fakePi as unknown as Parameters<typeof factory>[0]);
+
+  const emptyCwd = mkdtempSync(join(tmpdir(), "skill-bundled-"));
+  try {
+    const result = await runTool(fakePi.tools.get("skill")!, { action: "list" }, emptyCwd);
+    const text = (result.content[0] as { type: "text"; text: string }).text;
+    expect(result.details).toEqual({ action: "list", count: 6 });
+    expect(text).toContain("Available skills (6):");
+    for (const name of ["ponytail", "ponytail-audit", "ponytail-debt", "ponytail-gain", "ponytail-help", "ponytail-review"]) {
+      expect(text).toContain(name);
+    }
+    // 描述是折叠标量解析后的真实文案，不是 ">"。
+    expect(text).toContain("Forces the laziest solution that actually works");
+    expect(text).not.toContain("ponytail — >");
+  } finally {
+    rmSync(emptyCwd, { recursive: true, force: true });
+  }
+});
+
+test("action=run executes a root-level .md skill from the user skills dir (M17)", async () => {
+  const userDir = userSkillsDir();
+  const filePath = join(userDir, "d18-demo.md");
+  mkdirSync(userDir, { recursive: true });
+  writeFileSync(filePath, "---\nname: d18-demo\ndescription: Demo skill.\n---\n\nWrite the marker file.\n");
+
+  let captured: SubagentRequest | undefined;
+  const fakeExecute: SkillExecutor = async (req) => {
+    captured = req;
+    return { content: [{ type: "text", text: "D18-DEMO-EXECUTED" }], details: {} };
+  };
+  const factory = createSkillExtension(fakeExecute, { extraSkillDirs: [] });
+  const fakePi = makeFakePi();
+  factory(fakePi as unknown as Parameters<typeof factory>[0]);
+
+  const projectCwd = mkdtempSync(join(tmpdir(), "skill-m17-"));
+  try {
+    const result = await runTool(fakePi.tools.get("skill")!, { action: "run", name: "d18-demo" }, projectCwd);
+    expect(captured?.task).toBe('You are executing the skill "d18-demo". Follow its instructions.\n\nWrite the marker file.');
+    expect(result.content[0]).toEqual({ type: "text", text: "D18-DEMO-EXECUTED" });
+    expect(result.details).toEqual({ action: "run", skill: "d18-demo" });
+  } finally {
+    rmSync(projectCwd, { recursive: true, force: true });
+  }
+});
+
+test("action=run with no available skills explains where to place skills (P4)", async () => {
+  const factory = createSkillExtension(neverCalled, { extraSkillDirs: [] });
+  const fakePi = makeFakePi();
+  factory(fakePi as unknown as Parameters<typeof factory>[0]);
+
+  try {
+    await runTool(fakePi.tools.get("skill")!, { action: "run", name: "nonexistent" }, "/tmp");
+    expect.unreachable("should have thrown");
+  } catch (err) {
+    expect(err).toBeInstanceOf(ToolError);
+    expect((err as ToolError).code).toBe("invalid_request");
+    expect((err as ToolError).message).toContain('Skill "nonexistent" not found');
+    expect((err as ToolError).message).toContain("Place SKILL.md files in ~/.pico/agent/skills/ or <project>/.pico/skills/.");
+    expect((err as ToolError).structured).toEqual({ code: "invalid_request", available: [] });
   }
 });

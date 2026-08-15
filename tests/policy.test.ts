@@ -6,10 +6,11 @@
  * env var > settings.json > default(off), in both directions.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeSettings } from "../src/extensions/settings.ts";
+import { writeCustomProvider } from "../src/setup/index.ts";
 import {
   allowProjectHooks,
   allowProjectMcp,
@@ -90,4 +91,41 @@ test("safety string booleans are treated as disabled with a warning", () => {
   // Real booleans still resolve normally.
   writeSettings({ safety: { enableProjectHooks: true } });
   expect(safetyFlagSource("PICO_ENABLE_PROJECT_HOOKS", "enableProjectHooks")).toBe("settings");
+});
+
+test("writeSettings repairs a pre-existing wide-mode settings.json to 0600", () => {
+  const agentDir = join(home, "agent");
+  mkdirSync(agentDir, { recursive: true });
+  const settingsPath = join(agentDir, "settings.json");
+  // { mode: 0o600 } only applies on first creation — a file pre-existing at
+  // 0664 (left by an older version / concurrent writer) must be tightened on
+  // write, or the env stanza / apiKey stays group-readable.
+  writeFileSync(settingsPath, JSON.stringify({ safety: { enableProjectHooks: true } }));
+  chmodSync(settingsPath, 0o664);
+  expect(statSync(settingsPath).mode & 0o777).toBe(0o664);
+
+  writeSettings({ safety: { enableProjectHooks: true } });
+
+  expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+});
+
+test("writeCustomProvider repairs a pre-existing wide-mode models.json to 0600", () => {
+  const agentDir = join(home, "agent");
+  mkdirSync(agentDir, { recursive: true });
+  const modelsPath = join(agentDir, "models.json");
+  // models.json holds per-provider apiKey — a pre-existing 0664 file must be
+  // tightened on write, not just on first creation.
+  writeFileSync(modelsPath, JSON.stringify({ providers: {} }));
+  chmodSync(modelsPath, 0o664);
+  expect(statSync(modelsPath).mode & 0o777).toBe(0o664);
+
+  writeCustomProvider({
+    id: "local",
+    baseUrl: "http://localhost:11434/v1",
+    api: "openai-completions",
+    apiKey: "ollama",
+    model: "qwen2.5-coder:7b",
+  });
+
+  expect(statSync(modelsPath).mode & 0o777).toBe(0o600);
 });
