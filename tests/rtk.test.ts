@@ -40,10 +40,11 @@ test("registerBashSpawnHook feeds composeBashSpawnHooks in registration order", 
   expect(compose!({ command: "x", cwd: "/tmp", env: {} }).command).toBe("b a x");
 });
 
-test("rtkExtension registers a bash spawn hook, not a bash tool (no conflict with undo-redo)", () => {
-  // Upstream treats duplicate extension tool names as a FATAL startup error,
-  // so enabling rtk must never register its own "bash" tool — it contributes
-  // a spawn hook that undo-redo composes into the single bash registration.
+test("rtkExtension registers the bash tool with the spawn hook chain", () => {
+  // Upstream treats duplicate extension tool names across extensions as a
+  // FATAL startup error, so "bash" has exactly one extension owner. With
+  // undo-redo removed, rtk owns that registration and composes the
+  // bash-hooks spawn chain into its tool.
   const agentDir = join(testHome, "agent");
   mkdirSync(agentDir, { recursive: true });
   writeFileSync(
@@ -65,7 +66,8 @@ test("rtkExtension registers a bash spawn hook, not a bash tool (no conflict wit
 
   rtkExtension(fakePi);
 
-  expect(registeredTools).toEqual([]);
+  // The bash tool is registered (the single bash owner).
+  expect(registeredTools).toEqual(["bash"]);
 
   // The hook rewrites eligible commands through the configured binary…
   const compose = composeBashSpawnHooks();
@@ -173,6 +175,7 @@ function makeRtkHarness(settings: Record<string, unknown>) {
     on: (event: string, handler: (event: unknown, ctx: unknown) => void) => {
       (handlers[event] ??= []).push(handler);
     },
+    registerTool: () => {},
   } as any;
   rtkExtension(fakePi);
   return {

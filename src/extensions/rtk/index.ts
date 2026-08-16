@@ -2,13 +2,15 @@
  * RTK integration.
  *
  * When enabled in settings, supported bash commands run through `rtk` for
- * compact output. The "bash" tool itself is registered by undo-redo (upstream
- * rejects duplicate extension tool names as a fatal startup error), so this
- * extension contributes a bash spawn hook that undo-redo composes into its
- * tool — see src/extensions/bash-hooks.ts.
+ * compact output. The "bash" tool is registered here (as the only extension
+ * registering it — upstream rejects duplicate tool names across extensions
+ * as a fatal startup error), so the spawn-hook chain from
+ * src/extensions/bash-hooks.ts composes into this tool. When RTK is disabled
+ * the upstream builtin bash tool is used as-is.
  */
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { registerBashSpawnHook } from "../bash-hooks.ts";
+import { createBashTool } from "@earendil-works/pi-coding-agent";
+import { composeBashSpawnHooks, registerBashSpawnHook } from "../bash-hooks.ts";
 import { readSettings, readSettingsObject } from "../settings.ts";
 
 export interface RtkConfig {
@@ -199,6 +201,12 @@ export const rtkExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       ? rewriteRtkCommand(context.command, config.command)
       : context.command,
   }));
+
+  // bash 工具注册权：上游对扩展间同名工具是致命启动错误（
+  // resource-loader.detectExtensionConflicts → main.js exit 1），所以 "bash"
+  // 只能由一个扩展注册。undo-redo 移除后由本扩展独占注册（带 spawn-hook
+  // 合成链），rtk 未启用时上游 builtin bash 直接生效。
+  pi.registerTool(createBashTool(process.cwd(), { spawnHook: composeBashSpawnHooks() }));
 
   let noticeShown = false;
   pi.on("session_start", (_event, ctx) => {

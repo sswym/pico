@@ -4,12 +4,10 @@
  * `PersistentHistoryEditor` preloads persisted prompt history for up/down
  * arrow navigation and persists every submitted input. It is shared because
  * MULTIPLE extensions claim the editor component on `session_start` (last
- * writer wins): `input-history` installs this editor directly, while
- * `undo-redo` installs `UndoRedoEditor` (which extends this class) to add its
- * ctrl+shift+z/y shortcuts. Without the shared base, whichever extension won
- * the race silently dropped the other's behavior — history navigation died
- * whenever undo-redo's async `session_start` handler landed after
- * input-history's.
+ * writer wins): `input-history` installs this editor directly. Without a
+ * shared base, whichever extension replaced the editor component would
+ * silently drop the other's behavior — history navigation died whenever
+ * another async `session_start` handler landed after input-history's.
  */
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";

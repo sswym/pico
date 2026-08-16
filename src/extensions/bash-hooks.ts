@@ -3,15 +3,16 @@
  *
  * Upstream treats duplicate tool names ACROSS extensions as a fatal startup
  * error (resource-loader.detectExtensionConflicts → main.js exits 1), so
- * only one extension may register "bash". undo-redo owns that registration
- * (sandboxed buffered bash); other extensions that augment bash — rtk output
- * compression — contribute spawn hooks here that undo-redo composes into its
- * tool. Extensions never import each other; this module is the coordination
- * channel (same pattern as events.ts / settings.ts).
+ * only one extension may register "bash". The rtk extension owns that
+ * registration (composing every hook registered here into its tool);
+ * extensions that augment bash contribute spawn hooks here rather than
+ * registering their own tool. Extensions never import each other; this
+ * module is the coordination channel (same pattern as events.ts /
+ * settings.ts).
  *
- * Ordering is safe: factories run at startup in registration order, and
- * undo-redo creates its toolset lazily on session_start — after every
- * factory has run — so all hooks are registered before they are composed.
+ * Ordering is safe: factories run at startup in registration order, and rtk
+ * registers its bash tool in its factory after registering its own hook, so
+ * the composed chain always includes every hook.
  */
 import type { BashSpawnContext, BashSpawnHook } from "@earendil-works/pi-coding-agent";
 

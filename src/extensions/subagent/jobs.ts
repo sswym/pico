@@ -5,7 +5,7 @@
  * job id immediately; the child keeps running in the background of the same
  * process. Jobs are keyed by session id so `subagent_wait` can find them and
  * session_shutdown can cancel anything still running. Module-level state
- * mirrors the session-scoped pattern used by todo/plan/undo-redo.
+ * mirrors the session-scoped pattern used by todo/plan.
  */
 import type { SingleResult } from "./results.ts";
 

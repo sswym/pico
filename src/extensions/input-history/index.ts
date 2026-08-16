@@ -4,8 +4,8 @@
  * navigation in the input box.
  *
  * The persistence + editor machinery lives in ../persistent-editor.ts so
- * other extensions that replace the editor component (undo-redo) can build on
- * the same behavior instead of silently dropping it.
+ * other extensions that replace the editor component can build on the same
+ * behavior instead of silently dropping it.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PersistentHistoryEditor } from "../persistent-editor.ts";

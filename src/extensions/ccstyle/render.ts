@@ -918,7 +918,7 @@ export function setCcstyleTheme(theme: Theme): void {
 }
 
 function shouldGloballyStyleTool(component: ToolComponent): boolean {
-  // 接管全部工具：上游内置（含 undo-redo 沙箱包装）与 pico 定制工具
+  // 接管全部工具：上游内置与 pico 定制工具
   // （ask/lsp/memory/todo/subagent 等）统一走 ccstyle 卡片。渲染与执行
   // 解耦——替换渲染器不影响工具执行。pico 定制工具的折叠摘要由
   // singleToolCallSummary 的专用分支保证（见 summarizeToolCall 复用）。

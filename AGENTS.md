@@ -54,7 +54,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 
 唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（**30 个扩展**）。每个带 `phase: "prompt" | "ui" | "tools" | "runtime" | "diagnostics"`、可选 `dependsOn` / `safety` 元数据；注册时校验**重名**与 **dependsOn 必须先于依赖者注册**。所有工厂以 `hidden: true` 注册，避免上游启动面板出现 `<inline:N>` 占位噪行。
 
-`vibe → auto-thinking → ponytail → cache-optimizer → todo → retro-theme → language → input-history → ccstyle → logo → memory → context-pruner → subagent → skill → vision → ask → init → automode → plan → undo-redo → web → lsp → rtk → hooks → evolution → mcp → observability → signals → doctor → help`
+`vibe → auto-thinking → ponytail → cache-optimizer → todo → retro-theme → language → input-history → ccstyle → logo → memory → context-pruner → subagent → skill → vision → ask → init → automode → plan → undo → web → lsp → rtk → hooks → evolution → mcp → observability → signals → doctor → help`
 
 ### 双运行模式（源码 vs 编译二进制）
 
@@ -82,7 +82,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 ### 关键目录
 
 ```
-src/extensions/    — 30 个功能扩展（memory、subagent、lsp、plan、automode、undo-redo、signals、ponytail、ccstyle、evolution 等）
+src/extensions/    — 30 个功能扩展（memory、subagent、lsp、plan、automode、undo、signals、ponytail、ccstyle、evolution 等）
 src/runtime/       — 启动链：参数构建、嵌入资源解包、setup 命令、扩展注册表
 src/setup/         — `pico setup` 向导
 src/prompts/       — 系统提示词模板（.md）
@@ -184,5 +184,6 @@ function makeFakePi() {
 - `cache-optimizer` 有已记录缺陷（见先前审查 `(memory:#37)`）：`optimizeSystemPrompt` 会拆散 AGENTS.md/CLAUDE.md 的 `<project_instructions>` 包装、按候选顺序重排 system prompt 稳定段。它直接改每个请求的 prompt/token 成本，改动前先做边界审计（空输入/超长/中文/特殊字符）
 - `cache-optimizer` 支持扩展用 `<!-- PICO_CACHE_STABLE:START -->…<!-- PICO_CACHE_STABLE:END -->` 标记把每轮字节不变的注入段标为稳定，`optimizeSystemPrompt` 会将其提取进缓存前缀；模式相关文本（如 ponytail 的 `lite/full/ultra` 级别行）必须留在标记外——进前缀后模式切换会整前缀缓存失效。标记会参与结构标记安全网校验（`extractStructuralMarkers`）
 - `ponytail`（`src/extensions/ponytail/` + `src/skills/ponytail*/`）是 vendored 自 https://github.com/DietrichGebert/ponytail（MIT，v4.9.0）的第 28 个内置扩展：规则注入 + 6 个 `/ponytail*` 命令 + 会话模式持久化。配置收敛在 settings.json `ponytail` 命名空间（defaultMode/quietStartup/hideStatus，env `PONYTAIL_*` 优先）；SKILL.md 走嵌入式资源（源码模式 `src/skills/`）。注入文本用 `PICO_CACHE_STABLE` 标记拆稳定/模式段（见上条）。同步上游时更新版本注释；已内置后不要再 `pico install` 外部 ponytail（技能会双份）
-- `ccstyle`（`src/extensions/ccstyle/`）是移植自 https://github.com/minuque/pi-cc-extensions（MIT，v0.8.54）的第 29 个内置扩展（phase: ui）：Claude Code 风格工具渲染——连续工具调用分组（`Container.prototype.addChild/removeChild/clear` 补丁 → `ToolGroupComponent`）、单行摘要 + 状态图标、Input/Output 展开视图、edit/write 结果自动展开与着色 diff（复用上游 `result.details.diff`，无 shiki 依赖）、fullscreen 鼠标点击展开/收起（实例级包装 `handleViewportInput` + `currentLayout` 布局树命中）。配置：settings.json `ccstyle.enabled`（默认 true）+ `/ccstyle on|off|status`。接管规则：**全部工具**统一 ccstyle 渲染（含 undo-redo 沙箱包装的上游内置与 pico 定制工具），渲染与执行解耦；pico 工具折叠摘要复用 `summarizeToolCall`（`tool-render.ts`）。改这里前先读 `render.ts`（原型补丁的 downstream 必须是方法值快照，别名会自递归）与 `grouping.ts`（edit/write/apply_patch 不入组但渲染被接管）
+- `ccstyle`（`src/extensions/ccstyle/`）是移植自 https://github.com/minuque/pi-cc-extensions（MIT，v0.8.54）的第 29 个内置扩展（phase: ui）：Claude Code 风格工具渲染——连续工具调用分组（`Container.prototype.addChild/removeChild/clear` 补丁 → `ToolGroupComponent`）、单行摘要 + 状态图标、Input/Output 展开视图、edit/write 结果自动展开与着色 diff（复用上游 `result.details.diff`，无 shiki 依赖）、fullscreen 鼠标点击展开/收起（实例级包装 `handleViewportInput` + `currentLayout` 布局树命中）。配置：settings.json `ccstyle.enabled`（默认 true）+ `/ccstyle on|off|status`。接管规则：**全部工具**统一 ccstyle 渲染（上游内置与 pico 定制工具），渲染与执行解耦；pico 工具折叠摘要复用 `summarizeToolCall`（`tool-render.ts`）。改这里前先读 `render.ts`（原型补丁的 downstream 必须是方法值快照，别名会自递归）与 `grouping.ts`（edit/write/apply_patch 不入组但渲染被接管）
 - `evolution`（`src/extensions/evolution/`）是第 30 个内置扩展（phase: runtime）：自进化闭环——`agent_end` 回合末异步审查会话消息（辅助模型直调，`review.ts`），输出严格 JSON 经 `apply.ts` 校验（技能名消毒、路径穿越、注入特征 `PICO_EVOLUTION_DENY`、大小上限）后写入 `~/.pico/agent/skills/`，`.pico-evolved.json` 清单记录自产技能（用户手写技能永不触碰，mtime 比对新则跳过）。默认关（`evolution.enabled` / `PICO_EVOLUTION_ENABLED`）；设计文档 `docs/evolution-design.md`。改这里前先读 `apply.ts` 的安全校验清单与 `index.ts` 的触发/频率限制
+- `undo`（`src/extensions/undo/`，phase: tools）是旁路观测式代码回退（对标 Claude Code rewind / OpenCode undo，设计文档 `docs/undo-design.md`）：`tool_call` 时读 edit/write 目标文件原内容存内容寻址 blob（`$PICO_HOME/agent/cache/undo/<sessionId>/blobs/`），`tool_result` 成功才入 undo 栈、失败丢弃；`/undo` `/redo` `/undo-status` `/undo-clear` 命令。**关键约束：纯旁路观测——不覆盖工具、不重定向执行路径，AI 始终直连真实文件系统**（历史教训：沙箱式 undo-redo 使 AI 看不到 node_modules 等 gitignore 文件而被移除）。只追踪 edit/write；bash 直写/git 操作不可回滚（与 Claude Code 一致）。配置 settings.json `undo` 命名空间（enabled/maxEntries）

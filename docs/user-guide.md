@@ -348,30 +348,28 @@ subagent(chain=[
 
 **与 plan 模式的关系**：独立扩展，互不替代。automode 注册在 plan 之前（tool_call 按注册顺序遍历，第一个 block 短路）；automode 放行后 plan 仍可拦截，`ExitPlanMode` 的批准仍是 plan 扩展的用户确认，automode 不接管。
 
-### 8.2 沙箱回滚（`undo-redo` 扩展）
+### 8.2 代码操作回退（`undo` 扩展）
 
-**本质**：`read`/`edit`/`write`/`find`/`ls`/`grep`/`bash` 七种文件工具被同名覆盖，在**沙箱工作副本**上执行；每个会话对话叶节点保存文件快照，`/undo`、`/redo` 或会话树导航时把真实工作区恢复到对应快照。写操作仍实时同步到真实工作区（缓冲在沙箱侧做 diff 基线，不延迟落盘）。
+**本质**：旁路观测式文件回退（对标 Claude Code rewind）。AI 每次 `edit`/`write` 工具调用前,扩展在后台读取文件原内容并存入内容寻址 blob;工具成功后入 undo 栈、失败丢弃。`/undo` 把文件恢复到修改前(文件新增则删除),`/redo` 重放修改(删除后重建)。
 
 **机制**：
 
-- 沙箱位于 `~/.pico/agent/cache/undo-redo/<sessionId>/sandbox/`（`$PICO_HOME` 可重定位）；会话启动时把真实区外部改动同步进沙箱；
-- `.git` 不拷入沙箱，以 gitdir 重定向文件接入真实仓库（沙箱内 git 命令可用）；`.git` 条目从被跟踪清单排除；
-- 默认忽略：`.git/` `node_modules/` `dist/` `build/` `.next/` `.venv/` `target/` `out/` `.cache/` `.codegraph/`，叠加项目 `.gitignore`；
-- 快照按会话叶节点保存（turn_end 非工具调用轮 + 叶切换时），blob 内容寻址（sha256 去重）落盘 `cache/undo-redo/<sessionId>/`；
-- 恢复时机：`/undo` `/redo` 命令、`undo_redo` 工具、`/tree` 导航（session_tree 事件）、会话启动恢复；
-- bash 经共享 spawnHook 注册表（`src/extensions/bash-hooks.ts`）：先沙箱重定向（cwd + 命令文本 realRoot→sandboxRoot）再应用 rtk 等增强链；同名工具冲突是致命启动错误，bash 只能由 undo-redo 一家注册。
+- 纯旁路观测:不覆盖工具、不重定向执行路径,AI 始终直连真实文件系统(`node_modules` 等被 gitignore 的文件对 AI 正常可见);
+- 快照存 `~/.pico/agent/cache/undo/<sessionId>/blobs/`(sha256 内容寻址,同内容共享一个 blob);
+- 只追踪 `edit`/`write` 两工具;bash 直写、git 操作、外部编辑器改动不在回滚范围;
+- 文件新增:undo = 删除文件;文件被外部删除:undo = 重建;blob 丢失:跳过该文件并提示,不破坏现状;
+- undo 后新编辑清空 redo 分支(与 git/编辑器语义一致)。
 
-**命令与工具**：
+**命令与配置**：
 
 | 名称 | 用法 |
 | --- | --- |
-| `/undo` / `/redo` | 按会话叶回退/重做文件快照（需交互模式，走 UI 树导航） |
-| `/diff-stack` | UI 列出所有叶相对 base 的 A/M/D 变更，选中查看完整 diff |
-| `/undo-redo-clear-cache` | 清空沙箱与快照缓存，重置撤销历史 |
-| `undo_redo(action=undo\|redo\|list_diffs\|diff, ...)` | LLM 工具：不触发 UI 导航、不动当前回合上下文，改动在下一个用户提示时生效 |
-| 快捷键 | `ctrl+shift+z` / `ctrl+shift+y`（/undo、/redo） |
+| `/undo` | 撤销最近一次 edit/write(恢复到修改前) |
+| `/redo` | 重做被撤销的修改(恢复到修改后) |
+| `/undo-status` | 显示 undo/redo 栈状态(条目数、最新条目) |
+| `/undo-clear` | 清空当前会话 undo/redo 历史与快照缓存 |
 
-状态行显示 `Tracked: N files (size)`。无 settings/subagent 配置项；`$PICO_HOME` 决定缓存根。
+settings.json 的 `undo` 键:`enabled`(默认 true)、`maxEntries`(默认 50,超限淘汰最旧)。
 
 ---
 
@@ -567,12 +565,12 @@ pico/
 │   │   ├── settings.ts / settings-schema.ts / policy.ts / paths.ts  # 配置、安全策略、路径
 │   │   ├── subagent/   # 子代理工具 adapter + orchestrator + runner/process/chain/parallel/gate/worktree
 │   │   ├── todo/       # todoWrite 工具 + /todo 命令 + 按会话存储 + 面板 widget
-│   │   ├── undo-redo/  # 沙箱回滚（§8.2：/undo /redo /diff-stack）
+│   │   ├── undo/       # 代码操作回退（§8.2：/undo /redo,旁路观测）
 │   │   ├── vision/     # visionAnalyze 工具 + 输入图像自动分析
 │   │   ├── web/        # webFetch + webSearch + LRU 缓存 + 私网防护
-│   │   ├── bash-hooks.ts # 共享 spawnHook 注册表（undo-redo 独家注册 bash，rtk 等注入增强）
+│   │   ├── bash-hooks.ts # 共享 spawnHook 注册表（rtk 注册 bash 并合成增强链）
 │   │   ├── events.ts   # 扩展间轻量事件总线
-│   │   ├── persistent-editor.ts # 共享编辑器基类（input-history / undo-redo 复用）
+│   │   ├── persistent-editor.ts # 共享编辑器基类（input-history 使用）
 │   │   ├── tool-render.ts / ui/   # 工具行渲染、UI 辅助
 │   │   └── vibe.ts     # 将 vibe-system.md 追加到系统提示词
 │   ├── prompts/        # 系统提示词模板（vibe、plan-mode、agents/ 等）

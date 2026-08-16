@@ -475,9 +475,10 @@ test("isPartial results pass through to the original renderer (subagent running 
   hooks.shutdown();
 });
 
-test("extension-wrapped built-in tools (undo-redo style) are still taken over", () => {
-  // undo-redo 的 buildDeferredTool 保留上游 template 的渲染器、只换 execute —
-  // toolDefinition 存在但 builtInToolDefinition 也有 → ccstyle 必须接管。
+test("extension-wrapped built-in tools are still taken over", () => {
+  // 扩展包装上游内置工具（如 rtk 注册 bash）时保留上游 template 的渲染器、
+  // 只换 execute — toolDefinition 存在但 builtInToolDefinition 也有 →
+  // ccstyle 必须接管。
   const wrappedDefinition = {
     name: "bash",
     label: "Bash",

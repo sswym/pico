@@ -59,7 +59,7 @@ export interface AgentConfig {
 export const KNOWN_CHILD_TOOLS = [
 	"bash", "read", "write", "edit", "grep", "find", "ls",
 	"memory", "webSearch", "webFetch", "web_search_exa", "skill",
-	"askUserQuestion", "todoWrite", "subagent", "undo_redo", "lsp", "visionAnalyze",
+	"askUserQuestion", "todoWrite", "subagent", "lsp", "visionAnalyze",
 ];
 
 /**

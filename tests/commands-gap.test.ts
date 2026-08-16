@@ -2,13 +2,12 @@
  * Command-handler gap tests.
  *
  * The primary suite covers 7 of 16 slash commands; these tests drive the
- * remaining 9 command handlers (automode, auto-mode, vision, todo, language,
- * undo, redo, diff-stack, undo-redo-clear-cache) plus the undo_redo tool and
- * the session_before_switch / session_before_fork / session_tree event
+ * remaining 9 command handlers (automode, auto-mode, vision, todo, language)
+ * plus the session_before_switch / session_before_fork / session_tree event
  * handlers that no existing test reaches.
  *
  * Env isolation: PICO_HOME is redirected to a temp dir so settings.json
- * writes and the undo-redo cache never touch the real data root.
+ * writes never touch the real data root.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -19,7 +18,6 @@ import { loadEffectiveConfig } from "../src/extensions/automode/config.ts";
 import { languageExtension, __resetLanguageCacheForTests } from "../src/extensions/language.ts";
 import { createVisionExtension } from "../src/extensions/vision/index.ts";
 import { todoExtension } from "../src/extensions/todo/index.ts";
-import undoRedoExtension from "../src/extensions/undo-redo/index.ts";
 
 const ORIG_PICO_HOME = process.env.PICO_HOME;
 let testHome: string;
@@ -310,98 +308,6 @@ describe("/automode and /auto-mode commands", () => {
   });
 });
 
-// ── /undo /redo /diff-stack /undo-redo-clear-cache ───────────────────────
-
-describe("undo-redo commands", () => {
-  async function setupUndoRedo() {
-    const pi = makeFakePi();
-    undoRedoExtension(pi as any);
-    const ctx = makeNotifyCtx({
-      sessionManager: { getSessionId: () => "s1", getLeafId: () => "leaf-1", branch: () => {}, resetLeaf: () => {} },
-    });
-    await pi.handlers["session_start"]![0]!({}, ctx);
-    return { pi, ctx };
-  }
-
-  test("registers undo, redo, diff-stack, undo-redo-clear-cache commands and undo_redo tool", async () => {
-    const { pi } = await setupUndoRedo();
-    for (const name of ["undo", "redo", "diff-stack", "undo-redo-clear-cache"]) {
-      expect(pi.commands.has(name)).toBe(true);
-    }
-    expect(pi.tools.has("undo_redo")).toBe(true);
-  });
-
-  test("undo with empty history reports no undo history", async () => {
-    const { pi, ctx } = await setupUndoRedo();
-    await pi.commands.get("undo").handler("", ctx);
-    expect(ctx.notices.at(-1)?.msg).toContain("No undo history");
-  });
-
-  test("redo with empty history reports no redo history", async () => {
-    const { pi, ctx } = await setupUndoRedo();
-    await pi.commands.get("redo").handler("", ctx);
-    expect(ctx.notices.at(-1)?.msg).toContain("No redo history");
-  });
-
-  test("diff-stack with no buffered diffs reports empty", async () => {
-    const { pi, ctx } = await setupUndoRedo();
-    await pi.commands.get("diff-stack").handler("", ctx);
-    expect(ctx.notices.at(-1)?.msg).toContain("No buffered diffs");
-  });
-
-  test("undo-redo-clear-cache re-initializes the session", async () => {
-    const { pi, ctx } = await setupUndoRedo();
-    const cacheRoot = join(testHome, "agent", "cache", "undo-redo", "s1");
-    await pi.commands.get("undo-redo-clear-cache").handler("", ctx);
-    expect(ctx.notices.at(-1)?.msg).toContain("cache cleared");
-    // The cache dir was removed and recreated — assert the root still exists
-    // and no stale sandbox remains.
-    expect(existsSync(join(cacheRoot, "sandbox"))).toBe(true);
-  });
-});
-
-describe("undo_redo tool", () => {
-  async function setupUndoRedo() {
-    const pi = makeFakePi();
-    undoRedoExtension(pi as any);
-    const ctx = makeNotifyCtx({
-      sessionManager: { getSessionId: () => "s1", getLeafId: () => "leaf-1", branch: () => {}, resetLeaf: () => {} },
-    });
-    await pi.handlers["session_start"]![0]!({}, ctx);
-    return { pi, ctx };
-  }
-
-  function toolCtx() {
-    return makeNotifyCtx({
-      sessionManager: { getSessionId: () => "s1", getLeafId: () => "leaf-1", branch: () => {}, resetLeaf: () => {} },
-    });
-  }
-
-  test("undo with no history returns a message without error", async () => {
-    const { pi } = await setupUndoRedo();
-    const tool = pi.tools.get("undo_redo");
-    const result = await tool.execute("t1", { action: "undo" }, undefined, undefined, toolCtx());
-    expect(result.content[0].text).toContain("No undo history.");
-  });
-
-  test("list_diffs with no buffered diffs returns an empty list", async () => {
-    const { pi } = await setupUndoRedo();
-    const tool = pi.tools.get("undo_redo");
-    const result = await tool.execute("t2", { action: "list_diffs" }, undefined, undefined, toolCtx());
-    expect(result.isError).toBeFalsy();
-    expect(result.content[0].text).toContain("No buffered diffs available.");
-    expect(result.details.items).toEqual([]);
-  });
-
-  test("diff without a path is an error", async () => {
-    const { pi } = await setupUndoRedo();
-    const tool = pi.tools.get("undo_redo");
-    const result = await tool.execute("t3", { action: "diff" }, undefined, undefined, toolCtx());
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("requires a path");
-  });
-});
-
 // ── session_before_switch / session_before_fork / session_tree ────────────
 
 describe("session lifecycle event handlers", () => {
@@ -427,35 +333,6 @@ describe("session lifecycle event handlers", () => {
     pi.sendMessage = (m: any) => { messages.push(m); };
     await pi.commands.get("todo").handler("", ctx);
     expect(messages.at(-1)?.content).toContain("Session todos (0):");
-  });
-
-  test("undo-redo session_tree restores the new leaf without crashing on empty state", async () => {
-    const pi = makeFakePi();
-    undoRedoExtension(pi as any);
-    const ctx = makeNotifyCtx({
-      sessionManager: { getSessionId: () => "s1", getLeafId: () => "leaf-1", branch: () => {}, resetLeaf: () => {} },
-    });
-    await pi.handlers["session_start"]![0]!({}, ctx);
-
-    const handler = pi.handlers["session_tree"]![0]!;
-    expect(handler).toBeDefined();
-    await handler({ oldLeafId: "leaf-1", newLeafId: "leaf-2" });
-  });
-
-  test("undo-redo session_before_switch re-initializes for the new session", async () => {
-    const pi = makeFakePi();
-    undoRedoExtension(pi as any);
-    const ctx = makeNotifyCtx({
-      sessionManager: { getSessionId: () => "s1", getLeafId: () => "leaf-1", branch: () => {}, resetLeaf: () => {} },
-    });
-    await pi.handlers["session_start"]![0]!({}, ctx);
-
-    const beforeSwitch = pi.handlers["session_before_switch"]![0]!;
-    expect(beforeSwitch).toBeDefined();
-    await beforeSwitch({}, ctx);
-    // Re-initialization must not throw and the commands still work.
-    await pi.commands.get("undo").handler("", ctx);
-    expect(ctx.notices.at(-1)?.msg).toContain("No undo history");
   });
 });
 
