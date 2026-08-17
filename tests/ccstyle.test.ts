@@ -112,6 +112,10 @@ beforeEach(() => {
 
 // ToolExecutionComponent renderers use the upstream module-level theme, which
 // needs initTheme() — in unit tests that falls back to the built-in dark theme.
+// A parent pico process exports PI_PACKAGE_DIR pointing at a transient unpack dir
+// that lacks the upstream dist/ themes; unset it so getThemesDir() falls back to
+// the installed package.
+delete process.env.PI_PACKAGE_DIR;
 initTheme();
 
 afterEach(() => {

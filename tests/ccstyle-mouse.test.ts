@@ -29,7 +29,7 @@ const stubTheme = {
   bold: (text: string) => text,
 } as unknown as Theme;
 
-const stubTui = { requestRender: () => {} } as unknown as TUI;
+const stubTui = { requestRender: () => { } } as unknown as TUI;
 
 let toolId = 0;
 
@@ -55,7 +55,7 @@ function makeFakeTui(layoutRoot: unknown): Record<string, unknown> {
   tui.currentLayout = { root: layoutRoot };
   Object.defineProperty(tui, "requestRender", {
     configurable: true,
-    get: () => () => {},
+    get: () => () => { },
   });
   return tui;
 }
@@ -97,6 +97,9 @@ afterEach(() => {
   __resetCcstyleMouseForTests();
 });
 
+// Same PI_PACKAGE_DIR-unset rationale as ccstyle.test.ts: the parent pico process
+// exports it to a transient unpack dir without the upstream dist/ themes.
+delete process.env.PI_PACKAGE_DIR;
 initTheme();
 
 function installMouse(tui: Record<string, unknown>, enabled = true): void {
