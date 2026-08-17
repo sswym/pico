@@ -42,12 +42,16 @@ test("renderLogoHeader renders a boxed welcome header", () => {
   expect(out).toContain("zen-openai");
 });
 
-test("renderLogoHeader uses a compact header on narrow terminals", () => {
-  const out = renderLogoHeader(stubTheme, 48);
+test("renderLogoHeader uses a compact header on very narrow terminals", () => {
+  const out = renderLogoHeader(stubTheme, 40);
   expect(out).not.toContain(LOGO);
   expect(out).not.toContain("Welcome back!");
   expect(out).toContain("pico v");
   expect(out).toContain("/ commands");
+  // 44 columns is the relaxed threshold: the full box renders and never wraps.
+  const boundary = renderLogoHeader(stubTheme, 44);
+  expect(boundary).toContain("Welcome back!");
+  expect(boundary).toContain("Tips");
 });
 
 test("renderLogoHeader box never exceeds width minus the scrollbar column (M1)", () => {
@@ -67,10 +71,10 @@ test("renderLogoHeader box never exceeds width minus the scrollbar column (M1)",
 });
 
 test("renderLogoHeader falls back to the compact header on short terminals (P2)", () => {
-  // At ≤30 rows the ~16-row box is clipped by the header container (top
+  // At <30 rows the ~16-row box is clipped by the header container (top
   // rows lost; fully gone by 24 rows). The 2-line compact form must render
   // instead so the brand and hints survive.
-  for (const rows of [24, 30, 36, 37]) {
+  for (const rows of [24, 28, 29]) {
     const out = renderLogoHeader(stubTheme, 120, undefined, {}, rows);
     expect(out).toContain("pico v");
     expect(out).toContain("/ commands");
@@ -78,7 +82,7 @@ test("renderLogoHeader falls back to the compact header on short terminals (P2)"
     expect(out.split("\n").length).toBeLessThanOrEqual(2);
   }
   // Tall enough for the full box: it renders again.
-  const tall = renderLogoHeader(stubTheme, 120, undefined, {}, 38);
+  const tall = renderLogoHeader(stubTheme, 120, undefined, {}, 30);
   expect(tall).toContain("Welcome back!");
   expect(tall).toContain("Tips");
 });
@@ -103,16 +107,16 @@ test("header factory is height-aware and never wraps (M1 + P2)", () => {
   logoExtension(fakePi);
   handler({ type: "session_start", reason: "startup" }, { ui: fakeUi, model: { id: "deepseek-v4-flash-free", provider: "zen-openai" } });
 
-  // 90 columns × 30 rows: the compact header (2 lines + 1 spacer) must
+  // 90 columns × 29 rows: the compact header (2 lines + 1 spacer) must
   // replace the ~16-row box so nothing gets clipped on the short terminal.
-  const short = capturedFactory({ terminal: { columns: 90, rows: 30 } }, stubTheme);
+  const short = capturedFactory({ terminal: { columns: 90, rows: 29 } }, stubTheme);
   const shortLines = short.render(90);
   expect(shortLines.length).toBeLessThanOrEqual(3);
   expect(shortLines.join("\n")).toContain("pico v");
 
-  // 90 columns × 40 rows: full box, every line within the scrollbar-reserved
-  // width, no wrapped rows.
-  const full = capturedFactory({ terminal: { columns: 90, rows: 40 } }, stubTheme);
+  // 90 columns × 30 rows: full box at the relaxed threshold, every line
+  // within the scrollbar-reserved width, no wrapped rows.
+  const full = capturedFactory({ terminal: { columns: 90, rows: 30 } }, stubTheme);
   const fullLines = full.render(90);
   expect(fullLines.length).toBeLessThanOrEqual(17);
   expect(fullLines.join("\n")).toContain("Welcome");

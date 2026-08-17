@@ -147,7 +147,8 @@ export function cachedSessionInfo(now = Date.now()): { firstRun: boolean; recent
  * `rows` is the terminal height (tui.terminal.rows). On terminals too short
  * for the ~16-row box, the upstream header container clips the top rows, so
  * we fall back to the 2-line compact form instead of letting the welcome
- * line get cut off (P2).
+ * line get cut off (P2). Thresholds: width ≥44 columns (box adapts down to
+ * ~40, 44 leaves scrollbar margin) and height ≥30 rows.
  */
 export function renderLogoHeader(
   theme: {
@@ -163,10 +164,12 @@ export function renderLogoHeader(
   const firstRun = options.firstRun ?? false;
   const recent = options.recent ?? [];
   // The full box needs ~16 rows (welcome + 6-line logo + model + tips +
-  // recent sessions); below ~38 terminal rows the header container starts
-  // clipping its top. Switch to the compact form instead (matches the
-  // <72-column behavior at 36/37 rows where the box loses its top).
-  if (width < 72 || (rows !== undefined && rows < 38)) {
+  // recent sessions); below ~30 terminal rows the header container starts
+  // clipping its top (P2, 38→30 放宽——30 行窗口 scrollview 通常仍能完整
+  // 容纳 16 行盒子,极端矮/长会话才裁;用户诉求非最大窗口也显示 logo)。
+  // 宽度:盒子 boxWidth=min(width-1,98) 自适应,40 列起即可完整渲染且不
+  // 折行(72→44 放宽,44 留滚动条余量)。
+  if (width < 44 || (rows !== undefined && rows < 30)) {
     const brand =
       theme.fg("accent", "✻ ") +
       theme.bold(theme.fg("accent", "pico")) +
