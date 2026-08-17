@@ -74,6 +74,32 @@ function sessionKey(ctx: { sessionManager?: { getSessionId?: () => string | unde
   }
 }
 
+function getLeafId(ctx: { sessionManager?: { getLeafId?: () => string | null | undefined } }): string | null {
+  try {
+    return ctx.sessionManager?.getLeafId?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** 从命令上下文构造会话导航能力(交互模式);非交互返回 undefined */
+function navigationFromCtx(ctx: ExtensionCommandContext): UndoNavigation | undefined {
+  if (typeof ctx.waitForIdle !== "function" || typeof ctx.navigateTree !== "function") {
+    return undefined;
+  }
+  return {
+    waitForIdle: () => ctx.waitForIdle(),
+    navigateTree: async (targetId: string) => {
+      try {
+        const result = await ctx.navigateTree(targetId, { summarize: false });
+        return !result.cancelled;
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
 function displayPath(absPath: string, cwd: string): string {
   const relative = path.relative(cwd, absPath);
   if (!relative.startsWith("..") && !path.isAbsolute(relative)) return relative;
@@ -114,63 +140,122 @@ export async function restoreFileToSnapshot(
   return { action: "created" };
 }
 
-/** /undo 核心:恢复到修改前状态 */
+/** 会话树导航能力(交互模式);非交互时 undefined → 只回退文件 */
+export interface UndoNavigation {
+  /** 等 agent 空闲(避免导航打断流式生成) */
+  waitForIdle(): Promise<void>;
+  /** 导航到目标叶节点(对话回退)。返回 false 表示取消/失败。 */
+  navigateTree(targetId: string): Promise<boolean>;
+}
+
+interface RestoreOutcome {
+  files: UndoResult["files"];
+  /** 会话导航是否发生(用于消息提示) */
+  navigated: boolean;
+  /** 导航是否因非交互/无叶节点而跳过 */
+  navSkipped: boolean;
+}
+
+/** 先恢复文件,再(能力可用时)把对话导航到目标叶节点 */
+async function restoreWithNavigation(
+  state: UndoSessionState,
+  sessionId: string,
+  displayPath: string,
+  targetLeafId: string | null,
+  nav: UndoNavigation | undefined,
+  restore: () => Promise<{ action: "restored" | "deleted" | "created" }>,
+): Promise<RestoreOutcome> {
+  const files: UndoResult["files"] = [];
+  const outcome: RestoreOutcome = { files, navigated: false, navSkipped: false };
+
+  try {
+    const { action } = await restore();
+    files.push({ path: displayPath, action });
+  } catch (err) {
+    throw err;
+  }
+
+  if (!targetLeafId || !nav) {
+    outcome.navSkipped = true;
+    return outcome;
+  }
+  await nav.waitForIdle();
+  const ok = await nav.navigateTree(targetLeafId);
+  outcome.navigated = ok;
+  return outcome;
+}
+
+/** /undo 核心:恢复文件到修改前 + 把对话回退到捕获时刻 */
 export async function performUndo(
   state: UndoSessionState,
   sessionId: string,
+  nav?: UndoNavigation,
 ): Promise<UndoResult> {
   const entry = popUndo(state);
   if (!entry) return emptyUndoResult("No undo history.");
 
-  const files: UndoResult["files"] = [];
   try {
-    const { action } = await restoreFileToSnapshot(sessionId, entry.path, entry.before);
-    files.push({ path: entry.displayPath, action });
+    const outcome = await restoreWithNavigation(
+      state, sessionId, entry.displayPath, entry.leafId, nav,
+      () => restoreFileToSnapshot(sessionId, entry.path, entry.before),
+    );
     // 条目原样入 redo 栈:redo 恢复 entry.after(修改后状态)
     pushRedo(state, entry);
+    const navText = outcome.navigated
+      ? " Conversation rewound."
+      : outcome.navSkipped && entry.leafId
+        ? " (conversation not rewound: non-interactive)"
+        : "";
+    return {
+      ok: true,
+      message: `Undid ${entry.tool} on ${entry.displayPath} (${outcome.files[0]!.action}).${navText}`,
+      files: outcome.files,
+    };
   } catch (err) {
     // 单文件失败:回滚栈状态,不丢失条目
     pushUndo(state, entry);
     return {
       ok: false,
       message: err instanceof Error ? err.message : String(err),
-      files,
+      files: [],
     };
   }
-  return {
-    ok: true,
-    message: `Undid ${entry.tool} on ${entry.displayPath} (${files[0]!.action}).`,
-    files,
-  };
 }
 
-/** /redo 核心:恢复到修改后状态 */
+/** /redo 核心:恢复文件到修改后 + 把对话前进到重做时刻 */
 export async function performRedo(
   state: UndoSessionState,
   sessionId: string,
+  nav?: UndoNavigation,
 ): Promise<UndoResult> {
   const entry = popRedo(state);
   if (!entry) return emptyUndoResult("No redo history.");
 
-  const files: UndoResult["files"] = [];
   try {
-    const { action } = await restoreFileToSnapshot(sessionId, entry.path, entry.after);
-    files.push({ path: entry.displayPath, action });
+    const outcome = await restoreWithNavigation(
+      state, sessionId, entry.displayPath, entry.afterLeafId ?? entry.leafId, nav,
+      () => restoreFileToSnapshot(sessionId, entry.path, entry.after),
+    );
     // 条目原样回 undo 栈:下次 undo 恢复 entry.before
     pushUndo(state, entry);
+    const navText = outcome.navigated
+      ? " Conversation restored."
+      : outcome.navSkipped && entry.leafId
+        ? " (conversation not restored: non-interactive)"
+        : "";
+    return {
+      ok: true,
+      message: `Redid ${entry.tool} on ${entry.displayPath} (${outcome.files[0]!.action}).${navText}`,
+      files: outcome.files,
+    };
   } catch (err) {
     pushRedo(state, entry);
     return {
       ok: false,
       message: err instanceof Error ? err.message : String(err),
-      files,
+      files: [],
     };
   }
-  return {
-    ok: true,
-    message: `Redid ${entry.tool} on ${entry.displayPath} (${files[0]!.action}).`,
-    files,
-  };
 }
 
 export function undoExtension(pi: ExtensionAPI): void {
@@ -211,7 +296,8 @@ export function undoExtension(pi: ExtensionAPI): void {
     if (snapshot.hash !== null) {
       await writeBlob(sessionKey(ctx), snapshot.hash, await readFile(absPath));
     }
-    captureBefore(getState(ctx), event.toolCallId, event.toolName, absPath, displayPath(absPath, ctx.cwd), snapshot);
+    const leafId = getLeafId(ctx);
+    captureBefore(getState(ctx), event.toolCallId, event.toolName, absPath, displayPath(absPath, ctx.cwd), snapshot, leafId);
   });
 
   // ── 确认/丢弃:工具结果 ────────────────────────────────────────────────
@@ -233,33 +319,33 @@ export function undoExtension(pi: ExtensionAPI): void {
     if (after.hash !== null) {
       await writeBlob(key, after.hash, await readFile(pending.path));
     }
-    const entry = confirmCapture(state, event.toolCallId, after);
+    const entry = confirmCapture(state, event.toolCallId, after, getLeafId(ctx));
     if (entry) trimUndoStack(state, readUndoConfig().maxEntries);
   });
 
   // ── 命令 ────────────────────────────────────────────────────────────────
   pi.registerCommand("undo", {
-    description: "Undo the last edit/write file change",
+    description: "Undo the last edit/write file change (files and conversation)",
     handler: async (_args, ctx: ExtensionCommandContext) => {
       const config = readUndoConfig();
       if (!config.enabled) {
         notify(ctx, emptyUndoResult("Undo is disabled (settings.json undo.enabled=false)."));
         return;
       }
-      const result = await performUndo(getState(ctx), sessionKey(ctx));
+      const result = await performUndo(getState(ctx), sessionKey(ctx), navigationFromCtx(ctx));
       notify(ctx, result);
     },
   });
 
   pi.registerCommand("redo", {
-    description: "Redo a change undone with /undo",
+    description: "Redo a change undone with /undo (files and conversation)",
     handler: async (_args, ctx: ExtensionCommandContext) => {
       const config = readUndoConfig();
       if (!config.enabled) {
         notify(ctx, emptyUndoResult("Undo is disabled (settings.json undo.enabled=false)."));
         return;
       }
-      const result = await performRedo(getState(ctx), sessionKey(ctx));
+      const result = await performRedo(getState(ctx), sessionKey(ctx), navigationFromCtx(ctx));
       notify(ctx, result);
     },
   });

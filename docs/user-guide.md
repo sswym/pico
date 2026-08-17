@@ -350,7 +350,7 @@ subagent(chain=[
 
 ### 8.2 代码操作回退（`undo` 扩展）
 
-**本质**：旁路观测式文件回退（对标 Claude Code rewind）。AI 每次 `edit`/`write` 工具调用前,扩展在后台读取文件原内容并存入内容寻址 blob;工具成功后入 undo 栈、失败丢弃。`/undo` 把文件恢复到修改前(文件新增则删除),`/redo` 重放修改(删除后重建)。
+**本质**：旁路观测式文件回退 + 会话回退（对标 Claude Code rewind）。AI 每次 `edit`/`write` 工具调用前,扩展在后台读取文件原内容并存入内容寻址 blob;工具成功后入 undo 栈、失败丢弃。`/undo` 把文件恢复到修改前(文件新增则删除)并**把对话回退到该编辑发生前的会话位置**,`/redo` 重放修改(删除后重建)并把对话前进回编辑完成后的位置。
 
 **机制**：
 
@@ -358,14 +358,15 @@ subagent(chain=[
 - 快照存 `~/.pico/agent/cache/undo/<sessionId>/blobs/`(sha256 内容寻址,同内容共享一个 blob);
 - 只追踪 `edit`/`write` 两工具;bash 直写、git 操作、外部编辑器改动不在回滚范围;
 - 文件新增:undo = 删除文件;文件被外部删除:undo = 重建;blob 丢失:跳过该文件并提示,不破坏现状;
-- undo 后新编辑清空 redo 分支(与 git/编辑器语义一致)。
+- undo 后新编辑清空 redo 分支(与 git/编辑器语义一致);
+- 会话回退:undo/redo 先 `waitForIdle` 等 agent 空闲,再导航会话树到捕获/确认时的叶节点(对话与文件同步回到对应时刻);非交互模式(如 headless)自动降级为纯文件回退。
 
 **命令与配置**：
 
 | 名称 | 用法 |
 | --- | --- |
-| `/undo` | 撤销最近一次 edit/write(恢复到修改前) |
-| `/redo` | 重做被撤销的修改(恢复到修改后) |
+| `/undo` | 撤销最近一次 edit/write(文件 + 对话回退) |
+| `/redo` | 重做被撤销的修改(文件 + 对话前进) |
 | `/undo-status` | 显示 undo/redo 栈状态(条目数、最新条目) |
 | `/undo-clear` | 清空当前会话 undo/redo 历史与快照缓存 |
 

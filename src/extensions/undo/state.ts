@@ -39,8 +39,9 @@ export function captureBefore(
   path: string,
   displayPath: string,
   before: { hash: string | null },
+  leafId: string | null,
 ): boolean {
-  state.pending.set(toolCallId, { tool, path, displayPath, before });
+  state.pending.set(toolCallId, { tool, path, displayPath, before, leafId });
   return true;
 }
 
@@ -52,6 +53,7 @@ export function confirmCapture(
   state: UndoSessionState,
   toolCallId: string,
   after: { hash: string | null },
+  afterLeafId: string | null = null,
   at = Date.now(),
 ): UndoEntry | null {
   const pending = state.pending.get(toolCallId);
@@ -69,6 +71,8 @@ export function confirmCapture(
     after: { ...after },
     toolCallId,
     at,
+    leafId: pending.leafId,
+    afterLeafId,
   };
   state.undoStack.push(entry);
   // 新编辑使 redo 分支失效(与 git/编辑器语义一致)

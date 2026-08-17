@@ -64,18 +64,19 @@ async function simulateToolCall(
   tool: "edit" | "write",
   path: string,
   mutator: () => void,
+  leafId: string | null = null,
 ): Promise<void> {
   const before = await snapshotFile(path);
   if (before.hash !== null) {
     await writeBlob("s1", before.hash, readFileSync(path));
   }
-  captureBefore(state, toolCallId, tool, path, path, before);
+  captureBefore(state, toolCallId, tool, path, path, before, leafId);
   mutator();
   const after = await snapshotFile(path);
   if (after.hash !== null) {
     await writeBlob("s1", after.hash, readFileSync(path));
   }
-  confirmCapture(state, toolCallId, after);
+  confirmCapture(state, toolCallId, after, leafId);
 }
 
 // ── 纯状态层(无文件系统依赖) ────────────────────────────────────────────
@@ -83,7 +84,7 @@ async function simulateToolCall(
 describe("undo state (pure)", () => {
   test("capture → confirm pushes entry and clears redo stack", () => {
     const state = createUndoSessionState();
-    captureBefore(state, "c1", "write", "/p/a.txt", "a.txt", { hash: null });
+    captureBefore(state, "c1", "write", "/p/a.txt", "a.txt", { hash: null }, null);
     confirmCapture(state, "c1", { hash: "h1" });
     expect(state.undoStack).toHaveLength(1);
     expect(state.undoStack[0]!.before.hash).toBeNull();
@@ -93,7 +94,7 @@ describe("undo state (pure)", () => {
 
   test("confirm with unchanged content drops the entry (no-op edit)", () => {
     const state = createUndoSessionState();
-    captureBefore(state, "c1", "edit", "/p/a.txt", "a.txt", { hash: "h1" });
+    captureBefore(state, "c1", "edit", "/p/a.txt", "a.txt", { hash: "h1" }, null);
     const entry = confirmCapture(state, "c1", { hash: "h1" });
     expect(entry).toBeNull();
     expect(state.undoStack).toHaveLength(0);
@@ -101,7 +102,7 @@ describe("undo state (pure)", () => {
 
   test("failed tool call cancels the pending capture", () => {
     const state = createUndoSessionState();
-    captureBefore(state, "c1", "edit", "/p/a.txt", "a.txt", { hash: "h1" });
+    captureBefore(state, "c1", "edit", "/p/a.txt", "a.txt", { hash: "h1" }, null);
     expect(cancelCapture(state, "c1")).toBe(true);
     expect(state.pending.size).toBe(0);
     expect(state.undoStack).toHaveLength(0);
@@ -117,17 +118,17 @@ describe("undo state (pure)", () => {
   test("new capture after undo clears the redo branch", () => {
     const state = createUndoSessionState();
     // undo 1
-    captureBefore(state, "c1", "write", "/p/a.txt", "a.txt", { hash: null });
+    captureBefore(state, "c1", "write", "/p/a.txt", "a.txt", { hash: null }, null);
     confirmCapture(state, "c1", { hash: "h1" });
     // undo 2
-    captureBefore(state, "c2", "edit", "/p/a.txt", "a.txt", { hash: "h1" });
+    captureBefore(state, "c2", "edit", "/p/a.txt", "a.txt", { hash: "h1" }, null);
     confirmCapture(state, "c2", { hash: "h2" });
     // undo 后 redo 有内容
     const undone = popUndo(state)!;
     pushRedo(state, undone);
     expect(state.redoStack).toHaveLength(1);
     // 新捕获清空 redo
-    captureBefore(state, "c3", "write", "/p/b.txt", "b.txt", { hash: null });
+    captureBefore(state, "c3", "write", "/p/b.txt", "b.txt", { hash: null }, null);
     confirmCapture(state, "c3", { hash: "hb" });
     expect(state.redoStack).toHaveLength(0);
   });
@@ -135,7 +136,7 @@ describe("undo state (pure)", () => {
   test("trimUndoStack keeps newest maxEntries", () => {
     const state = createUndoSessionState();
     for (let i = 0; i < 5; i++) {
-      captureBefore(state, `c${i}`, "write", `/p/f${i}.txt`, `f${i}.txt`, { hash: null });
+      captureBefore(state, `c${i}`, "write", `/p/f${i}.txt`, `f${i}.txt`, { hash: null }, null);
       confirmCapture(state, `c${i}`, { hash: `h${i}` });
     }
     expect(state.undoStack).toHaveLength(5);
@@ -307,6 +308,87 @@ describe("undo end-to-end file restore", () => {
 
     await performUndo(state, "s1");
     expect(readFileSync(filePath("x.txt"), "utf8")).toBe("x1");
+  });
+
+  test("undo navigates conversation back to capture leaf; redo navigates to after leaf", async () => {
+    writeFileSync(filePath("a.txt"), "v1", "utf8");
+    const state = createUndoSessionState();
+    const navCalls: string[] = [];
+    const nav = {
+      waitForIdle: async () => {},
+      navigateTree: async (targetId: string) => {
+        navCalls.push(targetId);
+        return true;
+      },
+    };
+
+    await simulateToolCall(state, "c1", "edit", filePath("a.txt"), () => writeFileSync(filePath("a.txt"), "v2", "utf8"), "leaf-1");
+
+    const undone = await performUndo(state, "s1", nav);
+    expect(undone.ok).toBe(true);
+    expect(undone.message).toContain("Conversation rewound");
+    expect(navCalls).toEqual(["leaf-1"]); // undo 导航到捕获时叶
+    expect(readFileSync(filePath("a.txt"), "utf8")).toBe("v1");
+
+    navCalls.length = 0;
+    const redone = await performRedo(state, "s1", nav);
+    expect(redone.ok).toBe(true);
+    expect(redone.message).toContain("Conversation restored");
+    expect(navCalls).toEqual(["leaf-1"]); // afterLeafId 缺省时回退到 leafId
+    expect(readFileSync(filePath("a.txt"), "utf8")).toBe("v2");
+  });
+
+  test("redo uses afterLeafId when present (conversation moves forward)", async () => {
+    writeFileSync(filePath("a.txt"), "v1", "utf8");
+    const state = createUndoSessionState();
+    const navCalls: string[] = [];
+    const nav = {
+      waitForIdle: async () => {},
+      navigateTree: async (targetId: string) => {
+        navCalls.push(targetId);
+        return true;
+      },
+    };
+
+    // 捕获时 leaf-1,确认时 leaf-2(编辑完成后对话前进)
+    await simulateToolCall(state, "c1", "edit", filePath("a.txt"), () => writeFileSync(filePath("a.txt"), "v2", "utf8"), "leaf-2");
+    // 条目 leafId=leaf-2(与 simulate 一致);手工改成 leaf-1 模拟叶推进
+    const entry = state.undoStack[0]!;
+    entry.leafId = "leaf-1";
+    entry.afterLeafId = "leaf-2";
+
+    await performUndo(state, "s1", nav);
+    expect(navCalls).toEqual(["leaf-1"]); // undo 回退到编辑前
+
+    navCalls.length = 0;
+    await performRedo(state, "s1", nav);
+    expect(navCalls).toEqual(["leaf-2"]); // redo 前进到编辑后
+  });
+
+  test("conversation navigation skipped when nav capability absent (headless)", async () => {
+    writeFileSync(filePath("a.txt"), "v1", "utf8");
+    const state = createUndoSessionState();
+    await simulateToolCall(state, "c1", "edit", filePath("a.txt"), () => writeFileSync(filePath("a.txt"), "v2", "utf8"), "leaf-1");
+
+    const result = await performUndo(state, "s1", undefined);
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain("(conversation not rewound: non-interactive)");
+    expect(readFileSync(filePath("a.txt"), "utf8")).toBe("v1");
+  });
+
+  test("navigation failure still restores file and reports it", async () => {
+    writeFileSync(filePath("a.txt"), "v1", "utf8");
+    const state = createUndoSessionState();
+    const nav = {
+      waitForIdle: async () => {},
+      navigateTree: async () => false, // 导航取消/失败
+    };
+
+    await simulateToolCall(state, "c1", "edit", filePath("a.txt"), () => writeFileSync(filePath("a.txt"), "v2", "utf8"), "leaf-1");
+    const result = await performUndo(state, "s1", nav);
+    expect(result.ok).toBe(true);
+    expect(result.message).not.toContain("Conversation rewound");
+    expect(readFileSync(filePath("a.txt"), "utf8")).toBe("v1");
   });
 });
 

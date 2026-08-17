@@ -137,6 +137,16 @@
 4. **不做工具失败自动回滚**:OpenCode/Claude 都没有;保持一致性——失败消息只保证能事后手动 undo。
 5. **不改任何工具执行路径**:纯旁路观测,AI 始终直连真实文件系统(规避 pi-undo-redo 的沙箱缺陷)。
 
+### 2.6 会话回退(对话联动)
+
+**v1 起文件与对话一起回退**(对齐旧 undo-redo 的「会话叶导航 + 文件恢复」语义,也对齐 Claude 的 Restore code + conversation):
+
+- 每条 undo 条目记录捕获时的会话叶节点 id(`UndoEntry.leafId`)与确认时的叶 id(`UndoEntry.afterLeafId`);
+- `/undo`:`waitForIdle()` 等 agent 空闲 → `navigateTree(leafId, { summarize: false })` 把对话回退到编辑发生前的叶 → 恢复文件到 before;
+- `/redo`:`navigateTree(afterLeafId ?? leafId)` 把对话前进到编辑完成后的叶 → 恢复文件到 after;
+- 非交互模式(无 `waitForIdle`/`navigateTree`)自动降级为纯文件回退,消息提示 "(conversation not rewound: non-interactive)";
+- 导航失败/取消不阻断文件恢复(各自独立 try/catch)。
+
 ### 2.5 与现有架构的接口契约
 
 - 新扩展 `src/extensions/undo/`,phase: `"tools"`(注册命令 + 事件监听),注册到 `src/runtime/extensions.ts`(紧跟 `plan` 之后,与 `todo` 对称)。
@@ -174,6 +184,10 @@ interface UndoEntry {
   displayPath: string;
   /** 时间戳 */
   at: number;
+  /** 捕获时的会话叶 id(undo 对话回退目标) */
+  leafId: string | null;
+  /** 确认时的会话叶 id(redo 对话前进目标) */
+  afterLeafId: string | null;
 }
 
 interface UndoSessionState {

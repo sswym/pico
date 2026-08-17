@@ -9,7 +9,7 @@
 ## 1. 自动化单元测试
 
 **运行方式**:`bun test tests/undo.test.ts`
-**结果**:24 pass / 0 fail(75 expect 调用)
+**结果**:28 pass / 0 fail(91 expect 调用)
 
 ### 1.1 纯状态层(7 条)
 
@@ -23,7 +23,7 @@
 | trimUndoStack 保留最新 N 条 | maxEntries 超限淘汰最旧 | ✅ |
 | describeState / emptyUndoResult | 状态汇总与失败结果构造 | ✅ |
 
-### 1.2 端到端文件恢复(9 条,真实文件系统)
+### 1.2 端到端文件恢复(13 条,真实文件系统)
 
 | 用例 | 验证点 | 结果 |
 |---|---|---|
@@ -36,6 +36,10 @@
 | blob 丢失 → 优雅失败不损坏文件 | 缓存被清后 undo 报错、条目回滚回栈、文件保持 | ✅ |
 | 空 redo 栈失败 | 非法回退边界 | ✅ |
 | 多文件独立跟踪 | 文件 A 的 undo 不影响文件 B | ✅ |
+| undo 导航到捕获叶 / redo 导航到确认叶 | 对话随文件一起回退/前进(leafId 导航) | ✅ |
+| redo 使用 afterLeafId 前进 | 编辑完成后对话位置正确恢复 | ✅ |
+| 无导航能力(headless)降级纯文件回退 | 消息提示 "(conversation not rewound: non-interactive)" | ✅ |
+| 导航失败不阻断文件恢复 | 文件已恢复,消息不含 rewound | ✅ |
 
 ### 1.3 扩展工厂接线(8 条,fakePi 驱动)
 
@@ -67,6 +71,14 @@
 | 8 | `/undo-clear` + `/undo` | 缓存目录清空、报 "No undo history" | ✅ 非法回退边界 |
 | 9 | 要求 AI:`ls node_modules` | AI 直接列出 fake-pkg(真实文件系统可见) | ✅ 无沙箱重定向 |
 
+### 2.2 会话回退实机验证(第二轮 TUI)
+
+| 步骤 | 操作 | 观察结果 | 结论 |
+|---|---|---|---|
+| 1 | 要求 AI:edit a.txt 内容 v1→v2 | Edit 卡 `-1 v1 +1 v2`,文件变 v2 | ✅ 捕获链路生效 |
+| 2 | `/undo` | 文件回 v1,提示 "Undid edit on a.txt (created). **Conversation rewound.**",屏幕对话回退到编辑前位置 | ✅ 文件 + 对话同步回退 |
+| 3 | `/redo` | 文件回 v2,提示 "Redid edit on a.txt (created). **Conversation restored.**" | ✅ 文件 + 对话同步前进 |
+
 ### 2.2 文件损坏验证
 
 - undo/redo 全程文件内容与预期一致,无截断/乱码/权限异常;
@@ -76,18 +88,19 @@
 ## 3. 全量回归
 
 ```
-bun run verify → 1329 pass / 0 fail / 4236 expect calls(55 files)
+bun run verify → 1333 pass / 0 fail / 4252 expect calls(55 files)
 ```
 
-(原 1305 + undo 新增 24,全部通过,含 tsc --noEmit 类型检查)
+(原 1305 + undo 新增 28,全部通过,含 tsc --noEmit 类型检查)
 
 ## 4. 已知局限(设计内)
 
 - 只追踪 edit/write 工具;bash 直写/git 操作不在回滚范围(与 Claude Code 一致);
 - 会话内 undo/redo;跨会话恢复未实现(blob 保留,预留接口);
 - 无 diff 预览 UI(v1 命令栈);无工具失败自动回滚(与 OpenCode/Claude 一致);
+- 会话回退依赖交互模式(非交互自动降级纯文件回退);navigateTree 导航失败不阻断文件恢复。
 - undo 恢复文件时不检测外部并发修改(快照优先,幂等)。
 
 ## 5. 结论
 
-自动化测试(24 条)+ 真实操作场景(9 步)全部通过;`bun run verify` 全绿;AI 工具直连真实文件系统(核心设计目标)。满足提交门槛。
+自动化测试(28 条)+ 真实操作场景(9 步文件回退 + 3 步会话回退)全部通过;`bun run verify` 全绿;AI 工具直连真实文件系统(核心设计目标)。满足提交门槛。
