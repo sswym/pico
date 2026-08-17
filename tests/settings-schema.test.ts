@@ -249,7 +249,6 @@ test("new user-config namespaces are validated at top level", () => {
     mcpServers: { mcpServers: {} },
     lsp: { formatOnWrite: false, idleTimeoutMs: 100 },
     subagent: { defaults: {} },
-    automode: { autoMode: {} },
   };
   expect(validateSettingsObject(valid).valid).toBe(true);
   expect(validateSettingsObject(valid).issues).toEqual([]);
@@ -259,6 +258,4 @@ test("new user-config namespaces are validated at top level", () => {
   expect(validateSettingsObject({ mcpServers: { mcpServers: [] } }).valid).toBe(false);
   expect(validateSettingsObject({ lsp: { formatOnWrite: "yes" } }).valid).toBe(false);
   expect(validateSettingsObject({ subagent: { spawns: "x" } }).valid).toBe(false);
-  expect(validateSettingsObject({ automode: { autoMode: [] } }).valid).toBe(false);
-  expect(validateSettingsObject({ automode: { permissions: [] } }).valid).toBe(false);
 });

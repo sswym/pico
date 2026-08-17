@@ -107,7 +107,7 @@
 ### 2.2 为什么不全盘照搬 Claude Code
 
 1. **埋点方式冲突**:Claude Code 在工具源码内部埋 `fileHistoryTrackEdit`。pico 是 `@earendil-works/pi-coding-agent` 的 thin wrapper,**不能改上游包源码**。但 pico 的上游扩展 API 提供 `pi.on("tool_call")`(工具执行**前**触发,含完整 input)与 `pi.on("tool_result")`(执行后,含 `isError` 与 edit 的 `patch` details)——这正好提供**零侵入的等价捕获点**,无需改工具。
-2. **消息选择器 UI**:Claude 的 rewind 靠 REPL 消息选择器(React 组件)。pico 是 TUI(pi-tui),没有现成消息选择器;pico 已有 `/undo` `/redo` 式的命令模式(plan/todo/automode 均为命令驱动),命令栈更贴合现有架构。
+2. **消息选择器 UI**:Claude 的 rewind 靠 REPL 消息选择器(React 组件)。pico 是 TUI(pi-tui),没有现成消息选择器;pico 已有 `/undo` `/redo` 式的命令模式(plan/todo 均为命令驱动),命令栈更贴合现有架构。
 3. **内存态耦合**:Claude 的 FileHistoryState 依赖 React 全局 AppState。pico 扩展是纯函数 + module-level state(session-scoped 模式,如 todo/plan),需按 pico 模式重写。
 
 ### 2.3 选型结论

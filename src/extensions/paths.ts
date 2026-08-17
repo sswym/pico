@@ -80,7 +80,3 @@ export function picoHooksConfigPath(): string {
 export function picoSubagentConfigPath(): string {
   return join(picoHome(), "subagent.json");
 }
-
-export function picoAutomodeConfigPath(): string {
-  return join(picoAgentHome(), "automode.json");
-}

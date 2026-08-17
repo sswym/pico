@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as defaultInput, stdout as defaultOutput } from "node:process";
 import { spawnSync } from "node:child_process";
-import { picoHome, picoHooksConfigPath, picoLspConfigPath, picoMcpConfigPath, picoSubagentConfigPath, picoAutomodeConfigPath, picoModelsPath, picoSettingsPath } from "../extensions/paths.ts";
+import { picoHome, picoHooksConfigPath, picoLspConfigPath, picoMcpConfigPath, picoSubagentConfigPath, picoModelsPath, picoSettingsPath } from "../extensions/paths.ts";
 import { migrateLegacyUserConfigs } from "../extensions/config-migrate.ts";
 import type { Settings } from "../extensions/settings.ts";
 
@@ -1485,7 +1485,7 @@ export function applyNonInteractiveDefaults(): void {
 
 export function resetSetupConfig(): void {
   const settings = readJson(picoSettingsPath()) as Settings;
-  for (const key of ["defaultProvider", "defaultModel", "defaultThinkingLevel", "language", "auxiliary", "safety", "memory", "integrations", "hooks", "mcpServers", "lsp", "subagent", "automode", "evolution"]) {
+  for (const key of ["defaultProvider", "defaultModel", "defaultThinkingLevel", "language", "auxiliary", "safety", "memory", "integrations", "hooks", "mcpServers", "lsp", "subagent", "evolution"]) {
     delete settings[key];
   }
   const env = readSettingsEnv(settings);
@@ -1495,7 +1495,7 @@ export function resetSetupConfig(): void {
   writeJson(picoSettingsPath(), settings);
   // Files managed by the per-section setups must go too, or --reset followed
   // by --quick would still report those sections as "configured" and skip.
-  for (const file of [picoLspConfigPath(), picoHooksConfigPath(), picoMcpConfigPath(), picoSubagentConfigPath(), picoAutomodeConfigPath()]) {
+  for (const file of [picoLspConfigPath(), picoHooksConfigPath(), picoMcpConfigPath(), picoSubagentConfigPath()]) {
     try {
       rmSync(file, { force: true });
     } catch {

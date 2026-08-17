@@ -20,7 +20,7 @@ default tools. pico adds behaviour through ExtensionFactory modules.
 - Project scope: data or configuration tied to the current working directory,
   such as project memory facts, project MCP servers, and project LSP config.
 - User config namespace (2026-08 consolidation): user-level pico config lives
-  in settings.json keys `hooks` / `mcpServers` / `lsp` / `subagent` / `automode`
+  in settings.json keys `hooks` / `mcpServers` / `lsp` / `subagent`
   (values byte-identical to the old standalone files). Readers prefer the
   namespace and fall back to the legacy file; `pico setup` migrates legacy
   files once (`src/extensions/config-migrate.ts`). Project-level config stays

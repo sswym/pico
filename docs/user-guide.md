@@ -36,7 +36,7 @@
 | `pico setup <section>` | 只跑指定节（共 10 节：`model` `tools` `safety` `ui` `memory` `lsp` `hooks` `mcp` `integrations` `env`）；显式指定时关闭"已配置跳过门"，总是重跑 |
 | `pico setup --quick` | 已配置的节只打印摘要并跳过 |
 | `pico setup --reconfigure` | 所有节强制重跑，高级选项门槛默认"是" |
-| `pico setup --reset` | 删除向导管理的配置（settings.json 的 14 个键 + 12 个托管 env 键，及 lsp.json/hooks.json/mcp-servers.json/subagent.json/automode.json 遗留文件）；不删 models.json 自定义提供商 |
+| `pico setup --reset` | 删除向导管理的配置（settings.json 的 13 个键 + 12 个托管 env 键，及 lsp.json/hooks.json/mcp-servers.json/subagent.json 遗留文件）；不删 models.json 自定义提供商 |
 | `pico setup --non-interactive` | 非 TTY 路径：写安全默认值 + 导入既有环境变量，打印汇总后退出 |
 
 非 TTY 且未加 `--non-interactive` 时报错退出；settings.json/models.json 损坏时拒绝运行（防止覆盖丢失的 API key）。退出码：0 成功、1 参数/未知 section 错误、130 Ctrl+C 取消。
@@ -57,7 +57,7 @@
 | --- | --- |
 | `~/.pico/agent/settings.json`（`$PICO_HOME` 可重定位） | model / tools / safety / ui / memory / integrations / env / hooks / lsp / mcpServers |
 | `~/.pico/agent/models.json` | 自定义提供商 |
-| ~~`~/.pico/hooks.json`~~ 等 | 已并入 settings.json 命名空间：`hooks`（事件 + 命令 + 可选 tool/blocking）、`lsp`（formatOnWrite 默认 false、idleTimeoutMs 默认 600000）、`mcpServers`（mcp、integrations 的 CodeGraph MCP）。旧独立文件（`~/.pico/hooks.json`、`~/.pico/lsp.json`、`~/.pico/mcp-servers.json`、`~/.pico/subagent.json`、`~/.pico/agent/automode.json`）在 `pico setup` 运行时自动迁入 settings.json 对应键并删除；未迁移时读取侧自动回退旧文件，零破坏 |
+| ~~`~/.pico/hooks.json`~~ 等 | 已并入 settings.json 命名空间：`hooks`（事件 + 命令 + 可选 tool/blocking）、`lsp`（formatOnWrite 默认 false、idleTimeoutMs 默认 600000）、`mcpServers`（mcp、integrations 的 CodeGraph MCP）。旧独立文件（`~/.pico/hooks.json`、`~/.pico/lsp.json`、`~/.pico/mcp-servers.json`、`~/.pico/subagent.json`）在 `pico setup` 运行时自动迁入 settings.json 对应键并删除；未迁移时读取侧自动回退旧文件，零破坏 |
 
 不写 AGENTS.md、不初始化记忆库。integrations 节可选用 `curl | sh` 安装 codegraph/rtk CLI、对当前项目执行 `codegraph init` 建索引、注册 CodeGraph MCP，并可开关自进化（evolution）扩展。
 
@@ -327,27 +327,6 @@ subagent(chain=[
 
 `auxiliary.vision.provider/model` 必须能被模型注册表解析到。使用自定义 provider、代理或本地视觉模型时，需要先在 `~/.pico/agent/models.json` 中注册该模型，并确保模型声明包含 `"input": ["text", "image"]`，否则会被视为不具备视觉能力。
 
-### 8.1 自动护栏（`automode` 扩展）
-
-**本质**：用"执行前分类器"（pre-execution LLM classifier）替代常规权限确认弹窗的自动模式护栏。**不是无脑自动批准**——每个副作用工具调用都要过审查链，只有只读内置工具（`read`/`grep`/`find`/`ls`）默认绕过；分类器不可用（无模型/无 API key）时 fail-closed 直接阻止。**无循环护栏、无动作预算**：防护是"单动作审查"而非迭代上限。
-
-**默认关闭**：写 settings.json 的 `automode.autoMode.enabled: true`（用户级；旧 `~/.pico/agent/automode.json` 自动迁移）或 `.pico/automode.json`（项目级）开启；会话级 `/automode on` 只对本会话生效（状态行显示 `⏵⏵ auto mode on/off`）。
-
-**命令**：`/automode [status|on|off|reload|reset|defaults|config|denials|model]`（别名 `/auto-mode`）。`status` 显示启用状态与分类器计数；`model` 查看/切换分类器模型（默认用当前会话模型），全局保存到 settings.json 的 `automode` 键；`denials` 显示最近拒绝记录（保留 12 条）。
-
-**审查顺序**（tool_call 阶段，首个 block 短路）：
-
-1. `permissions.deny` 规则（如 `bash(git push *)`；bash 复合命令按段匹配，任一段命中即拒）；
-2. `permissions.ask` 规则（有 UI 时 `ctx.ui.confirm` 询问；非交互直接 block）；
-3. 确定性硬拒绝（不 consult 模型）：写 shell profile（`~/.bashrc` 等）或 `.ssh/authorized_keys`、写安全控制文件（`.pico/automode*.json` 等）、TLS 弱化（`NODE_TLS_REJECT_UNAUTHORIZED=0`、`curl -k`、git/npm sslverify 关闭）、持久化/系统变更（crontab 非 `-l`、systemctl enable/disable、csrutil disable 等）、`rm -rf` 根/家/系统目录、chmod/chown 系统或 SSH 路径；
-4. 路径门控：`deniedPaths`（`~/$HOME/*` 通配）匹配即拒；`allowInsideWorkingDirectory: true` 时 CWD 内非 protected 路径的 write/edit 确定性放行（protectedPaths 含 .git/.pi/.bashrc/.ssh 等 43 项，仍强制回分类器）；
-5. 只读快速通道（`read`/`grep`/`find`/`ls` 直接放行，零模型调用；`classifyReadOnlyTools: true` 可关闭）；
-6. LLM 分类器：fast 阶段（只回 0/1，maxTokens 默认 512）→ 命中 1 进 detailed 阶段（严格 JSON，重试 ≤2 次），决策失败 fail-closed。输入含会话转录 + 项目指令，输出记决策日志。
-
-**配置**（`autoMode` 键）：`enabled`（默认 false）、`classifierModel`、`classifyReadOnlyTools`（默认 false）、`allowInsideWorkingDirectory`（默认 false）、`deniedPaths`、`fastClassifierMaxTokens`（默认 512）、`environment` / `allow` / `soft_deny` / `hard_deny` / `protectedPaths`（支持 `$defaults` 合并语义——省略即整体替换内置默认）、`log.enabled`。`permissions.deny` / `permissions.ask` 为工具模式列表。项目共享 `.pico/automode.json` **只贡献 `permissions.*`、不贡献 `autoMode`**——检入仓库的配置不能削弱分类器规则；ALLOW 规则只覆盖 soft_deny、永不过 hard_deny。环境变量 `PICO_AUTOMODE_SETTINGS_JSON` 可内联 JSON。
-
-**与 plan 模式的关系**：独立扩展，互不替代。automode 注册在 plan 之前（tool_call 按注册顺序遍历，第一个 block 短路）；automode 放行后 plan 仍可拦截，`ExitPlanMode` 的批准仍是 plan 扩展的用户确认，automode 不接管。
-
 ### 8.2 代码操作回退（`undo` 扩展）
 
 **本质**：旁路观测式文件回退 + 会话回退（对标 Claude Code rewind）。AI 每次 `edit`/`write` 工具调用前,扩展在后台读取文件原内容并存入内容寻址 blob;工具成功后入 undo 栈、失败丢弃。`/undo` 把文件恢复到修改前(文件新增则删除)并**把对话回退到该操作所属回合的 user 消息**(整轮工具操作从对话消失),`/redo` 重放修改(删除后重建)并把对话前进回编辑完成后的位置。
@@ -544,7 +523,6 @@ pico/
 │   ├── extensions/
 │   │   ├── ask/        # askUserQuestion 工具（schema、提示词、对话框分发）
 │   │   ├── auto-thinking/ # ultrathink 关键词 + /thinking 思考等级（§10.1）
-│   │   ├── automode/   # 自动护栏模式（§8.1）
 │   │   ├── cache-optimizer/  # 系统提示词缓存优化（稳定段前置、技能压缩、OpenAI 缓存键）
 │   │   ├── context-pruner/   # 重复整文件读取裁剪（§10.2）
 │   │   ├── doctor/     # /doctor 安全状态报告

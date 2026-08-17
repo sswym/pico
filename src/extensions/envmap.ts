@@ -55,7 +55,6 @@ export const ENV_SETTING_MAPPINGS: readonly EnvSettingMapping[] = [
   { env: "PICO_AUTO_THINKING_DISABLE", settingsPath: null, precedence: "env-only", description: "关闭 auto-thinking 扩展" },
   { env: "PICO_ULTRATHINK_NOTICE_ONLY", settingsPath: null, precedence: "env-only", description: "auto-thinking 只注入 notice 不提升等级" },
   { env: "PICO_CONTEXT_PRUNER_DISABLE", settingsPath: null, precedence: "env-only", description: "关闭 context-pruner" },
-  { env: "PICO_AUTOMODE_SETTINGS_JSON", settingsPath: null, precedence: "env-only", description: "automode 内联配置（JSON 字符串）" },
 
   // ── 自进化（evolution 扩展）──────────────────────────────────────────
   { env: "PICO_EVOLUTION_ENABLED", settingsPath: "evolution.enabled", precedence: "env-first", description: "启用自进化审查（会话后自动沉淀技能）" },

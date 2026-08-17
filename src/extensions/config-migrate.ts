@@ -1,12 +1,12 @@
 /**
  * Legacy user-config migration — pico 用户级配置收敛到 settings.json 命名空间。
  *
- * 背景（2026-08 配置体系整改）：hooks / mcp / lsp / subagent / automode 的用户级
+ * 背景（2026-08 配置体系整改）：hooks / mcp / lsp / subagent 的用户级
  * 配置曾各自独立文件（~/.pico/hooks.json、~/.pico/mcp-servers.json、
- * ~/.pico/lsp.json、~/.pico/subagent.json、~/.pico/agent/automode.json），与
+ * ~/.pico/lsp.json、~/.pico/subagent.json），与
  * settings.json 物理分离，用户配置分散。整改后这些用户级配置统一收敛为
- * settings.json 的命名空间键：`hooks` / `mcpServers` / `lsp` / `subagent` /
- * `automode`，每个键的值与旧文件顶层对象逐字一致（迁移零转换）。
+ * settings.json 的命名空间键：`hooks` / `mcpServers` / `lsp` / `subagent`，
+ * 每个键的值与旧文件顶层对象逐字一致（迁移零转换）。
  *
  * 读取侧规则（各扩展加载器实现）：命名空间键存在 → 用之；不存在 → 回退旧文件
  * （未迁移用户零破坏）。
@@ -17,7 +17,6 @@
  */
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import {
-  picoAutomodeConfigPath,
   picoHooksConfigPath,
   picoLspConfigPath,
   picoMcpConfigPath,
@@ -25,14 +24,13 @@ import {
 } from "./paths.ts";
 import { isSettingsDamaged, readSettings, writeSettings } from "./settings.ts";
 
-export type UserConfigNamespace = "hooks" | "mcpServers" | "lsp" | "subagent" | "automode";
+export type UserConfigNamespace = "hooks" | "mcpServers" | "lsp" | "subagent";
 
 const LEGACY_USER_FILES: Array<{ key: UserConfigNamespace; path: () => string }> = [
   { key: "hooks", path: picoHooksConfigPath },
   { key: "mcpServers", path: picoMcpConfigPath },
   { key: "lsp", path: picoLspConfigPath },
   { key: "subagent", path: picoSubagentConfigPath },
-  { key: "automode", path: picoAutomodeConfigPath },
 ];
 
 /** 旧文件路径，供 doctor 展示与 setup 汇总。 */

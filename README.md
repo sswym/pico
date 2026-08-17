@@ -29,7 +29,6 @@ bun run bin/pico.ts --help     # 查看所有上游标志
 | 子代理 | 16 个内置角色（侦察/规划/实现/审查/咨询/研究等），支持单发、并行（≤8，并发 4，可配置）、链式三种编排，可配置验收门、回退模型、结构化输出 schema 与请求预算 |
 | 任务清单 | 会话级 todoWrite 工具 + 实时面板（F7 折叠），多步任务进度可视 |
 | 规划模式 | 先只读调研、提交计划、用户批准后才解锁写工具 |
-| 自动护栏 | `/automode` 执行前 LLM 分类器：permissions 规则 + 确定性硬拒绝 + 两级分类器，默认关闭 |
 | 沙箱回滚 | 文件工具在沙箱副本执行 + 按会话叶快照，`/undo` `/redo` 恢复真实工作区 |
 | 网页 | webSearch（Exa/Tavily 混合）+ webFetch（HTML→Markdown，私网防护，15 分钟缓存） |
 | LSP 代码智能 | 45+ 语言，只读操作全开（hover/definition/references/diagnostics/symbols 等），写操作默认阻断 |

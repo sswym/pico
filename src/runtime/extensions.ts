@@ -3,7 +3,6 @@ import { autoThinkingExtension } from "../extensions/auto-thinking/index.ts";
 import { ccstyleExtension } from "../extensions/ccstyle/index.ts";
 import { contextPrunerExtension } from "../extensions/context-pruner/index.ts";
 import { askExtension } from "../extensions/ask/index.ts";
-import automodeExtension from "../extensions/automode/index.ts";
 import { cacheOptimizerExtension } from "../extensions/cache-optimizer/index.ts";
 import { doctorExtension } from "../extensions/doctor/index.ts";
 import { evolutionExtension } from "../extensions/evolution/index.ts";
@@ -138,12 +137,6 @@ export const defaultExtensions = [
     factory: initExtension,
     phase: "tools",
     safety: { touchesFilesystem: true },
-  },
-  {
-    name: "automode",
-    factory: automodeExtension,
-    phase: "tools",
-    safety: { touchesFilesystem: true, usesNetwork: true },
   },
   { name: "plan", factory: planExtension, phase: "tools" },
   { name: "undo", factory: undoExtension, phase: "tools" },

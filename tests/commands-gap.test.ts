@@ -2,7 +2,7 @@
  * Command-handler gap tests.
  *
  * The primary suite covers 7 of 16 slash commands; these tests drive the
- * remaining 9 command handlers (automode, auto-mode, vision, todo, language)
+ * remaining 9 command handlers (vision, todo, language)
  * plus the session_before_switch / session_before_fork / session_tree event
  * handlers that no existing test reaches.
  *
@@ -13,8 +13,6 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createPiAutomode } from "../src/extensions/automode/extension.ts";
-import { loadEffectiveConfig } from "../src/extensions/automode/config.ts";
 import { languageExtension, __resetLanguageCacheForTests } from "../src/extensions/language.ts";
 import { createVisionExtension } from "../src/extensions/vision/index.ts";
 import { todoExtension } from "../src/extensions/todo/index.ts";
@@ -232,79 +230,6 @@ describe("/todo command", () => {
 
     await pi.commands.get("todo").handler("bogus", makeNotifyCtx());
     expect(messages.at(-1)?.content).toContain("Usage:");
-  });
-});
-
-// ── /automode + /auto-mode ───────────────────────────────────────────────
-
-describe("/automode and /auto-mode commands", () => {
-  function setupAutomode() {
-    const pi = makeFakePi();
-    const ext = createPiAutomode({
-      loadConfig: (cwd: string) => ({
-        ...loadEffectiveConfig(cwd),
-        enabled: false,
-        classifierModel: "p1/m1",
-      }),
-      classifyAction: async () => ({ decision: "allow" as const, tier: "allow" as const, reason: "ok" }),
-    });
-    ext(pi as any);
-    // session_start seeds state
-    pi.handlers["session_start"]![0]!({}, makeNotifyCtx({
-      sessionManager: { getSessionId: () => "s1", getEntries: () => [] },
-    }));
-    return pi;
-  }
-
-  test("registers both command names", () => {
-    const pi = setupAutomode();
-    expect(pi.commands.has("automode")).toBe(true);
-    expect(pi.commands.has("auto-mode")).toBe(true);
-  });
-
-  test("status reports the effective config", async () => {
-    const pi = setupAutomode();
-    const ctx = makeNotifyCtx();
-    await pi.commands.get("automode").handler("status", ctx);
-    expect(ctx.notices.at(-1)?.msg).toContain("enabled: no");
-    expect(ctx.notices.at(-1)?.msg).toContain("classifier: p1/m1");
-  });
-
-  test("on persists an override to session state", async () => {
-    const pi = setupAutomode();
-    const ctx = makeNotifyCtx();
-    await pi.commands.get("automode").handler("on", ctx);
-    expect(ctx.notices.at(-1)?.msg).toContain("已为本会话启用");
-    expect(pi.entries.some(([k]) => k === "pico-automode-state")).toBe(true);
-  });
-
-  test("off disables for the session", async () => {
-    const pi = setupAutomode();
-    const ctx = makeNotifyCtx();
-    await pi.commands.get("automode").handler("off", ctx);
-    expect(ctx.notices.at(-1)?.msg).toContain("已为本会话禁用");
-  });
-
-  test("auto-mode alias dispatches to the same handler", async () => {
-    const pi = setupAutomode();
-    const ctx = makeNotifyCtx();
-    await pi.commands.get("auto-mode").handler("off", ctx);
-    expect(ctx.notices.at(-1)?.msg).toContain("已为本会话禁用");
-  });
-
-  test("reset zeroes counters", async () => {
-    const pi = setupAutomode();
-    const ctx = makeNotifyCtx();
-    await pi.commands.get("automode").handler("reset", ctx);
-    expect(ctx.notices.at(-1)?.msg).toContain("计数已重置");
-  });
-
-  test("unknown subcommand shows usage", async () => {
-    const pi = setupAutomode();
-    const ctx = makeNotifyCtx();
-    await pi.commands.get("automode").handler("frobnicate", ctx);
-    expect(ctx.notices.at(-1)?.level).toBe("error");
-    expect(ctx.notices.at(-1)?.msg).toContain("Usage:");
   });
 });
 

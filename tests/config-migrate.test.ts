@@ -28,28 +28,25 @@ function useTempHome(): string {
   return home;
 }
 
-test("migrateLegacyUserConfigs moves all five legacy files into settings.json and deletes them", () => {
+test("migrateLegacyUserConfigs moves all four legacy files into settings.json and deletes them", () => {
   useTempHome();
   writeFileSync(join(home, "hooks.json"), JSON.stringify({ hooks: [{ event: "PreToolUse", command: "echo hi" }] }));
   writeFileSync(join(home, "mcp-servers.json"), JSON.stringify({ mcpServers: { docs: { command: "docs" } } }));
   writeFileSync(join(home, "lsp.json"), JSON.stringify({ formatOnWrite: true }));
   writeFileSync(join(home, "subagent.json"), JSON.stringify({ defaults: { model: "m" } }));
-  writeFileSync(join(home, "agent", "automode.json"), JSON.stringify({ autoMode: { enabled: true } }));
 
   const migrated = migrateLegacyUserConfigs();
-  expect(migrated).toHaveLength(5);
+  expect(migrated).toHaveLength(4);
   expect(existsSync(join(home, "hooks.json"))).toBe(false);
   expect(existsSync(join(home, "mcp-servers.json"))).toBe(false);
   expect(existsSync(join(home, "lsp.json"))).toBe(false);
   expect(existsSync(join(home, "subagent.json"))).toBe(false);
-  expect(existsSync(join(home, "agent", "automode.json"))).toBe(false);
 
   const settings = JSON.parse(readFileSync(join(home, "agent", "settings.json"), "utf8"));
   expect(settings.hooks.hooks).toHaveLength(1);
   expect(settings.mcpServers.mcpServers.docs.command).toBe("docs");
   expect(settings.lsp.formatOnWrite).toBe(true);
   expect(settings.subagent.defaults.model).toBe("m");
-  expect(settings.automode.autoMode.enabled).toBe(true);
   expect(hasUserNamespace("hooks")).toBe(true);
 });
 
@@ -97,9 +94,9 @@ test("migrateLegacyUserConfigs refuses to touch a damaged settings.json", () => 
   expect(existsSync(join(home, "hooks.json"))).toBe(true); // untouched
 });
 
-test("legacyUserConfigPaths lists the five consolidated files", () => {
+test("legacyUserConfigPaths lists the four consolidated files", () => {
   useTempHome();
   const paths = legacyUserConfigPaths();
-  expect(paths.map((p) => p.key)).toEqual(["hooks", "mcpServers", "lsp", "subagent", "automode"]);
-  expect(paths.find((p) => p.key === "automode")!.path).toBe(join(home, "agent", "automode.json"));
+  expect(paths.map((p) => p.key)).toEqual(["hooks", "mcpServers", "lsp", "subagent"]);
+  expect(paths.find((p) => p.key === "subagent")!.path).toBe(join(home, "subagent.json"));
 });

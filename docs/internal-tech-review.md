@@ -64,7 +64,7 @@ bin/pico.ts
 
 ### 1.4 扩展注册顺序与依赖约束
 
-注册顺序：`vibe → auto-thinking → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → context-pruner → subagent → skill → vision → ask → init → automode → plan → undo-redo → web → lsp → rtk → hooks → mcp → observability → signals → doctor → help`（**27 个**）。
+注册顺序：`vibe → auto-thinking → cache-optimizer → todo → retro-theme → language → input-history → logo → memory → context-pruner → subagent → skill → vision → ask → init → plan → undo → web → lsp → rtk → hooks → mcp → observability → signals → doctor → help`（**29 个**）。
 
 `ExtensionRegistry.validate()` 强制：名称唯一、`dependsOn` 只能引用已注册扩展（目前仅 logo → retro-theme）。`before_agent_start` 等事件处理器按注册顺序链式合并返回值，因此 **cache-optimizer 先于 memory 改写 systemPrompt**，动态回忆块不会被静态化到缓存前缀。
 
@@ -771,11 +771,25 @@ flowchart TD
 
 **回归测试**：`tests/logo.test.ts` 阈值断言同步（40 列紧凑 / 44 列完整；24/28/29 行紧凑 / 30 行完整；factory 29 行紧凑 / 30 行完整）。实机验证:135×34 终端完整盒子渲染、无折行。
 
+### 4.20 第二十轮整改（2026-08-17，移除 automode 自动护栏扩展，1201 用例全绿）
+
+**背景**：用户不再需要 automode 自动护栏功能，整体移除。
+
+**移除内容**：
+- 扩展本体 `src/extensions/automode/`（15 模块）与注册项（`src/runtime/extensions.ts`，扩展数 30 → 29）
+- 测试：`tests/automode.test.ts`、`tests/automode-deep.test.ts`，以及 commands-gap / coverage-gap / config-migrate / settings-schema 测试中的 automode 用例
+- 配置管线：`config-migrate.ts` 的 `automode` 命名空间（4 个遗留文件收敛回 4 个）、`settings-schema.ts` 顶层形状校验、`envmap.ts` 的 `PICO_AUTOMODE_SETTINGS_JSON`、`paths.ts` 的 `picoAutomodeConfigPath()`、setup `--reset` 的键与遗留文件清理列表
+
+**文档**：AGENTS.md（注册顺序 / 扩展数 / 命名空间）、CONTEXT.md、README.md（自动护栏行）、`docs/user-guide.md`（§8.1 整节 + setup 描述）、`docs/undo-design.md`（命令驱动示例）、`docs/internal-tech-review.md` 现状段。历史整改记录（§4.13、各轮汇总）保留为客观史实。
+
+**测试基线**：1336 → 1201 用例全绿（`bun run verify`，tsc + 全量测试）。
+
 ## 5. 当前版本现状与已知局限
 
 ### 5.1 现状
 
-- 功能面完整：30 扩展、1336 用例全绿、`bun run verify`（tsc + 全量测试）通过；
+- 功能面完整：29 扩展、1201 用例全绿、`bun run verify`（tsc + 全量测试）通过；
+- 第二十轮整改（2026-08-17，移除 automode 自动护栏扩展）：见 §4.20；1201 用例全绿；
 - 第十九轮整改（2026-08-16，logo 紧凑阈值放宽：非最大窗口也显示完整 logo）：见 §4.19；1336 用例全绿；
 - 第十八轮整改（2026-08-16，undo 重构：移除沙箱式 undo-redo，新增旁路观测式 undo + 会话回退）：见 §4.18；1336 用例全绿；
 - 第十七轮整改（2026-08-15，依据全功能测试总报告 `/tmp/pico-test-2JirDO/final-report.md`，19 域 ~189 用例实测，修复 7 高 / 18 中 / 33 低中的全部 P 层项，全部附回归测试）：见 §4.17；1393 用例全绿；

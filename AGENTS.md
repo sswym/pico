@@ -54,7 +54,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 
 唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（**30 个扩展**）。每个带 `phase: "prompt" | "ui" | "tools" | "runtime" | "diagnostics"`、可选 `dependsOn` / `safety` 元数据；注册时校验**重名**与 **dependsOn 必须先于依赖者注册**。所有工厂以 `hidden: true` 注册，避免上游启动面板出现 `<inline:N>` 占位噪行。
 
-`vibe → auto-thinking → ponytail → cache-optimizer → todo → retro-theme → language → input-history → ccstyle → logo → memory → context-pruner → subagent → skill → vision → ask → init → automode → plan → undo → web → lsp → rtk → hooks → evolution → mcp → observability → signals → doctor → help`
+`vibe → auto-thinking → ponytail → cache-optimizer → todo → retro-theme → language → input-history → ccstyle → logo → memory → context-pruner → subagent → skill → vision → ask → init → plan → undo → web → lsp → rtk → hooks → evolution → mcp → observability → signals → doctor → help`
 
 ### 双运行模式（源码 vs 编译二进制）
 
@@ -82,7 +82,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 ### 关键目录
 
 ```
-src/extensions/    — 30 个功能扩展（memory、subagent、lsp、plan、automode、undo、signals、ponytail、ccstyle、evolution 等）
+src/extensions/    — 29 个功能扩展（memory、subagent、lsp、plan、undo、signals、ponytail、ccstyle、evolution 等）
 src/runtime/       — 启动链：参数构建、嵌入资源解包、setup 命令、扩展注册表
 src/setup/         — `pico setup` 向导
 src/prompts/       — 系统提示词模板（.md）
@@ -162,7 +162,7 @@ function makeFakePi() {
 
 ### 用户级配置收敛（2026-08）
 
-用户级 pico 配置统一存于 `~/.pico/agent/settings.json`（`$PICO_HOME` 可重定位）命名空间：`safety` / `auxiliary.vision` / `memory` / `integrations.rtk` / `hooks` / `mcpServers` / `lsp` / `subagent` / `automode` / `env`。旧独立文件（`~/.pico/hooks.json`、`~/.pico/mcp-servers.json`、`~/.pico/lsp.json`、`~/.pico/subagent.json`、`~/.pico/agent/automode.json`）在 `pico setup` 运行时自动迁入对应键（`src/extensions/config-migrate.ts`）；未迁移时各扩展加载器回退旧文件。**项目级配置保持分文件**（`.pico/hooks.json`、`.pico/mcp-servers.json`、`.pico/lsp.json`、`.pico/automode.json`、`.pico/agents/`，仓库可控 + 安全开关 gate）。
+用户级 pico 配置统一存于 `~/.pico/agent/settings.json`（`$PICO_HOME` 可重定位）命名空间：`safety` / `auxiliary.vision` / `memory` / `integrations.rtk` / `hooks` / `mcpServers` / `lsp` / `subagent` / `env`。旧独立文件（`~/.pico/hooks.json`、`~/.pico/mcp-servers.json`、`~/.pico/lsp.json`、`~/.pico/subagent.json`）在 `pico setup` 运行时自动迁入对应键（`src/extensions/config-migrate.ts`）；未迁移时各扩展加载器回退旧文件。**项目级配置保持分文件**（`.pico/hooks.json`、`.pico/mcp-servers.json`、`.pico/lsp.json`、`.pico/agents/`，仓库可控 + 安全开关 gate）。
 
 修改用户级配置读取/写入时：先查 settings.json 命名空间（`readSettings()`），再回退旧文件；新写路径一律写 settings.json 命名空间。全量 `PICO_*` 环境变量与 settings 键的对应关系登记在 `src/extensions/envmap.ts`，`/doctor` 的 `Env ↔ settings:` 段展示生效值——新增 `PICO_*` 变量必须在此登记。
 
