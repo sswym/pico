@@ -40,8 +40,9 @@ export function captureBefore(
   displayPath: string,
   before: { hash: string | null },
   leafId: string | null,
+  parentLeafId: string | null,
 ): boolean {
-  state.pending.set(toolCallId, { tool, path, displayPath, before, leafId });
+  state.pending.set(toolCallId, { tool, path, displayPath, before, leafId, parentLeafId });
   return true;
 }
 
@@ -72,6 +73,7 @@ export function confirmCapture(
     toolCallId,
     at,
     leafId: pending.leafId,
+    parentLeafId: pending.parentLeafId,
     afterLeafId,
   };
   state.undoStack.push(entry);
@@ -145,4 +147,45 @@ export function __resetUndoIdForTests(): void {
 /** 供测试断言:导出空结果构造 */
 export function emptyUndoResult(message: string): UndoResult {
   return { ok: false, message, files: [] };
+}
+
+/** 会话树条目的最小形状(供向上查找;仅依赖 id/parentId/role/content) */
+export interface UndoTreeEntry {
+  type: string;
+  id: string;
+  parentId: string | null;
+  message?: { role?: string; content?: Array<{ type?: string }> };
+}
+
+/**
+ * 沿 parent 链向上查找「最近一条含 toolCall 的 assistant 消息」,返回它的
+ * 父节点 id = 该工具操作之前的对话位置。
+ *
+ * 背景:tool_call 捕获时 assistant 消息(含 toolCall)已 append 进会话树,
+ * 捕获叶往往是其子节点(custom 等)。直接取捕获叶的 parent 仍落在
+ * assistant 消息内(操作卡残留);必须找到该 toolCall 消息的父。
+ *
+ * @param getEntry 按 id 取条目(会话树查找器)
+ * @param leafId   捕获时的叶 id
+ * @returns 目标父 id;找不到返回 null
+ */
+export function findUndoTargetParent(
+  getEntry: (id: string) => UndoTreeEntry | undefined,
+  leafId: string | null,
+): string | null {
+  if (!leafId) return null;
+  let entry = getEntry(leafId);
+  let guard = 0;
+  while (entry && guard < 200) {
+    guard++;
+    if (entry.type === "message") {
+      const msg = entry.message;
+      const hasToolCall = (msg?.content ?? []).some((c) => c.type === "toolCall");
+      if (msg?.role === "assistant" && hasToolCall) {
+        return entry.parentId ?? null;
+      }
+    }
+    entry = entry.parentId ? getEntry(entry.parentId) : undefined;
+  }
+  return null;
 }

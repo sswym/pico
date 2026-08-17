@@ -28,10 +28,12 @@ import {
   createUndoSessionState,
   describeState,
   emptyUndoResult,
+  findUndoTargetParent,
   popUndo,
   pushRedo,
   trimUndoStack,
   __resetUndoIdForTests,
+  type UndoTreeEntry,
 } from "../src/extensions/undo/state.ts";
 
 const ORIG_PICO_HOME = process.env.PICO_HOME;
@@ -65,12 +67,13 @@ async function simulateToolCall(
   path: string,
   mutator: () => void,
   leafId: string | null = null,
+  parentLeafId: string | null = null,
 ): Promise<void> {
   const before = await snapshotFile(path);
   if (before.hash !== null) {
     await writeBlob("s1", before.hash, readFileSync(path));
   }
-  captureBefore(state, toolCallId, tool, path, path, before, leafId);
+  captureBefore(state, toolCallId, tool, path, path, before, leafId, parentLeafId);
   mutator();
   const after = await snapshotFile(path);
   if (after.hash !== null) {
@@ -84,7 +87,7 @@ async function simulateToolCall(
 describe("undo state (pure)", () => {
   test("capture → confirm pushes entry and clears redo stack", () => {
     const state = createUndoSessionState();
-    captureBefore(state, "c1", "write", "/p/a.txt", "a.txt", { hash: null }, null);
+    captureBefore(state, "c1", "write", "/p/a.txt", "a.txt", { hash: null }, null, null);
     confirmCapture(state, "c1", { hash: "h1" });
     expect(state.undoStack).toHaveLength(1);
     expect(state.undoStack[0]!.before.hash).toBeNull();
@@ -94,7 +97,7 @@ describe("undo state (pure)", () => {
 
   test("confirm with unchanged content drops the entry (no-op edit)", () => {
     const state = createUndoSessionState();
-    captureBefore(state, "c1", "edit", "/p/a.txt", "a.txt", { hash: "h1" }, null);
+    captureBefore(state, "c1", "edit", "/p/a.txt", "a.txt", { hash: "h1" }, null, null);
     const entry = confirmCapture(state, "c1", { hash: "h1" });
     expect(entry).toBeNull();
     expect(state.undoStack).toHaveLength(0);
@@ -102,7 +105,7 @@ describe("undo state (pure)", () => {
 
   test("failed tool call cancels the pending capture", () => {
     const state = createUndoSessionState();
-    captureBefore(state, "c1", "edit", "/p/a.txt", "a.txt", { hash: "h1" }, null);
+    captureBefore(state, "c1", "edit", "/p/a.txt", "a.txt", { hash: "h1" }, null, null);
     expect(cancelCapture(state, "c1")).toBe(true);
     expect(state.pending.size).toBe(0);
     expect(state.undoStack).toHaveLength(0);
@@ -118,17 +121,17 @@ describe("undo state (pure)", () => {
   test("new capture after undo clears the redo branch", () => {
     const state = createUndoSessionState();
     // undo 1
-    captureBefore(state, "c1", "write", "/p/a.txt", "a.txt", { hash: null }, null);
+    captureBefore(state, "c1", "write", "/p/a.txt", "a.txt", { hash: null }, null, null);
     confirmCapture(state, "c1", { hash: "h1" });
     // undo 2
-    captureBefore(state, "c2", "edit", "/p/a.txt", "a.txt", { hash: "h1" }, null);
+    captureBefore(state, "c2", "edit", "/p/a.txt", "a.txt", { hash: "h1" }, null, null);
     confirmCapture(state, "c2", { hash: "h2" });
     // undo 后 redo 有内容
     const undone = popUndo(state)!;
     pushRedo(state, undone);
     expect(state.redoStack).toHaveLength(1);
     // 新捕获清空 redo
-    captureBefore(state, "c3", "write", "/p/b.txt", "b.txt", { hash: null }, null);
+    captureBefore(state, "c3", "write", "/p/b.txt", "b.txt", { hash: null }, null, null);
     confirmCapture(state, "c3", { hash: "hb" });
     expect(state.redoStack).toHaveLength(0);
   });
@@ -136,7 +139,7 @@ describe("undo state (pure)", () => {
   test("trimUndoStack keeps newest maxEntries", () => {
     const state = createUndoSessionState();
     for (let i = 0; i < 5; i++) {
-      captureBefore(state, `c${i}`, "write", `/p/f${i}.txt`, `f${i}.txt`, { hash: null }, null);
+      captureBefore(state, `c${i}`, "write", `/p/f${i}.txt`, `f${i}.txt`, { hash: null }, null, null);
       confirmCapture(state, `c${i}`, { hash: `h${i}` });
     }
     expect(state.undoStack).toHaveLength(5);
@@ -157,6 +160,36 @@ describe("undo state (pure)", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toBe("No undo history.");
     expect(result.files).toEqual([]);
+  });
+
+  test("findUndoTargetParent returns the toolCall assistant message's parent", () => {
+    // 会话树:user(leaf-0) → assistant(toolCall, leaf-1) → custom(leaf-2, 捕获叶)
+    const tree: Record<string, UndoTreeEntry> = {
+      "leaf-2": { type: "custom", id: "leaf-2", parentId: "leaf-1" },
+      "leaf-1": { type: "message", id: "leaf-1", parentId: "leaf-0", message: { role: "assistant", content: [{ type: "toolCall" }] } },
+      "leaf-0": { type: "message", id: "leaf-0", parentId: null, message: { role: "user", content: [{ type: "text" }] } },
+    };
+    expect(findUndoTargetParent((id) => tree[id], "leaf-2")).toBe("leaf-0");
+  });
+
+  test("findUndoTargetParent walks up multiple levels past non-toolCall entries", () => {
+    // 捕获叶是 thinking 下的 custom;toolCall 消息在其上两层
+    const tree: Record<string, UndoTreeEntry> = {
+      "leaf-3": { type: "custom", id: "leaf-3", parentId: "leaf-2" },
+      "leaf-2": { type: "message", id: "leaf-2", parentId: "leaf-1", message: { role: "assistant", content: [{ type: "thinking" }] } },
+      "leaf-1": { type: "message", id: "leaf-1", parentId: "leaf-0", message: { role: "assistant", content: [{ type: "toolCall" }] } },
+      "leaf-0": { type: "message", id: "leaf-0", parentId: null, message: { role: "user", content: [{ type: "text" }] } },
+    };
+    expect(findUndoTargetParent((id) => tree[id], "leaf-3")).toBe("leaf-0");
+  });
+
+  test("findUndoTargetParent returns null for missing leaf or no toolCall ancestor", () => {
+    const tree: Record<string, UndoTreeEntry> = {
+      "leaf-1": { type: "message", id: "leaf-1", parentId: null, message: { role: "user", content: [{ type: "text" }] } },
+    };
+    expect(findUndoTargetParent((id) => tree[id], null)).toBeNull();
+    expect(findUndoTargetParent((id) => tree[id], "missing")).toBeNull();
+    expect(findUndoTargetParent((id) => tree[id], "leaf-1")).toBeNull();
   });
 });
 
@@ -310,7 +343,7 @@ describe("undo end-to-end file restore", () => {
     expect(readFileSync(filePath("x.txt"), "utf8")).toBe("x1");
   });
 
-  test("undo navigates conversation back to capture leaf; redo navigates to after leaf", async () => {
+  test("undo navigates conversation to parent leaf; redo to after leaf", async () => {
     writeFileSync(filePath("a.txt"), "v1", "utf8");
     const state = createUndoSessionState();
     const navCalls: string[] = [];
@@ -322,20 +355,39 @@ describe("undo end-to-end file restore", () => {
       },
     };
 
-    await simulateToolCall(state, "c1", "edit", filePath("a.txt"), () => writeFileSync(filePath("a.txt"), "v2", "utf8"), "leaf-1");
+    // 捕获时 leaf-2(操作所在消息),父叶 leaf-1(操作之前)
+    await simulateToolCall(state, "c1", "edit", filePath("a.txt"), () => writeFileSync(filePath("a.txt"), "v2", "utf8"), "leaf-2", "leaf-1");
 
     const undone = await performUndo(state, "s1", nav);
     expect(undone.ok).toBe(true);
     expect(undone.message).toContain("Conversation rewound");
-    expect(navCalls).toEqual(["leaf-1"]); // undo 导航到捕获时叶
+    expect(navCalls).toEqual(["leaf-1"]); // undo 导航到父叶(操作之前)
     expect(readFileSync(filePath("a.txt"), "utf8")).toBe("v1");
 
     navCalls.length = 0;
     const redone = await performRedo(state, "s1", nav);
     expect(redone.ok).toBe(true);
     expect(redone.message).toContain("Conversation restored");
-    expect(navCalls).toEqual(["leaf-1"]); // afterLeafId 缺省时回退到 leafId
+    expect(navCalls).toEqual(["leaf-2"]); // afterLeafId 缺省时回退到 leafId
     expect(readFileSync(filePath("a.txt"), "utf8")).toBe("v2");
+  });
+
+  test("undo falls back to capture leaf when parent absent", async () => {
+    writeFileSync(filePath("a.txt"), "v1", "utf8");
+    const state = createUndoSessionState();
+    const navCalls: string[] = [];
+    const nav = {
+      waitForIdle: async () => {},
+      navigateTree: async (targetId: string) => {
+        navCalls.push(targetId);
+        return true;
+      },
+    };
+
+    await simulateToolCall(state, "c1", "edit", filePath("a.txt"), () => writeFileSync(filePath("a.txt"), "v2", "utf8"), "leaf-1", null);
+    const undone = await performUndo(state, "s1", nav);
+    expect(undone.ok).toBe(true);
+    expect(navCalls).toEqual(["leaf-1"]); // 无父 → 回退到捕获叶
   });
 
   test("redo uses afterLeafId when present (conversation moves forward)", async () => {
@@ -406,7 +458,12 @@ describe("undo extension factory", () => {
   }
 
   interface FakeCtx {
-    sessionManager: { getSessionId: () => string; getLeafId: () => string };
+    sessionManager: {
+      getSessionId: () => string;
+      getLeafId: () => string;
+      getLeafEntry?: () => { type: string; id: string; parentId: string | null; message?: { role?: string; content?: Array<{ type?: string }> } } | undefined;
+      getEntry?: (id: string) => { type: string; id: string; parentId: string | null; message?: { role?: string; content?: Array<{ type?: string }> } } | undefined;
+    };
     cwd: string;
     hasUI: boolean;
     ui: { notify: (message: string, level: string) => void };
@@ -531,6 +588,8 @@ describe("undo extension factory", () => {
     await pi.commands.get("undo")!.handler("", ctx);
     expect(ctx.notifies.at(-1)!.message).toContain("No undo history");
   });
+
+
 
   test("redo after undo via factory commands", async () => {
     const { pi, ctx } = installExtension();

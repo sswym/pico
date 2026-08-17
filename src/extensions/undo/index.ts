@@ -42,6 +42,7 @@ import {
   createUndoSessionState,
   describeState,
   emptyUndoResult,
+  findUndoTargetParent,
   popRedo,
   popUndo,
   pushRedo,
@@ -50,6 +51,7 @@ import {
   __resetUndoIdForTests,
 } from "./state.ts";
 import type { UndoConfig, UndoResult, UndoSessionState } from "./types.ts";
+import type { UndoTreeEntry } from "./state.ts";
 
 const SESSION_FALLBACK = "__default__";
 
@@ -77,6 +79,37 @@ function sessionKey(ctx: { sessionManager?: { getSessionId?: () => string | unde
 function getLeafId(ctx: { sessionManager?: { getLeafId?: () => string | null | undefined } }): string | null {
   try {
     return ctx.sessionManager?.getLeafId?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** 捕获叶的父节点 id(该操作所在消息之前的位置);无父/不可得返回 null */
+function getParentLeafId(ctx: ExtensionContext): string | null {
+  try {
+    const sm = ctx.sessionManager;
+    const getEntry = (id: string): UndoTreeEntry | undefined => {
+      const entry = sm?.getEntry?.(id);
+      if (!entry) return undefined;
+      const msg = (entry as { message?: unknown }).message;
+      if (msg && typeof msg === "object" && "role" in msg) {
+        const role = (msg as { role?: unknown }).role;
+        const content = (msg as { content?: unknown }).content;
+        const parts = Array.isArray(content)
+          ? (content as Array<{ type?: unknown }>).map((c) => ({
+              type: typeof c === "object" && c !== null && "type" in c ? String((c as { type: unknown }).type) : undefined,
+            }))
+          : undefined;
+        return {
+          type: entry.type,
+          id: entry.id,
+          parentId: entry.parentId,
+          message: { role: typeof role === "string" ? role : undefined, content: parts },
+        };
+      }
+      return { type: entry.type, id: entry.id, parentId: entry.parentId };
+    };
+    return findUndoTargetParent(getEntry, getLeafId(ctx));
   } catch {
     return null;
   }
@@ -185,7 +218,7 @@ async function restoreWithNavigation(
   return outcome;
 }
 
-/** /undo 核心:恢复文件到修改前 + 把对话回退到捕获时刻 */
+/** /undo 核心:恢复文件到修改前 + 把对话回退到操作发生之前 */
 export async function performUndo(
   state: UndoSessionState,
   sessionId: string,
@@ -195,8 +228,9 @@ export async function performUndo(
   if (!entry) return emptyUndoResult("No undo history.");
 
   try {
+    // 对话回退到「操作所在消息之前」(父叶);无父(消息根)则回退到捕获叶
     const outcome = await restoreWithNavigation(
-      state, sessionId, entry.displayPath, entry.leafId, nav,
+      state, sessionId, entry.displayPath, entry.parentLeafId ?? entry.leafId, nav,
       () => restoreFileToSnapshot(sessionId, entry.path, entry.before),
     );
     // 条目原样入 redo 栈:redo 恢复 entry.after(修改后状态)
@@ -297,7 +331,8 @@ export function undoExtension(pi: ExtensionAPI): void {
       await writeBlob(sessionKey(ctx), snapshot.hash, await readFile(absPath));
     }
     const leafId = getLeafId(ctx);
-    captureBefore(getState(ctx), event.toolCallId, event.toolName, absPath, displayPath(absPath, ctx.cwd), snapshot, leafId);
+    const parentLeafId = getParentLeafId(ctx);
+    captureBefore(getState(ctx), event.toolCallId, event.toolName, absPath, displayPath(absPath, ctx.cwd), snapshot, leafId, parentLeafId);
   });
 
   // ── 确认/丢弃:工具结果 ────────────────────────────────────────────────
