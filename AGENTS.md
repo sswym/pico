@@ -40,7 +40,7 @@ bun run update-deps               # 升级 @earendil-works/pi-* 到最新版，�
 
 ## 架构
 
-pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 30 个 ExtensionFactory 插件注入功能。
+pico 是 `@earendil-works/pi-coding-agent` 的 **thin wrapper**。上游提供 agent loop、tool runtime、session 管理；pico 通过 29 个 ExtensionFactory 插件注入功能。
 
 ### 入口链
 
@@ -52,7 +52,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 
 ### 扩展注册顺序
 
-唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（**30 个扩展**）。每个带 `phase: "prompt" | "ui" | "tools" | "runtime" | "diagnostics"`、可选 `dependsOn` / `safety` 元数据；注册时校验**重名**与 **dependsOn 必须先于依赖者注册**。所有工厂以 `hidden: true` 注册，避免上游启动面板出现 `<inline:N>` 占位噪行。
+唯一事实来源：`src/runtime/extensions.ts` 的 `defaultExtensions`（**29 个扩展**）。每个带 `phase: "prompt" | "ui" | "tools" | "runtime" | "diagnostics"`、可选 `dependsOn` / `safety` 元数据；注册时校验**重名**与 **dependsOn 必须先于依赖者注册**。所有工厂以 `hidden: true` 注册，避免上游启动面板出现 `<inline:N>` 占位噪行。
 
 `vibe → auto-thinking → ponytail → cache-optimizer → todo → retro-theme → language → input-history → ccstyle → logo → memory → context-pruner → subagent → skill → vision → ask → init → plan → undo → web → lsp → rtk → hooks → evolution → mcp → observability → signals → doctor → help`
 
@@ -145,6 +145,13 @@ function makeFakePi() {
 | `PICO_EVOLUTION_ENABLED` | 启用自进化审查（会话后自动沉淀技能；默认关，settings `evolution.enabled` 或 env） |
 | `PICO_EVOLUTION_PROVIDER` / `PICO_EVOLUTION_MODEL` | 覆盖审查模型（默认跟随主模型） |
 | `PICO_EVOLUTION_DENY` | 审查输出门禁关键词（逗号分隔，命中拒写技能） |
+| `PICO_EVOLUTION_REVIEW_EVERY_TURNS` | 覆盖审查触发回合间隔（默认 6） |
+| `PICO_MEMORY_DENY` | 记忆写入门禁关键词（逗号分隔，命中拒写） |
+| `PICO_HOLOGRAPHIC_MEMORY_PATH` | 覆盖 holographic 记忆后端 JSON 路径（默认 `~/.pico/holographic-memory.json`） |
+| `PICO_SUPERVISOR_CHANNEL_ROOT` | 覆盖子代理监督通道根目录（默认 `/tmp/pico-supervisor-channels`） |
+| `PICO_SUPERVISOR_ASK_TIMEOUT_MS` | 子代理监督提问超时（毫秒） |
+| `PICO_AUTO_THINKING_DISABLE` | 关闭 auto-thinking（设为 `1`/`true`/`yes`；`0`/`false` 视为未禁用） |
+| `PICO_ULTRATHINK_NOTICE_ONLY` | ultrathink 只注入系统提醒、不提升思考等级 |
 
 前五个安全开关也可长期写入 `~/.pico/agent/settings.json` 的 `safety` 字段；环境变量优先于 settings。**值必须是布尔**——字符串会被当作禁用并打印告警：
 
@@ -183,7 +190,7 @@ function makeFakePi() {
 - LSP 扩展最复杂（只读 action + 被阻断的写入/高风险 action、workspace edit 引擎、diagnostics ledger），改动前先读 `src/extensions/lsp/` 全部文件
 - `cache-optimizer` 有已记录缺陷（见先前审查 `(memory:#37)`）：`optimizeSystemPrompt` 会拆散 AGENTS.md/CLAUDE.md 的 `<project_instructions>` 包装、按候选顺序重排 system prompt 稳定段。它直接改每个请求的 prompt/token 成本，改动前先做边界审计（空输入/超长/中文/特殊字符）
 - `cache-optimizer` 支持扩展用 `<!-- PICO_CACHE_STABLE:START -->…<!-- PICO_CACHE_STABLE:END -->` 标记把每轮字节不变的注入段标为稳定，`optimizeSystemPrompt` 会将其提取进缓存前缀；模式相关文本（如 ponytail 的 `lite/full/ultra` 级别行）必须留在标记外——进前缀后模式切换会整前缀缓存失效。标记会参与结构标记安全网校验（`extractStructuralMarkers`）
-- `ponytail`（`src/extensions/ponytail/` + `src/skills/ponytail*/`）是 vendored 自 https://github.com/DietrichGebert/ponytail（MIT，v4.9.0）的第 28 个内置扩展：规则注入 + 6 个 `/ponytail*` 命令 + 会话模式持久化。配置收敛在 settings.json `ponytail` 命名空间（defaultMode/quietStartup/hideStatus，env `PONYTAIL_*` 优先）；SKILL.md 走嵌入式资源（源码模式 `src/skills/`）。注入文本用 `PICO_CACHE_STABLE` 标记拆稳定/模式段（见上条）。同步上游时更新版本注释；已内置后不要再 `pico install` 外部 ponytail（技能会双份）
-- `ccstyle`（`src/extensions/ccstyle/`）是移植自 https://github.com/minuque/pi-cc-extensions（MIT，v0.8.54）的第 29 个内置扩展（phase: ui）：Claude Code 风格工具渲染——连续工具调用分组（`Container.prototype.addChild/removeChild/clear` 补丁 → `ToolGroupComponent`）、单行摘要 + 状态图标、Input/Output 展开视图、edit/write 结果自动展开与着色 diff（复用上游 `result.details.diff`，无 shiki 依赖）、fullscreen 鼠标点击展开/收起（实例级包装 `handleViewportInput` + `currentLayout` 布局树命中）。配置：settings.json `ccstyle.enabled`（默认 true）+ `/ccstyle on|off|status`。接管规则：**全部工具**统一 ccstyle 渲染（上游内置与 pico 定制工具），渲染与执行解耦；pico 工具折叠摘要复用 `summarizeToolCall`（`tool-render.ts`）。改这里前先读 `render.ts`（原型补丁的 downstream 必须是方法值快照，别名会自递归）与 `grouping.ts`（edit/write/apply_patch 不入组但渲染被接管）
-- `evolution`（`src/extensions/evolution/`）是第 30 个内置扩展（phase: runtime）：自进化闭环——`agent_end` 回合末异步审查会话消息（辅助模型直调，`review.ts`），输出严格 JSON 经 `apply.ts` 校验（技能名消毒、路径穿越、注入特征 `PICO_EVOLUTION_DENY`、大小上限）后写入 `~/.pico/agent/skills/`，`.pico-evolved.json` 清单记录自产技能（用户手写技能永不触碰，mtime 比对新则跳过）。默认关（`evolution.enabled` / `PICO_EVOLUTION_ENABLED`）；设计文档 `docs/evolution-design.md`。改这里前先读 `apply.ts` 的安全校验清单与 `index.ts` 的触发/频率限制
+- `ponytail`（`src/extensions/ponytail/` + `src/skills/ponytail*/`）是 vendored 自 https://github.com/DietrichGebert/ponytail（MIT，v4.9.0）的内置扩展：规则注入 + 6 个 `/ponytail*` 命令 + 会话模式持久化。配置收敛在 settings.json `ponytail` 命名空间（defaultMode/quietStartup/hideStatus，env `PONYTAIL_*` 优先）；SKILL.md 走嵌入式资源（源码模式 `src/skills/`）。注入文本用 `PICO_CACHE_STABLE` 标记拆稳定/模式段（见上条）。同步上游时更新版本注释；已内置后不要再 `pico install` 外部 ponytail（技能会双份）
+- `ccstyle`（`src/extensions/ccstyle/`）是移植自 https://github.com/minuque/pi-cc-extensions（MIT，v0.8.54）的内置扩展（phase: ui）：Claude Code 风格工具渲染——连续工具调用分组（`Container.prototype.addChild/removeChild/clear` 补丁 → `ToolGroupComponent`）、单行摘要 + 状态图标、Input/Output 展开视图、edit/write 结果自动展开与着色 diff（复用上游 `result.details.diff`，无 shiki 依赖）、fullscreen 鼠标点击展开/收起（实例级包装 `handleViewportInput` + `currentLayout` 布局树命中）。配置：settings.json `ccstyle.enabled`（默认 true）+ `/ccstyle on|off|status`。接管规则：**全部工具**统一 ccstyle 渲染（上游内置与 pico 定制工具），渲染与执行解耦；pico 工具折叠摘要复用 `summarizeToolCall`（`tool-render.ts`）。改这里前先读 `render.ts`（原型补丁的 downstream 必须是方法值快照，别名会自递归）与 `grouping.ts`（edit/write/apply_patch 不入组但渲染被接管）
+- `evolution`（`src/extensions/evolution/`）是内置扩展（phase: runtime）：自进化闭环——`agent_end` 回合末异步审查会话消息（辅助模型直调，`review.ts`），输出严格 JSON 经 `apply.ts` 校验（技能名消毒、路径穿越、注入特征 `PICO_EVOLUTION_DENY`、大小上限）后写入 `~/.pico/agent/skills/`，`.pico-evolved.json` 清单记录自产技能（用户手写技能永不触碰，mtime 比对新则跳过）。默认关（`evolution.enabled` / `PICO_EVOLUTION_ENABLED`）；设计文档 `docs/evolution-design.md`。改这里前先读 `apply.ts` 的安全校验清单与 `index.ts` 的触发/频率限制
 - `undo`（`src/extensions/undo/`，phase: tools）是旁路观测式代码回退（对标 Claude Code rewind / OpenCode undo，设计文档 `docs/undo-design.md`）：`tool_call` 时读 edit/write 目标文件原内容存内容寻址 blob（`$PICO_HOME/agent/cache/undo/<sessionId>/blobs/`），`tool_result` 成功才入 undo 栈、失败丢弃；`/undo` `/redo` `/undo-status` `/undo-clear` 命令。**关键约束：纯旁路观测——不覆盖工具、不重定向执行路径，AI 始终直连真实文件系统**（历史教训：沙箱式 undo-redo 使 AI 看不到 node_modules 等 gitignore 文件而被移除）。只追踪 edit/write；bash 直写/git 操作不可回滚（与 Claude Code 一致）。会话回退：/undo 导航到该操作所属回合的 user 消息（`findUndoTurnUser` 沿 parent 链向上定位，多工具回合的 toolCall 消息父是前一个 toolResult 而非 user），整轮操作卡从对话消失；非交互自动降级纯文件回退。配置 settings.json `undo` 命名空间（enabled/maxEntries）

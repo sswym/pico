@@ -789,6 +789,7 @@ flowchart TD
 ### 5.1 现状
 
 - 功能面完整：29 扩展、1201 用例全绿、`bun run verify`（tsc + 全量测试）通过；
+- 第二十一轮整改（2026-08-17，pico 会话内 verify 环境污染修复 + 文档数字回写）：ccstyle 两个测试文件在 `PI_PACKAGE_DIR` 环境继承下必崩（父 pico 进程把它指向临时解压目录，上游 `getThemesDir` 解析到不存在的 dist 路径，`initTheme` 抛 ENOENT）；测试在 `initTheme()` 前删除该 env 后恢复（41/41，全量 1201 全绿实测）；同步回写 automode 移除后的文档：AGENTS.md/README 扩展数 30→29、ponytail/ccstyle/evolution 历史序号去歧义化、README undo 功能描述更新为旁路观测式、AGENTS.md 环境变量表补齐 7 个已登记变量；
 - 第二十轮整改（2026-08-17，移除 automode 自动护栏扩展）：见 §4.20；1201 用例全绿；
 - 第十九轮整改（2026-08-16，logo 紧凑阈值放宽：非最大窗口也显示完整 logo）：见 §4.19；1336 用例全绿；
 - 第十八轮整改（2026-08-16，undo 重构：移除沙箱式 undo-redo，新增旁路观测式 undo + 会话回退）：见 §4.18；1336 用例全绿；
