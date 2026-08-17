@@ -142,8 +142,8 @@
 **v1 起文件与对话一起回退**(对齐旧 undo-redo 的「会话叶导航 + 文件恢复」语义,也对齐 Claude 的 Restore code + conversation):
 
 - 每条 undo 条目记录捕获时的会话叶节点 id(`UndoEntry.leafId`)与确认时的叶 id(`UndoEntry.afterLeafId`);
-- **对话回退目标 = 含该 toolCall 的 assistant 消息的父节点**(`findUndoTargetParent` 沿 parent 链向上查找)。原因:tool_call 捕获时 assistant 消息(含 toolCall)已 append 进会话树,捕获叶往往是其子(custom 等);若直接回退到捕获叶或其父,操作产生的消息(如 Write 卡)仍残留在对话里。回退到 toolCall 消息的父,操作卡彻底消失;
-- `/undo`:`waitForIdle()` 等 agent 空闲 → `navigateTree(toolCall消息父, { summarize: false })` 把对话回退到操作之前 → 恢复文件到 before;
+- **对话回退目标 = 该操作所属回合的 user 消息 id**(`UndoEntry.turnUserId`,`findUndoTurnUser` 沿 parent 链向上查找最近的 user 消息)。原因:一次 user 消息驱动的回合内常有多个工具调用,会话树按 `assistant(toolCall) → custom → toolResult → assistant(toolCall) → …` 逐段 append,每个 toolCall 消息的父是前一个 toolResult 而非 user;若只回退到 toolCall 消息的父,对话停在回合中间(残留工具卡与结果)。回退到 user 消息,整轮操作从对话消失,对齐 Claude Code「回退到某条 user 消息」;
+- `/undo`:`waitForIdle()` 等 agent 空闲 → `navigateTree(turnUserId ?? leafId, { summarize: false })` 把对话回退到该回合的 user 消息 → 恢复文件到 before;
 - `/redo`:`navigateTree(afterLeafId ?? leafId)` 把对话前进到编辑完成后的叶 → 恢复文件到 after;
 - 非交互模式(无 `waitForIdle`/`navigateTree`)自动降级为纯文件回退,消息提示 "(conversation not rewound: non-interactive)";
 - 导航失败/取消不阻断文件恢复(各自独立 try/catch)。

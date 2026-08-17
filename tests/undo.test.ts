@@ -28,7 +28,7 @@ import {
   createUndoSessionState,
   describeState,
   emptyUndoResult,
-  findUndoTargetParent,
+  findUndoTurnUser,
   popUndo,
   pushRedo,
   trimUndoStack,
@@ -67,13 +67,13 @@ async function simulateToolCall(
   path: string,
   mutator: () => void,
   leafId: string | null = null,
-  parentLeafId: string | null = null,
+  turnUserId: string | null = null,
 ): Promise<void> {
   const before = await snapshotFile(path);
   if (before.hash !== null) {
     await writeBlob("s1", before.hash, readFileSync(path));
   }
-  captureBefore(state, toolCallId, tool, path, path, before, leafId, parentLeafId);
+  captureBefore(state, toolCallId, tool, path, path, before, leafId, turnUserId);
   mutator();
   const after = await snapshotFile(path);
   if (after.hash !== null) {
@@ -162,34 +162,25 @@ describe("undo state (pure)", () => {
     expect(result.files).toEqual([]);
   });
 
-  test("findUndoTargetParent returns the toolCall assistant message's parent", () => {
-    // 会话树:user(leaf-0) → assistant(toolCall, leaf-1) → custom(leaf-2, 捕获叶)
+  test("findUndoTurnUser returns the nearest user message across a multi-tool turn", () => {
+    // 多工具回合:user → assistant(toolCall) → toolResult → assistant(toolCall) → custom(捕获叶)
     const tree: Record<string, UndoTreeEntry> = {
-      "leaf-2": { type: "custom", id: "leaf-2", parentId: "leaf-1" },
+      "leaf-4": { type: "custom", id: "leaf-4", parentId: "leaf-3" },
+      "leaf-3": { type: "message", id: "leaf-3", parentId: "leaf-2", message: { role: "assistant", content: [{ type: "toolCall" }] } },
+      "leaf-2": { type: "message", id: "leaf-2", parentId: "leaf-1", message: { role: "toolResult", content: [{ type: "text" }] } },
       "leaf-1": { type: "message", id: "leaf-1", parentId: "leaf-0", message: { role: "assistant", content: [{ type: "toolCall" }] } },
       "leaf-0": { type: "message", id: "leaf-0", parentId: null, message: { role: "user", content: [{ type: "text" }] } },
     };
-    expect(findUndoTargetParent((id) => tree[id], "leaf-2")).toBe("leaf-0");
+    expect(findUndoTurnUser((id) => tree[id], "leaf-4")).toBe("leaf-0");
   });
 
-  test("findUndoTargetParent walks up multiple levels past non-toolCall entries", () => {
-    // 捕获叶是 thinking 下的 custom;toolCall 消息在其上两层
+  test("findUndoTurnUser returns null for missing leaf or no user ancestor", () => {
     const tree: Record<string, UndoTreeEntry> = {
-      "leaf-3": { type: "custom", id: "leaf-3", parentId: "leaf-2" },
-      "leaf-2": { type: "message", id: "leaf-2", parentId: "leaf-1", message: { role: "assistant", content: [{ type: "thinking" }] } },
-      "leaf-1": { type: "message", id: "leaf-1", parentId: "leaf-0", message: { role: "assistant", content: [{ type: "toolCall" }] } },
-      "leaf-0": { type: "message", id: "leaf-0", parentId: null, message: { role: "user", content: [{ type: "text" }] } },
+      "leaf-1": { type: "message", id: "leaf-1", parentId: null, message: { role: "assistant", content: [{ type: "text" }] } },
     };
-    expect(findUndoTargetParent((id) => tree[id], "leaf-3")).toBe("leaf-0");
-  });
-
-  test("findUndoTargetParent returns null for missing leaf or no toolCall ancestor", () => {
-    const tree: Record<string, UndoTreeEntry> = {
-      "leaf-1": { type: "message", id: "leaf-1", parentId: null, message: { role: "user", content: [{ type: "text" }] } },
-    };
-    expect(findUndoTargetParent((id) => tree[id], null)).toBeNull();
-    expect(findUndoTargetParent((id) => tree[id], "missing")).toBeNull();
-    expect(findUndoTargetParent((id) => tree[id], "leaf-1")).toBeNull();
+    expect(findUndoTurnUser((id) => tree[id], null)).toBeNull();
+    expect(findUndoTurnUser((id) => tree[id], "missing")).toBeNull();
+    expect(findUndoTurnUser((id) => tree[id], "leaf-1")).toBeNull();
   });
 });
 
@@ -355,13 +346,13 @@ describe("undo end-to-end file restore", () => {
       },
     };
 
-    // 捕获时 leaf-2(操作所在消息),父叶 leaf-1(操作之前)
+    // 捕获时 leaf-2(操作所在消息),所属回合 user 为 leaf-1
     await simulateToolCall(state, "c1", "edit", filePath("a.txt"), () => writeFileSync(filePath("a.txt"), "v2", "utf8"), "leaf-2", "leaf-1");
 
     const undone = await performUndo(state, "s1", nav);
     expect(undone.ok).toBe(true);
     expect(undone.message).toContain("Conversation rewound");
-    expect(navCalls).toEqual(["leaf-1"]); // undo 导航到父叶(操作之前)
+    expect(navCalls).toEqual(["leaf-1"]); // undo 导航到所属回合 user
     expect(readFileSync(filePath("a.txt"), "utf8")).toBe("v1");
 
     navCalls.length = 0;
@@ -372,7 +363,7 @@ describe("undo end-to-end file restore", () => {
     expect(readFileSync(filePath("a.txt"), "utf8")).toBe("v2");
   });
 
-  test("undo falls back to capture leaf when parent absent", async () => {
+  test("undo falls back to capture leaf when turn user absent", async () => {
     writeFileSync(filePath("a.txt"), "v1", "utf8");
     const state = createUndoSessionState();
     const navCalls: string[] = [];
@@ -387,7 +378,7 @@ describe("undo end-to-end file restore", () => {
     await simulateToolCall(state, "c1", "edit", filePath("a.txt"), () => writeFileSync(filePath("a.txt"), "v2", "utf8"), "leaf-1", null);
     const undone = await performUndo(state, "s1", nav);
     expect(undone.ok).toBe(true);
-    expect(navCalls).toEqual(["leaf-1"]); // 无父 → 回退到捕获叶
+    expect(navCalls).toEqual(["leaf-1"]); // 无 user → 回退到捕获叶
   });
 
   test("redo uses afterLeafId when present (conversation moves forward)", async () => {

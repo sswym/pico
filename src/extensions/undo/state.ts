@@ -40,9 +40,9 @@ export function captureBefore(
   displayPath: string,
   before: { hash: string | null },
   leafId: string | null,
-  parentLeafId: string | null,
+  turnUserId: string | null,
 ): boolean {
-  state.pending.set(toolCallId, { tool, path, displayPath, before, leafId, parentLeafId });
+  state.pending.set(toolCallId, { tool, path, displayPath, before, leafId, turnUserId });
   return true;
 }
 
@@ -73,7 +73,7 @@ export function confirmCapture(
     toolCallId,
     at,
     leafId: pending.leafId,
-    parentLeafId: pending.parentLeafId,
+    turnUserId: pending.turnUserId,
     afterLeafId,
   };
   state.undoStack.push(entry);
@@ -158,31 +158,33 @@ export interface UndoTreeEntry {
 }
 
 /**
- * 沿 parent 链向上查找「最近一条含 toolCall 的 assistant 消息」,返回它的
- * 父节点 id = 该工具操作之前的对话位置。
+ * 沿 parent 链向上查找「最近的 user 消息」,返回它的 id = 该工具操作所属
+ * 回合的对话起点。
  *
- * 背景:tool_call 捕获时 assistant 消息(含 toolCall)已 append 进会话树,
- * 捕获叶往往是其子节点(custom 等)。直接取捕获叶的 parent 仍落在
- * assistant 消息内(操作卡残留);必须找到该 toolCall 消息的父。
+ * 背景:一次 user 消息驱动的回合内常有多个工具调用,会话树按
+ * `assistant(toolCall) → custom → toolResult → assistant(toolCall) → …`
+ * 逐段 append,每个 toolCall 消息的父是前一个 toolResult 而非 user。
+ * 若只回退到 toolCall 消息的父,对话停在回合中间(残留工具卡与结果)。
+ * 回退到最近的 user 消息,整轮操作从对话中消失,对齐 Claude Code
+ * 「回退到某条 user 消息」的语义。
  *
  * @param getEntry 按 id 取条目(会话树查找器)
  * @param leafId   捕获时的叶 id
- * @returns 目标父 id;找不到返回 null
+ * @returns 最近 user 消息 id;找不到返回 null
  */
-export function findUndoTargetParent(
+export function findUndoTurnUser(
   getEntry: (id: string) => UndoTreeEntry | undefined,
   leafId: string | null,
 ): string | null {
   if (!leafId) return null;
   let entry = getEntry(leafId);
   let guard = 0;
-  while (entry && guard < 200) {
+  while (entry && guard < 500) {
     guard++;
     if (entry.type === "message") {
-      const msg = entry.message;
-      const hasToolCall = (msg?.content ?? []).some((c) => c.type === "toolCall");
-      if (msg?.role === "assistant" && hasToolCall) {
-        return entry.parentId ?? null;
+      const role = entry.message?.role;
+      if (role === "user") {
+        return entry.id;
       }
     }
     entry = entry.parentId ? getEntry(entry.parentId) : undefined;

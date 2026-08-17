@@ -9,7 +9,7 @@
 ## 1. 自动化单元测试
 
 **运行方式**:`bun test tests/undo.test.ts`
-**结果**:32 pass / 0 fail(98 expect 调用)
+**结果**:31 pass / 0 fail(97 expect 调用)
 
 ### 1.1 纯状态层(7 条)
 
@@ -78,7 +78,8 @@
 | 1 | 要求 AI:edit a.txt 内容 v1→v2 | Edit 卡 `-1 v1 +1 v2`,文件变 v2 | ✅ 捕获链路生效 |
 | 2 | `/undo` | 文件回 v1,提示 "Undid edit on a.txt (created). **Conversation rewound.**",屏幕对话回退到操作前(Write 卡消失、输入框回到用户消息) | ✅ 文件 + 对话同步回退 |
 | 3 | `/redo` | 文件回 v2,提示 "Redid edit on a.txt (created). **Conversation restored.**" | ✅ 文件 + 对话同步前进 |
-| 4 | write 新文件 → `/undo` | 文件删除,对话回退到「含该 Write 的 assistant 消息的父」——Write 卡不再残留(初版残留,修复为 findUndoTargetParent 向上查找后消失) | ✅ 操作卡彻底消失 |
+| 4 | write 新文件 → `/undo` | 文件删除,对话回退到该回合的 user 消息——Write 卡不再残留(初版残留,修复后消失) | ✅ 操作卡彻底消失 |
+| 5 | 多工具回合(bash→write→bash)→ `/undo` | b.txt 删除,对话回退到 user 消息,整轮 bash/write 卡全部消失(此前停在回合中间 13/17,修复为回退到最近 user 后正确) | ✅ 回退到 user |
 
 ### 2.2 文件损坏验证
 
@@ -89,10 +90,10 @@
 ## 3. 全量回归
 
 ```
-bun run verify → 1337 pass / 0 fail / 4259 expect calls(55 files)
+bun run verify → 1336 pass / 0 fail / 4258 expect calls(55 files)
 ```
 
-(原 1305 + undo 新增 32,全部通过,含 tsc --noEmit 类型检查)
+(原 1305 + undo 新增 31,全部通过,含 tsc --noEmit 类型检查)
 
 ## 4. 已知局限(设计内)
 
@@ -104,4 +105,4 @@ bun run verify → 1337 pass / 0 fail / 4259 expect calls(55 files)
 
 ## 5. 结论
 
-自动化测试(32 条)+ 真实操作场景(9 步文件回退 + 4 步会话回退)全部通过;`bun run verify` 全绿;AI 工具直连真实文件系统(核心设计目标)。满足提交门槛。
+自动化测试(31 条)+ 真实操作场景(9 步文件回退 + 5 步会话回退)全部通过;`bun run verify` 全绿;AI 工具直连真实文件系统(核心设计目标)。满足提交门槛。

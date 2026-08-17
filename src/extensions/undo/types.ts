@@ -36,13 +36,19 @@ export interface UndoEntry {
   /** 时间戳(ms) */
   at: number;
   /**
-   * 捕获时的会话叶节点 id(编辑发生所在消息位置)。undo 时用于把对话回退到
-   * 该时刻;null(无叶节点/非交互)则只回退文件。
+   * 捕获时的会话叶节点 id(编辑发生所在消息位置)。redo 时把对话前进回该
+   * 位置;null(无叶节点/非交互)则只回退文件。
    */
   leafId: string | null;
   /**
-   * tool_result 确认时的会话叶节点 id(编辑完成后的位置)。redo 时导航目标;
-   * null 则回退到 leafId。
+   * 该工具操作所属回合的 user 消息 id(沿 parent 链最近的 user 消息)。
+   * undo 时把对话回退到这里——整轮操作从对话中消失,对齐 Claude Code
+   * 「回退到某条 user 消息」。null(无 user 祖先/非交互)则回退到 leafId。
+   */
+  turnUserId: string | null;
+  /**
+   * tool_result 确认时的会话叶节点 id(编辑完成后的位置)。redo 时若 leafId
+   * 已推进则导航到这里;null 则回退到 leafId。
    */
   afterLeafId: string | null;
 }
@@ -54,6 +60,7 @@ export interface PendingCapture {
   displayPath: string;
   before: FileSnapshot;
   leafId: string | null;
+  turnUserId: string | null;
 }
 
 /** 单会话 undo 状态 */
