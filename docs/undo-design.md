@@ -185,8 +185,10 @@ interface UndoEntry {
   displayPath: string;
   /** 时间戳 */
   at: number;
-  /** 捕获时的会话叶 id(undo 对话回退目标) */
+  /** 捕获时的会话叶 id(redo 兜底导航目标) */
   leafId: string | null;
+  /** 该操作所属回合的 user 消息 id(undo 对话回退目标,整轮回退) */
+  turnUserId: string | null;
   /** 确认时的会话叶 id(redo 对话前进目标) */
   afterLeafId: string | null;
 }

@@ -740,11 +740,33 @@ flowchart TD
 
 **测试基线**：1321 → 1393 用例（+72，新增/更新回归测试全部落地于对应 `tests/<feature>.test.ts`）；`bun run verify` 0 错 0 失败。
 
+### 4.18 第十八轮整改（2026-08-16，undo 重构：移除沙箱式 undo-redo，新增旁路观测式 undo + 会话回退，1336 用例全绿）
+
+**背景**：沙箱式 undo-redo（§4.14）把全部 7 个文件工具重定向到 git 副本沙箱执行，AI 侧 `ls node_modules` 等探测看到的是沙箱快照而非真实工作树（被 gitignore 的依赖目录对 AI 失明）。移除该扩展，改为**旁路观测式 undo**（对标 Claude Code rewind / OpenCode undo，设计文档 `docs/undo-design.md`）。
+
+**机制**（源码级新实现，零侵入）：
+
+- **捕获**：`pi.on("tool_call")` 在 edit/write 执行**前**读目标文件原内容存内容寻址 blob（`$PICO_HOME/agent/cache/undo/<sessionId>/blobs/`，sha256 去重）；`tool_result` 成功才入 undo 栈、失败丢弃。不改任何工具、不重定向执行路径——AI 始终直连真实文件系统；
+- **回滚**：文件级「恢复到快照」幂等（OpenCode restore 思想），`/undo` 恢复修改前（新增文件→删除）、`/redo` 恢复修改后（删除→重建）；多级 undo/redo 栈，undo 后新编辑清空 redo 分支；
+- **边界**：文件外部删除→undo 重建；blob 丢失→跳过不损坏现状（条目回滚回栈）；空栈/禁用明确提示；`maxEntries` 超限淘汰最旧；单文件失败不阻塞其余；
+- **会话回退**：条目记录捕获叶（leafId）、确认叶（afterLeafId）与所属回合 user 消息（turnUserId）。`/undo` 先 `waitForIdle` 再 `navigateTree(turnUserId)` 把对话回退到该回合的 user 消息（整轮工具卡消失），`/redo` 导航到 afterLeafId；非交互自动降级纯文件回退；
+- **bash 注册权移交**：上游对扩展间同名工具是致命启动错误，bash 只能由一家扩展注册。undo-redo 移除后由 rtk 独占注册（`createBashTool(process.cwd(), { spawnHook: composeBashSpawnHooks() })`），spawn-hook 合成链经 `src/extensions/bash-hooks.ts` 保留。
+
+**坑点**：
+
+- **工具失明**（触发本轮重构）：沙箱副本按 `.gitignore` 复制（`prepareSandbox` filter），`node_modules/` `dist/` `target/` 等对 AI 不可见——`test -d node_modules` 在沙箱内失败，AI 误判"依赖未安装"。旁路观测方案彻底规避：工具直连真实文件系统，undo 只做旁路记录；
+- **会话回退目标**：多工具回合的会话树按 `assistant(toolCall) → custom → toolResult → assistant(toolCall) → …` 逐段 append，每个 toolCall 消息的父是前一个 toolResult 而非 user。第一版回退到 toolCall 消息的父→对话停在回合中间（工具卡残留）；第二版向上找最近含 toolCall 的 assistant 消息的父→仍落在操作消息内；最终 `findUndoTurnUser` 沿 parent 链找**最近的 user 消息**，整轮回退，对齐 Claude「回退到某条 user 消息」。
+
+**回归测试**：`tests/undo.test.ts` 31 条（纯状态层 7 + 端到端文件恢复 13 + 工厂接线 9 + findUndoTurnUser 纯函数 2）：单次回退、连续多次回退到初始状态、文件新增/删除、外部删除重建、blob 丢失、多文件独立、会话导航（turnUser/afterLeafId/headless 降级/导航失败）、settings 禁用、undo-clear、session_shutdown。
+
+**测试基线**：1393 → 1336 用例（undo-redo 12 条测试移除，undo 31 条新增，其余为既有回归；总用例数变化反映移除+新增净差）。
+
 ## 5. 当前版本现状与已知局限
 
 ### 5.1 现状
 
-- 功能面完整：30 扩展、1393 用例全绿、`bun run verify`（tsc + 全量测试）通过；
+- 功能面完整：30 扩展、1336 用例全绿、`bun run verify`（tsc + 全量测试）通过；
+- 第十八轮整改（2026-08-16，undo 重构：移除沙箱式 undo-redo，新增旁路观测式 undo + 会话回退）：见 §4.18；1336 用例全绿；
 - 第十七轮整改（2026-08-15，依据全功能测试总报告 `/tmp/pico-test-2JirDO/final-report.md`，19 域 ~189 用例实测，修复 7 高 / 18 中 / 33 低中的全部 P 层项，全部附回归测试）：见 §4.17；1393 用例全绿；
 - 第三轮 UX 整改（2026-08-05，依据 `docs/ux-walkthrough-review.md`）：离线 `/help` 与无模型/推理 400/崩溃恢复引导（guidance 扩展）、config.yml 双轨冲突检测、`<inline:N>` 启动噪音消除（InlineExtension hidden）、LSP 缺失命令警告去重与可执行建议、生成阶段动态反馈、计划模式挂起 todo 面板、CLI 品牌统一、MCP 状态可读化、logo 首启文案与真实会话、`/memory status` 类别分布、rtk 启用提示；全部附回归测试；
 - 安全默认值：项目 hooks/MCP 默认关、非交互项目代理默认拒、LSP 写动作默认阻断、计划自动批准默认关；
