@@ -53,6 +53,9 @@ const LONG_RUNNING_FLAGS: Record<string, string[]> = {
   vitest: ["--watch", "watch"],
   playwright: ["--watch"],
   bun: ["--hot", "--watch"],
+  next: ["dev", "start"],
+  dotnet: ["watch"],
+  sbt: ["console", "run"],
 };
 
 /** Head-specific subcommand sequences that run forever. */
@@ -68,34 +71,87 @@ const LONG_RUNNING_PATTERNS: Array<{ head: string; matches: (args: string[]) => 
       args.includes("up") ||
       args.includes("watch"),
   },
+  {
+    head: "php",
+    matches: (args) => args.includes("artisan") && args.includes("serve"),
+  },
+  {
+    head: "dotnet",
+    matches: (args) => args[0] === "run",
+  },
+  {
+    head: "gradlew",
+    matches: (args) => args[0] === "run" || args[0] === "bootRun",
+  },
+  {
+    head: "sbt",
+    matches: (args) => args.some((arg) => arg.startsWith("~")),
+  },
 ];
 
+// 白名单 = rtk 0.45.0 `rtk rewrite` 判定支持的命令 head（2026-08-18 实测）。
+// 不在名单内的命令即使包一层 rtk 也只是 passthrough（rtk 原样执行、无压缩收益），
+// 故以官方 rewrite 判定为准：bun/npm list/npm test/npm ci/npm install/php -v/
+// dotnet test 等均不被 rtk 支持，不在此列。
 const SUPPORTED_PREFIXES = [
   "ls",
   "tree",
   "cat",
   "head",
   "tail",
+  // 原生文件工具（cat/head/tail 官方 rewrite 判定 OK——rtk 内部路由到 read）
   "find",
   "grep",
   "rg",
+  "wc",
+  "diff",
   "git",
   "gh",
+  "glab",
+  "aws",
+  "psql",
+  "pnpm",
+  "npm run", // npm 仅支持 run 形态（npm list/test/ci/install 均不被 rtk 支持）
+  "npx",
+  "docker",
+  "kubectl",
+  "oc",
+  "dotnet", // dotnet build ✓；dotnet test 不被支持，但保留 head 无破坏（passthrough）
+  "wget",
+  "curl",
   "jest",
   "vitest",
   "playwright",
   "pytest",
-  "go test",
+  "mypy",
+  "phpunit",
+  "phpstan",
+  "pest",
+  "paratest",
+  "ecs",
+  "pint",
+  "rake",
+  "rubocop",
+  "rspec",
+  "pip",
+  "uv",
+  "go",
   "cargo",
   "ruff",
   "eslint",
+  "lint",
+  "prettier",
   "tsc",
-  "docker",
-  "kubectl",
-  "aws",
-  "pnpm list",
-  "npm list",
-  "bun test",
+  "next",
+  "prisma",
+  "gradlew",
+  "mvn",
+  "make",
+  "swift",
+  "sbt",
+  "gt",
+  "golangci-lint",
+  "php",
 ];
 
 export function readRtkConfig(): RtkConfig {

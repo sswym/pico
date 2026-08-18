@@ -86,6 +86,80 @@ test("shouldRewriteWithRtk accepts compact shell commands", () => {
   expect(shouldRewriteWithRtk("cargo test")).toBe(true);
 });
 
+test("shouldRewriteWithRtk covers the full rtk 0.45.0 supported surface", () => {
+  // 文件与检索
+  expect(shouldRewriteWithRtk("ls -la")).toBe(true);
+  expect(shouldRewriteWithRtk("tree src")).toBe(true);
+  expect(shouldRewriteWithRtk("cat package.json")).toBe(true);
+  expect(shouldRewriteWithRtk("head -20 log")).toBe(true);
+  expect(shouldRewriteWithRtk("tail -n 20 app.log")).toBe(true);
+  expect(shouldRewriteWithRtk("find src -name '*.ts'")).toBe(true);
+  expect(shouldRewriteWithRtk("grep foo src")).toBe(true);
+  expect(shouldRewriteWithRtk("wc -l package.json")).toBe(true);
+  expect(shouldRewriteWithRtk("diff a b")).toBe(true);
+  // VCS 与平台
+  expect(shouldRewriteWithRtk("glab mr list")).toBe(true);
+  expect(shouldRewriteWithRtk("aws s3 ls")).toBe(true);
+  expect(shouldRewriteWithRtk("psql -c select")).toBe(true);
+  // 包管理器：pnpm 全系、npm 仅 run
+  expect(shouldRewriteWithRtk("pnpm install")).toBe(true);
+  expect(shouldRewriteWithRtk("pnpm run build")).toBe(true);
+  expect(shouldRewriteWithRtk("npm run build")).toBe(true);
+  expect(shouldRewriteWithRtk("npm list")).toBe(false);
+  expect(shouldRewriteWithRtk("npm test")).toBe(false);
+  expect(shouldRewriteWithRtk("npx tsc --noEmit")).toBe(true);
+  expect(shouldRewriteWithRtk("pip install x")).toBe(true);
+  expect(shouldRewriteWithRtk("uv run pytest")).toBe(true);
+  // 容器与云
+  expect(shouldRewriteWithRtk("oc get pods")).toBe(true);
+  expect(shouldRewriteWithRtk("dotnet build")).toBe(true);
+  expect(shouldRewriteWithRtk("docker images")).toBe(true);
+  expect(shouldRewriteWithRtk("wget https://x")).toBe(true);
+  expect(shouldRewriteWithRtk("curl -s https://x")).toBe(true);
+  // 语言测试与静态分析
+  expect(shouldRewriteWithRtk("vitest run")).toBe(true);
+  expect(shouldRewriteWithRtk("mypy src")).toBe(true);
+  expect(shouldRewriteWithRtk("phpunit tests")).toBe(true);
+  expect(shouldRewriteWithRtk("phpstan analyse src")).toBe(true);
+  expect(shouldRewriteWithRtk("pest")).toBe(true);
+  expect(shouldRewriteWithRtk("paratest")).toBe(true);
+  expect(shouldRewriteWithRtk("ecs")).toBe(true);
+  expect(shouldRewriteWithRtk("pint")).toBe(true);
+  expect(shouldRewriteWithRtk("rake test")).toBe(true);
+  expect(shouldRewriteWithRtk("rubocop lib")).toBe(true);
+  expect(shouldRewriteWithRtk("rspec spec")).toBe(true);
+  expect(shouldRewriteWithRtk("go build ./...")).toBe(true);
+  expect(shouldRewriteWithRtk("ruff check src")).toBe(true);
+  expect(shouldRewriteWithRtk("lint src")).toBe(true);
+  expect(shouldRewriteWithRtk("prettier --check src")).toBe(true);
+  expect(shouldRewriteWithRtk("next build")).toBe(true);
+  expect(shouldRewriteWithRtk("prisma generate")).toBe(true);
+  expect(shouldRewriteWithRtk("gradlew assembleDebug")).toBe(true);
+  expect(shouldRewriteWithRtk("mvn test")).toBe(true);
+  expect(shouldRewriteWithRtk("make build")).toBe(true);
+  expect(shouldRewriteWithRtk("swift test")).toBe(true);
+  expect(shouldRewriteWithRtk("sbt test")).toBe(true);
+  expect(shouldRewriteWithRtk("gt log")).toBe(true);
+  expect(shouldRewriteWithRtk("golangci-lint run")).toBe(true);
+  expect(shouldRewriteWithRtk("php artisan list")).toBe(true);
+});
+
+test("shouldRewriteWithRtk rejects heads rtk 0.45.0 does not support", () => {
+  // bun 全系不在此列：实测 `rtk bun test` 仅是 passthrough（原样执行无压缩）。
+  expect(shouldRewriteWithRtk("bun test")).toBe(false);
+  expect(shouldRewriteWithRtk("bun run build")).toBe(false);
+  expect(shouldRewriteWithRtk("bun install")).toBe(false);
+  // gradle 无 rtk 子命令（官方 rewrite 路由到 gradlew，pico 前缀机制无此映射）。
+  expect(shouldRewriteWithRtk("gradle build")).toBe(false);
+});
+
+test("shouldRewriteWithRtk matches supported heads even for unsupported subcommands", () => {
+  // head 级匹配：php/dotnet 在名单内，其官方不支持的子命令变体仍被包一层
+  // rtk（rtk 对未匹配 filter 的调用 passthrough，无破坏、无压缩收益）。
+  expect(shouldRewriteWithRtk("php -v")).toBe(true);
+  expect(shouldRewriteWithRtk("dotnet test")).toBe(true);
+});
+
 test("shouldRewriteWithRtk skips already wrapped or interactive commands", () => {
   expect(shouldRewriteWithRtk("rtk git status")).toBe(false);
   expect(shouldRewriteWithRtk("cd ..")).toBe(false);
@@ -133,6 +207,21 @@ test("shouldRewriteWithRtk skips long-running variants of extended heads", () =>
   // Non-following docker compose builds are still wrapped.
   expect(shouldRewriteWithRtk("docker compose build")).toBe(true);
   expect(shouldRewriteWithRtk("kubectl get pods")).toBe(true);
+  // 0.45.0 新增 head 的长驻变体
+  expect(shouldRewriteWithRtk("next dev")).toBe(false);
+  expect(shouldRewriteWithRtk("next start")).toBe(false);
+  expect(shouldRewriteWithRtk("next build")).toBe(true);
+  expect(shouldRewriteWithRtk("dotnet watch run")).toBe(false);
+  expect(shouldRewriteWithRtk("dotnet run")).toBe(false);
+  expect(shouldRewriteWithRtk("dotnet build")).toBe(true);
+  expect(shouldRewriteWithRtk("gradlew run")).toBe(false);
+  expect(shouldRewriteWithRtk("gradlew bootRun")).toBe(false);
+  expect(shouldRewriteWithRtk("gradlew assembleDebug")).toBe(true);
+  expect(shouldRewriteWithRtk("sbt ~test")).toBe(false);
+  expect(shouldRewriteWithRtk("sbt console")).toBe(false);
+  expect(shouldRewriteWithRtk("sbt test")).toBe(true);
+  expect(shouldRewriteWithRtk("php artisan serve")).toBe(false);
+  expect(shouldRewriteWithRtk("php artisan list")).toBe(true);
 });
 
 test("isRtkAvailable caches the PATH probe result", () => {
