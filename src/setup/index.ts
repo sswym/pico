@@ -7,6 +7,7 @@ import { picoHome, picoHooksConfigPath, picoLspConfigPath, picoMcpConfigPath, pi
 import { migrateLegacyUserConfigs } from "../extensions/config-migrate.ts";
 import type { Settings } from "../extensions/settings.ts";
 import { installManagedRtk, rtkManagedBinPath, type ManagedRtkInstallResult } from "../extensions/rtk/managed.ts";
+import { installManagedCodegraph, codegraphManagedBinPath, type ManagedCodegraphInstallResult } from "../extensions/codegraph/managed.ts";
 
 export type SetupSection = "model" | "tools" | "safety" | "ui" | "memory" | "lsp" | "hooks" | "mcp" | "integrations" | "env";
 export type SetupLanguage = "zh" | "en";
@@ -65,8 +66,10 @@ export interface SetupPrompter {
 /**
  * External command surface used by the integrations section.
  *
- * Behind an interface because the default implementation shells out — the
- * install paths run `curl … | sh`, which tests must never execute.
+ * Behind an interface because the default implementation shells out —
+ * `codegraph init` runs the binary, which tests must never execute.
+ * Managed installs (rtk / codegraph) bypass this surface entirely and go
+ * through installManagedTool in src/extensions/managed-install.ts.
  */
 export interface SetupShell {
   commandExists(command: string): boolean;
@@ -316,7 +319,8 @@ const TEXT = {
     mcpArgs: "MCP server args (space-separated)",
     integrationsHeader: "Integrations",
     codegraphEnable: "Enable CodeGraph semantic code graph?",
-    codegraphInstall: "codegraph was not found on PATH. Install CodeGraph CLI now?",
+    codegraphInstall: "codegraph was not found on PATH. Install a managed copy under $PICO_HOME/bin now?",
+    codegraphInstalling: "Installing codegraph (managed, $PICO_HOME/bin/codegraph)…",
     codegraphMcp: "Write pico user MCP config for CodeGraph?",
     codegraphInitProject: "Initialize CodeGraph for the current project now?",
     codegraphTelemetryOff: "Disable CodeGraph telemetry for pico MCP server?",
@@ -418,7 +422,8 @@ const TEXT = {
     mcpArgs: "MCP server 参数（空格分隔）",
     integrationsHeader: "集成",
     codegraphEnable: "启用 CodeGraph 语义代码图？",
-    codegraphInstall: "PATH 中未找到 codegraph。现在安装 CodeGraph CLI？",
+    codegraphInstall: "PATH 中未找到 codegraph。现在安装一份托管副本到 $PICO_HOME/bin？",
+    codegraphInstalling: "正在安装 codegraph（托管，$PICO_HOME/bin/codegraph）…",
     codegraphMcp: "写入 pico 用户级 CodeGraph MCP 配置？",
     codegraphInitProject: "现在为当前项目初始化 CodeGraph？",
     codegraphTelemetryOff: "为 pico MCP server 关闭 CodeGraph telemetry？",
@@ -937,7 +942,7 @@ export async function runSection(
   prompt: SetupPrompter,
   io: SetupIo,
   shell: SetupShell = defaultShell,
-  installRtk: () => Promise<ManagedRtkInstallResult> = installManagedRtk,
+  deps: IntegrationsDeps = {},
 ): Promise<void> {
   if (section === "model") await runModelSetup(prompt, io);
   if (section === "tools") await runToolsSetup(prompt, io);
@@ -947,7 +952,7 @@ export async function runSection(
   if (section === "lsp") await runLspSetup(prompt, io);
   if (section === "hooks") await runHooksSetup(prompt, io);
   if (section === "mcp") await runMcpSetup(prompt, io);
-  if (section === "integrations") await runIntegrationsSetup(prompt, io, shell, installRtk);
+  if (section === "integrations") await runIntegrationsSetup(prompt, io, shell, deps);
   if (section === "env") await runEnvSetup(prompt, io);
 }
 
@@ -1219,11 +1224,16 @@ async function runMcpSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   writeJson(picoSettingsPath(), settings);
 }
 
+interface IntegrationsDeps {
+  installRtk?: () => Promise<ManagedRtkInstallResult>;
+  installCodegraph?: () => Promise<ManagedCodegraphInstallResult>;
+}
+
 async function runIntegrationsSetup(
   prompt: SetupPrompter,
   io: SetupIo,
   shell: SetupShell,
-  installRtk: () => Promise<ManagedRtkInstallResult> = installManagedRtk,
+  deps: IntegrationsDeps = {},
 ): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.integrationsHeader);
@@ -1234,14 +1244,19 @@ async function runIntegrationsSetup(
 
   const enableCodeGraph = await prompt.yesNo(text.codegraphEnable, booleanSetting(codegraph.enabled, false));
   if (enableCodeGraph) {
-    if (!shell.commandExists("codegraph")) {
+    // 托管安装（$PICO_HOME/bin/codegraph）与 PATH 探测并列：任一命中即视为
+    // 已安装，不重复下载。
+    const codegraphManagedPath = codegraphManagedBinPath();
+    if (!shell.commandExists("codegraph") && !existsSync(codegraphManagedPath)) {
       const install = await prompt.yesNo(text.codegraphInstall, false);
       if (install) {
-        const result = shell.runInstall("curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh");
+        writeLine(io, text.codegraphInstalling);
+        const result = await (deps.installCodegraph ?? installManagedCodegraph)();
         if (!result.ok) {
           writeLine(io, `${text.installFailed}: ${result.output}`);
           codegraph.enabled = false;
         } else {
+          writeLine(io, result.output);
           codegraph.enabled = true;
         }
       } else {
@@ -1260,7 +1275,8 @@ async function runIntegrationsSetup(
       setCodeGraphMcpServer(settings, disableTelemetry ? "0" : undefined);
     }
     if (await prompt.yesNo(text.codegraphInitProject, false)) {
-      const result = shell.run(["codegraph", "init"]);
+      const initCommand = existsSync(codegraphManagedPath) ? codegraphManagedPath : "codegraph";
+      const result = shell.run([initCommand, "init"]);
       if (!result.ok) writeLine(io, `${text.installFailed}: ${result.output}`);
     }
   } else {
@@ -1276,7 +1292,7 @@ async function runIntegrationsSetup(
       const install = await prompt.yesNo(text.rtkInstall, false);
       if (install) {
         writeLine(io, text.rtkInstalling);
-        const result = await installRtk();
+        const result = await (deps.installRtk ?? installManagedRtk)();
         if (!result.ok) {
           writeLine(io, `${text.installFailed}: ${result.output}`);
           rtk.enabled = false;
@@ -1545,8 +1561,11 @@ export function configureCodeGraphMcp(options: { telemetry?: string } = {}): voi
 function setCodeGraphMcpServer(settings: JsonObject, telemetry: string | undefined): void {
   const config = objectSetting(settings.mcpServers);
   const servers = objectSetting(config.mcpServers);
+  // 托管副本存在时 MCP 直连托管路径（不在 PATH 上，必须写绝对路径）；
+  // 否则回退 PATH 上的 codegraph。
+  const command = existsSync(codegraphManagedBinPath()) ? codegraphManagedBinPath() : "codegraph";
   const server: JsonObject = {
-    command: "codegraph",
+    command,
     args: ["serve", "--mcp"],
   };
   if (telemetry !== undefined) {

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildSetupSummary, configureCodeGraphMcp, configureRtkIntegration, parseSetupArgs, planSetupSections, providerModelsRequest, resetSetupConfig, runSection, runSetupCommand, splitArgs, testProviderConnection, writeCustomProvider, type SetupLanguage, type SetupPrompter, type SetupShell } from "../src/setup/index.ts";
 import type { ManagedRtkInstallResult } from "../src/extensions/rtk/managed.ts";
+import type { ManagedCodegraphInstallResult } from "../src/extensions/codegraph/managed.ts";
 import { picoLspConfigPath, picoMcpConfigPath, picoModelsPath, picoSettingsPath } from "../src/extensions/paths.ts";
 
 const savedEnv = {
@@ -390,7 +391,7 @@ async function withSection(
   }) => void,
   seed?: (home: string) => void,
   shell?: SetupShell,
-  installRtk?: () => Promise<ManagedRtkInstallResult>,
+  deps?: { installRtk?: () => Promise<ManagedRtkInstallResult>; installCodegraph?: () => Promise<ManagedCodegraphInstallResult> },
 ): Promise<void> {
   const home = useTempHome();
   const collector = collectOutput();
@@ -399,7 +400,7 @@ async function withSection(
     // Sections create this lazily; seeds need it up front.
     mkdirSync(join(home, "agent"), { recursive: true });
     seed?.(home);
-    await runSection(section, prompter, collector.io as any, shell, installRtk);
+    await runSection(section, prompter, collector.io as any, shell, deps);
     fn({
       settings: () => readJson(picoSettingsPath()),
       asked,
@@ -870,23 +871,26 @@ test("integrations section skips install when codegraph is already present", asy
   );
 });
 
-test("integrations section installs codegraph on request", async () => {
+test("integrations section installs codegraph via the managed installer", async () => {
   const { shell, calls } = fakeShell({ exists: false });
+  const deps = { installCodegraph: async () => ({ ok: true, output: "codegraph 1.5.0 installed" }) };
   await withSection(
     "integrations",
     { yesNo: [true, true] },
-    () => {
-      expect(calls.runInstall).toHaveLength(1);
-      expect(calls.runInstall[0]).toContain("codegraph");
-      expect(calls.runInstall[0]).toContain("install.sh");
+    ({ output }) => {
+      // codegraph 不再走 curl|sh（calls.runInstall 不该出现），改托管安装。
+      expect(calls.runInstall).toEqual([]);
+      expect(output).toContain("codegraph 1.5.0 installed");
     },
     undefined,
     shell,
+    deps,
   );
 });
 
 test("integrations section reports a failed codegraph install", async () => {
-  const { shell } = fakeShell({ exists: false, installResult: { ok: false, output: "network down" } });
+  const { shell } = fakeShell({ exists: false });
+  const deps = { installCodegraph: async () => ({ ok: false, output: "network down" }) };
   await withSection(
     "integrations",
     { yesNo: [true, true] },
@@ -895,6 +899,7 @@ test("integrations section reports a failed codegraph install", async () => {
     },
     undefined,
     shell,
+    deps,
   );
 });
 
@@ -905,6 +910,7 @@ test("integrations section keeps the integration disabled when the install is de
     { yesNo: [true, false] },
     ({ output, settings }) => {
       expect(calls.runInstall).toEqual([]);
+      expect(calls.run).toEqual([]);
       expect(output.length).toBeGreaterThan(0);
       // Enabling an integration whose binary is missing would break every
       // supported command — declining the install keeps it disabled.
@@ -916,16 +922,17 @@ test("integrations section keeps the integration disabled when the install is de
 });
 
 test("integrations section disables the integration when the install fails", async () => {
-  const { shell, calls } = fakeShell({ exists: false, installResult: { ok: false, output: "network down" } });
+  const { shell } = fakeShell({ exists: false });
+  const deps = { installCodegraph: async () => ({ ok: false, output: "network down" }) };
   await withSection(
     "integrations",
     { yesNo: [true, true] },
     ({ settings }) => {
-      expect(calls.runInstall).toHaveLength(1);
       expect(settings().integrations.codegraph.enabled).toBe(false);
     },
     undefined,
     shell,
+    deps,
   );
 });
 
@@ -988,6 +995,27 @@ test("integrations section runs codegraph init on request", async () => {
   );
 });
 
+test("integrations section points MCP server and init at a managed codegraph", async () => {
+  const { shell, calls } = fakeShell({ exists: false });
+  await withSection(
+    "integrations",
+    // enable, telemetryOff=true, mcp=true, init=true
+    { yesNo: [true, true, true, true] },
+    ({ settings, home }) => {
+      const server = settings().mcpServers.mcpServers.codegraph;
+      const managed = join(home, "bin", "codegraph");
+      expect(server.command).toBe(managed);
+      expect(calls.run).toEqual([[managed, "init"]]);
+      expect(calls.runInstall).toEqual([]);
+    },
+    (home) => {
+      mkdirSync(join(home, "bin"), { recursive: true });
+      writeFileSync(join(home, "bin", "codegraph"), "#!/bin/sh\necho codegraph 1.5.0\n", { mode: 0o755 });
+    },
+    shell,
+  );
+});
+
 test("integrations section reports a failed codegraph init", async () => {
   const { shell } = fakeShell({ exists: true, runResult: { ok: false, output: "not a repo" } });
   await withSection(
@@ -1035,7 +1063,7 @@ test("integrations section stores rtk in instructionsOnly mode when chosen", asy
 
 test("integrations section installs rtk via the managed installer", async () => {
   const { shell, calls } = fakeShell({ exists: { codegraph: true, rtk: false } });
-  const installRtk = async () => ({ ok: true, output: "installed" });
+  const deps = { installRtk: async () => ({ ok: true, output: "installed" }) };
   await withSection(
     "integrations",
     // codegraph declined, rtk enabled, rtk install accepted
@@ -1048,13 +1076,13 @@ test("integrations section installs rtk via the managed installer", async () => 
     },
     undefined,
     shell,
-    installRtk,
+    deps,
   );
 });
 
 test("integrations section keeps rtk disabled when the managed install fails", async () => {
   const { shell } = fakeShell({ exists: { codegraph: true, rtk: false } });
-  const installRtk = async () => ({ ok: false, output: "no network" });
+  const deps = { installRtk: async () => ({ ok: false, output: "no network" }) };
   await withSection(
     "integrations",
     { yesNo: [false, true, true] },
@@ -1064,7 +1092,7 @@ test("integrations section keeps rtk disabled when the managed install fails", a
     },
     undefined,
     shell,
-    installRtk,
+    deps,
   );
 });
 
@@ -1085,9 +1113,7 @@ test("integrations section skips install when a managed rtk already exists", asy
       writeFileSync(join(home, "bin", "rtk"), "#!/bin/sh\necho rtk 0.45.0\n", { mode: 0o755 });
     },
     shell,
-    async () => {
-      throw new Error("installer must not be called when a managed copy exists");
-    },
+    { installRtk: async () => { throw new Error("installer must not be called when a managed copy exists"); } },
   );
 });
 
