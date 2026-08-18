@@ -7,7 +7,7 @@ import {
   type ThemeColor,
   type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
-import { TOOL_LOADING_INTERVAL_MS, toolLoadingIcon, ccHint, oneLine, sanitizeToolResultText, PICO_TOOL_SUMMARIES } from "./util.ts";
+import { TOOL_LOADING_INTERVAL_MS, toolLoadingIcon, ccHint, oneLine, sanitizeToolResultText, summaryOfTool, PICO_TOOL_SUMMARIES } from "./util.ts";
 import { asTool, type ToolComponent } from "./grouping.ts";
 import { summarizeToolCall } from "../tool-render.ts";
 

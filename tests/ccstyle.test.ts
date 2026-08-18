@@ -42,6 +42,7 @@ const stubTheme = {
 const stubTui = { requestRender: () => {} } as unknown as TUI;
 
 let toolId = 0;
+let contextId = 0;
 
 function makeTool(toolName: string, args: Record<string, unknown> = {}, toolDefinition?: unknown): ToolExecutionComponent {
   toolId++;
@@ -76,9 +77,10 @@ type RendererContext = {
 };
 
 function makeContext(partial: Partial<RendererContext> = {}): RendererContext {
+  contextId++;
   return {
     args: {},
-    toolCallId: "t1",
+    toolCallId: `ctx-${contextId}`,
     invalidate: () => {},
     lastComponent: undefined,
     state: {},
@@ -108,6 +110,7 @@ beforeEach(() => {
   __resetCcstyleRenderForTests();
   __resetToolSummaryCacheForTests();
   toolId = 0;
+  contextId = 0;
 });
 
 // ToolExecutionComponent renderers use the upstream module-level theme, which
