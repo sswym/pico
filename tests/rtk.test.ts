@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rewriteRtkCommand, rtkExtension, shouldRewriteWithRtk } from "../src/extensions/rtk/index.ts";
+import { resolveRtkCommand, rewriteRtkCommand, rtkExtension, shouldRewriteWithRtk } from "../src/extensions/rtk/index.ts";
+import { installManagedRtk, rtkAssetName, rtkManagedBinPath } from "../src/extensions/rtk/managed.ts";
 import {
   __resetBashSpawnHooksForTests,
   composeBashSpawnHooks,
@@ -297,4 +298,73 @@ test("rtk notice still shows when quietStartup is unset", () => {
 
   expect(notifies).toHaveLength(1);
   expect(notifies[0]!.message).toContain("rtk 输出压缩已启用");
+});
+
+// --- resolveRtkCommand / 托管安装（方案 B）----------------------------------
+
+test("resolveRtkCommand keeps an explicitly configured command", () => {
+  expect(resolveRtkCommand("/opt/bin/rtk", () => true)).toBe("/opt/bin/rtk");
+  expect(resolveRtkCommand("rtk-custom", () => false)).toBe("rtk-custom");
+});
+
+test("resolveRtkCommand prefers PATH rtk over the managed copy", () => {
+  expect(resolveRtkCommand("rtk", () => true)).toBe("rtk");
+});
+
+test("resolveRtkCommand falls back to the managed copy when PATH has none", () => {
+  const binDir = join(testHome, "bin");
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(join(binDir, "rtk"), "#!/bin/sh\necho rtk 0.45.0\n", { mode: 0o755 });
+  expect(resolveRtkCommand("rtk", () => false)).toBe(rtkManagedBinPath());
+});
+
+test("resolveRtkCommand falls back to plain rtk when nothing is installed", () => {
+  expect(resolveRtkCommand("rtk", () => false)).toBe("rtk");
+});
+
+test("rtkAssetName maps official release assets by platform", () => {
+  expect(rtkAssetName("linux", "x64")).toBe("rtk-x86_64-unknown-linux-musl.tar.gz");
+  expect(rtkAssetName("linux", "arm64")).toBe("rtk-aarch64-unknown-linux-gnu.tar.gz");
+  expect(rtkAssetName("darwin", "arm64")).toBe("rtk-aarch64-apple-darwin.tar.gz");
+  expect(rtkAssetName("win32", "x64")).toBe("rtk-x86_64-pc-windows-msvc.zip");
+  expect(rtkAssetName("linux", "ia32")).toBeUndefined();
+});
+
+test("installManagedRtk reports a fetch failure without touching home", async () => {
+  const result = await installManagedRtk({
+    fetcher: async () => new Response(null, { status: 500 }),
+  });
+  expect(result.ok).toBe(false);
+  expect(result.output).toContain("HTTP 500");
+  // 失败路径不得留下半成品。
+  expect(existsSync(rtkManagedBinPath())).toBe(false);
+});
+
+async function fakeRtkArchive(): Promise<Uint8Array> {
+  const pkg = mkdtempSync(join(tmpdir(), "pico-rtk-pkg-"));
+  try {
+    writeFileSync(join(pkg, "rtk"), "#!/bin/sh\necho rtk 0.45.0\n");
+    const tar = Bun.spawnSync(["tar", "-czf", join(pkg, "rtk.tar.gz"), "-C", pkg, "rtk"], {});
+    expect(tar.exitCode).toBe(0);
+    return new Uint8Array(await Bun.file(join(pkg, "rtk.tar.gz")).arrayBuffer());
+  } finally {
+    rmSync(pkg, { recursive: true, force: true });
+  }
+}
+
+test("installManagedRtk unpacks a real release asset into $PICO_HOME/bin", async () => {
+  const archive = await fakeRtkArchive();
+  const result = await installManagedRtk({
+    fetcher: async () => new Response(archive),
+    assetName: "rtk-x86_64-unknown-linux-musl.tar.gz",
+  });
+  expect(result.ok).toBe(true);
+  expect(result.output).toContain(rtkManagedBinPath());
+  expect(rtkManagedBinPath()).toContain(testHome);
+
+  // 解包出的命令可执行：probe 走系统搜索，绝对路径直接跑。
+  const probe = Bun.spawnSync([rtkManagedBinPath(), "--version"], {});
+  expect(probe.exitCode).toBe(0);
+  expect(probe.stdout.toString()).toContain("rtk 0.45.0");
+  rmSync(rtkManagedBinPath(), { force: true });
 });

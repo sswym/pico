@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { picoHome, picoHooksConfigPath, picoLspConfigPath, picoMcpConfigPath, picoSubagentConfigPath, picoModelsPath, picoSettingsPath } from "../extensions/paths.ts";
 import { migrateLegacyUserConfigs } from "../extensions/config-migrate.ts";
 import type { Settings } from "../extensions/settings.ts";
+import { installManagedRtk, rtkManagedBinPath, type ManagedRtkInstallResult } from "../extensions/rtk/managed.ts";
 
 export type SetupSection = "model" | "tools" | "safety" | "ui" | "memory" | "lsp" | "hooks" | "mcp" | "integrations" | "env";
 export type SetupLanguage = "zh" | "en";
@@ -320,7 +321,8 @@ const TEXT = {
     codegraphInitProject: "Initialize CodeGraph for the current project now?",
     codegraphTelemetryOff: "Disable CodeGraph telemetry for pico MCP server?",
     rtkEnable: "Enable RTK shell output compression?",
-    rtkInstall: "rtk was not found on PATH. Install RTK CLI now?",
+    rtkInstall: "rtk was not found on PATH. Install a managed copy under $PICO_HOME/bin now?",
+    rtkInstalling: "Installing rtk (managed, $PICO_HOME/bin/rtk)…",
     rtkMode: "RTK integration mode",
     rtkModeChoices: ["spawnHook (auto-rewrite bash commands)", "instructionsOnly (settings only)"],
     ponytailEnable: "Enable the Ponytail lazy-dev ruleset (built-in)?",
@@ -421,7 +423,8 @@ const TEXT = {
     codegraphInitProject: "现在为当前项目初始化 CodeGraph？",
     codegraphTelemetryOff: "为 pico MCP server 关闭 CodeGraph telemetry？",
     rtkEnable: "启用 RTK shell 输出压缩？",
-    rtkInstall: "PATH 中未找到 rtk。现在安装 RTK CLI？",
+    rtkInstall: "PATH 中未找到 rtk。现在安装一份托管副本到 $PICO_HOME/bin？",
+    rtkInstalling: "正在安装 rtk（托管，$PICO_HOME/bin/rtk）…",
     rtkMode: "RTK 集成模式",
     rtkModeChoices: ["spawnHook（自动改写 bash 命令）", "instructionsOnly（只写设置）"],
     ponytailEnable: "启用内置 Ponytail 懒惰开发规则？",
@@ -934,6 +937,7 @@ export async function runSection(
   prompt: SetupPrompter,
   io: SetupIo,
   shell: SetupShell = defaultShell,
+  installRtk: () => Promise<ManagedRtkInstallResult> = installManagedRtk,
 ): Promise<void> {
   if (section === "model") await runModelSetup(prompt, io);
   if (section === "tools") await runToolsSetup(prompt, io);
@@ -943,7 +947,7 @@ export async function runSection(
   if (section === "lsp") await runLspSetup(prompt, io);
   if (section === "hooks") await runHooksSetup(prompt, io);
   if (section === "mcp") await runMcpSetup(prompt, io);
-  if (section === "integrations") await runIntegrationsSetup(prompt, io, shell);
+  if (section === "integrations") await runIntegrationsSetup(prompt, io, shell, installRtk);
   if (section === "env") await runEnvSetup(prompt, io);
 }
 
@@ -1215,7 +1219,12 @@ async function runMcpSetup(prompt: SetupPrompter, io: SetupIo): Promise<void> {
   writeJson(picoSettingsPath(), settings);
 }
 
-async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo, shell: SetupShell): Promise<void> {
+async function runIntegrationsSetup(
+  prompt: SetupPrompter,
+  io: SetupIo,
+  shell: SetupShell,
+  installRtk: () => Promise<ManagedRtkInstallResult> = installManagedRtk,
+): Promise<void> {
   const text = TEXT[prompt.language];
   printHeader(io, text.integrationsHeader);
   const settings = readJson(picoSettingsPath()) as Settings;
@@ -1260,14 +1269,19 @@ async function runIntegrationsSetup(prompt: SetupPrompter, io: SetupIo, shell: S
 
   const enableRtk = await prompt.yesNo(text.rtkEnable, booleanSetting(rtk.enabled, false));
   if (enableRtk) {
-    if (!shell.commandExists("rtk")) {
+    // 托管安装（$PICO_HOME/bin/rtk）与 PATH 探测并列：任一命中即视为已安装，
+    // 不重复下载。
+    const managedPath = rtkManagedBinPath();
+    if (!shell.commandExists("rtk") && !existsSync(managedPath)) {
       const install = await prompt.yesNo(text.rtkInstall, false);
       if (install) {
-        const result = shell.runInstall("curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh");
+        writeLine(io, text.rtkInstalling);
+        const result = await installRtk();
         if (!result.ok) {
           writeLine(io, `${text.installFailed}: ${result.output}`);
           rtk.enabled = false;
         } else {
+          writeLine(io, result.output);
           rtk.enabled = true;
         }
       } else {

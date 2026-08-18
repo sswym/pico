@@ -59,7 +59,7 @@
 | `~/.pico/agent/models.json` | 自定义提供商 |
 | ~~`~/.pico/hooks.json`~~ 等 | 已并入 settings.json 命名空间：`hooks`（事件 + 命令 + 可选 tool/blocking）、`lsp`（formatOnWrite 默认 false、idleTimeoutMs 默认 600000）、`mcpServers`（mcp、integrations 的 CodeGraph MCP）。旧独立文件（`~/.pico/hooks.json`、`~/.pico/lsp.json`、`~/.pico/mcp-servers.json`、`~/.pico/subagent.json`）在 `pico setup` 运行时自动迁入 settings.json 对应键并删除；未迁移时读取侧自动回退旧文件，零破坏 |
 
-不写 AGENTS.md、不初始化记忆库。integrations 节可选用 `curl | sh` 安装 codegraph/rtk CLI、对当前项目执行 `codegraph init` 建索引、注册 CodeGraph MCP，并可开关自进化（evolution）扩展。
+不写 AGENTS.md、不初始化记忆库。integrations 节可选用 `curl | sh` 安装 codegraph CLI、以**托管方式**下载 rtk 到 `$PICO_HOME/bin/rtk`（不污染系统 PATH；外部安装的 rtk 优先于托管副本）、对当前项目执行 `codegraph init` 建索引、注册 CodeGraph MCP，并可开关自进化（evolution）扩展。
 
 ---
 

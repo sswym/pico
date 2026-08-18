@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildSetupSummary, configureCodeGraphMcp, configureRtkIntegration, parseSetupArgs, planSetupSections, providerModelsRequest, resetSetupConfig, runSection, runSetupCommand, splitArgs, testProviderConnection, writeCustomProvider, type SetupLanguage, type SetupPrompter, type SetupShell } from "../src/setup/index.ts";
+import type { ManagedRtkInstallResult } from "../src/extensions/rtk/managed.ts";
 import { picoLspConfigPath, picoMcpConfigPath, picoModelsPath, picoSettingsPath } from "../src/extensions/paths.ts";
 
 const savedEnv = {
@@ -389,6 +390,7 @@ async function withSection(
   }) => void,
   seed?: (home: string) => void,
   shell?: SetupShell,
+  installRtk?: () => Promise<ManagedRtkInstallResult>,
 ): Promise<void> {
   const home = useTempHome();
   const collector = collectOutput();
@@ -397,7 +399,7 @@ async function withSection(
     // Sections create this lazily; seeds need it up front.
     mkdirSync(join(home, "agent"), { recursive: true });
     seed?.(home);
-    await runSection(section, prompter, collector.io as any, shell);
+    await runSection(section, prompter, collector.io as any, shell, installRtk);
     fn({
       settings: () => readJson(picoSettingsPath()),
       asked,
@@ -1031,18 +1033,61 @@ test("integrations section stores rtk in instructionsOnly mode when chosen", asy
   );
 });
 
-test("integrations section installs rtk on request", async () => {
+test("integrations section installs rtk via the managed installer", async () => {
   const { shell, calls } = fakeShell({ exists: { codegraph: true, rtk: false } });
+  const installRtk = async () => ({ ok: true, output: "installed" });
   await withSection(
     "integrations",
     // codegraph declined, rtk enabled, rtk install accepted
     { yesNo: [false, true, true] },
-    () => {
-      expect(calls.runInstall).toHaveLength(1);
-      expect(calls.runInstall[0]).toContain("rtk");
+    ({ settings, output }) => {
+      // rtk 不再走 curl|sh（calls.runInstall 不该出现 rtk），改托管安装。
+      expect(calls.runInstall).toEqual([]);
+      expect(settings().integrations.rtk).toMatchObject({ enabled: true });
+      expect(output).toContain("installed");
     },
     undefined,
     shell,
+    installRtk,
+  );
+});
+
+test("integrations section keeps rtk disabled when the managed install fails", async () => {
+  const { shell } = fakeShell({ exists: { codegraph: true, rtk: false } });
+  const installRtk = async () => ({ ok: false, output: "no network" });
+  await withSection(
+    "integrations",
+    { yesNo: [false, true, true] },
+    ({ settings, output }) => {
+      expect(settings().integrations.rtk).toMatchObject({ enabled: false });
+      expect(output).toContain("no network");
+    },
+    undefined,
+    shell,
+    installRtk,
+  );
+});
+
+test("integrations section skips install when a managed rtk already exists", async () => {
+  const { shell, calls } = fakeShell({ exists: { codegraph: true, rtk: false } });
+  await withSection(
+    "integrations",
+    // codegraph declined, rtk enabled — the install prompt must not appear.
+    { yesNo: [false, true] },
+    ({ asked, settings }) => {
+      // 安装提问（rtkInstall）不该出现——托管副本已在。
+      expect(asked.yesNo.some((q) => q.question.includes("managed copy"))).toBe(false);
+      expect(settings().integrations.rtk).toMatchObject({ enabled: true });
+      expect(calls.runInstall).toEqual([]);
+    },
+    (home) => {
+      mkdirSync(join(home, "bin"), { recursive: true });
+      writeFileSync(join(home, "bin", "rtk"), "#!/bin/sh\necho rtk 0.45.0\n", { mode: 0o755 });
+    },
+    shell,
+    async () => {
+      throw new Error("installer must not be called when a managed copy exists");
+    },
   );
 });
 

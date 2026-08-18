@@ -12,6 +12,8 @@ import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-a
 import { createBashTool } from "@earendil-works/pi-coding-agent";
 import { composeBashSpawnHooks, registerBashSpawnHook } from "../bash-hooks.ts";
 import { readSettings, readSettingsObject } from "../settings.ts";
+import { rtkManagedBinPath } from "./managed.ts";
+import { existsSync } from "node:fs";
 
 export interface RtkConfig {
   enabled: boolean;
@@ -243,6 +245,19 @@ export function rewriteRtkCommand(command: string, rtkCommand = "rtk"): string {
   return `${rtkCommand} ${command}`;
 }
 
+/**
+ * 解析实际使用的 rtk 命令：settings 显式配置优先；未配置时 PATH 上的 rtk
+ * 优先，其次 $PICO_HOME/bin/rtk（pico 托管安装，见 managed.ts）；两处都
+ * 没有则回退 "rtk"（探测失败时命令原样执行，不崩溃）。
+ * probe 注入仅为测试可控性，生产路径总是 isRtkAvailable。
+ */
+export function resolveRtkCommand(configured: string, probe: (command: string) => boolean = isRtkAvailable): string {
+  if (configured !== "rtk") return configured;
+  if (probe("rtk")) return "rtk";
+  const managed = rtkManagedBinPath();
+  return existsSync(managed) ? managed : "rtk";
+}
+
 function commandStartsWith(command: string, prefix: string): boolean {
   return command === prefix || command.startsWith(`${prefix} `);
 }
@@ -251,10 +266,13 @@ export const rtkExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   const config = readRtkConfig();
   if (!config.enabled || config.mode !== "spawnHook" || process.env.PICO_RTK === "0") return;
 
+  // 显式配置 > PATH 上的 rtk > $PICO_HOME/bin/rtk（托管安装）。
+  const command = resolveRtkCommand(config.command);
+
   registerBashSpawnHook((context) => ({
     ...context,
-    command: isRtkAvailable(config.command)
-      ? rewriteRtkCommand(context.command, config.command)
+    command: isRtkAvailable(command)
+      ? rewriteRtkCommand(context.command, command)
       : context.command,
   }));
 
@@ -272,7 +290,7 @@ export const rtkExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     if (readSettings().quietStartup === true) return;
     noticeShown = true;
     try {
-      if (isRtkAvailable(config.command)) {
+      if (isRtkAvailable(command)) {
         ctx.ui.notify(
           "rtk 输出压缩已启用：受支持的 bash 命令将通过 rtk 执行以节省 token，" +
             "输出可能与原命令不同。可在 settings.json 的 integrations.rtk.enabled 关闭。",
@@ -280,8 +298,8 @@ export const rtkExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         );
       } else {
         ctx.ui.notify(
-          `rtk 已启用但找不到可执行文件 "${config.command}" — 命令将原样执行，未做压缩。` +
-            "请安装 rtk 或修正 settings.json 的 integrations.rtk.command。",
+          `rtk 已启用但找不到可执行文件 "${command}" — 命令将原样执行，未做压缩。` +
+            "可用 pico setup 的 integrations 一节托管安装 rtk，或修正 settings.json 的 integrations.rtk.command。",
           "warning",
         );
       }
