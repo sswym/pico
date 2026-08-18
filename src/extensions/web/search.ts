@@ -1,4 +1,5 @@
 import { withTimeoutSignal } from "./fetch.ts";
+import { log } from "../logging.ts";
 
 /**
  * webSearch tool — Exa MCP API, with optional Tavily merge.
@@ -332,11 +333,11 @@ async function hybridSearch(
   // surfaced in the tool result (2.5.4), not just stderr.
   if (exaResult.status === "rejected") {
     const reason = exaResult.reason instanceof Error ? exaResult.reason.message : String(exaResult.reason);
-    console.warn(`[pico web] Exa unavailable, using Tavily only: ${reason}`);
+    log.warn("web", `Exa unavailable, using Tavily only: ${reason}`);
     notes.push(`Exa provider unavailable — only Tavily results shown (${reason}).`);
   } else if (tavilyResult.status === "rejected") {
     const reason = tavilyResult.reason instanceof Error ? tavilyResult.reason.message : String(tavilyResult.reason);
-    console.warn(`[pico web] Tavily unavailable, using Exa only: ${reason}`);
+    log.warn("web", `Tavily unavailable, using Exa only: ${reason}`);
     notes.push(`Tavily provider unavailable — only Exa results shown (${reason}).`);
   }
 

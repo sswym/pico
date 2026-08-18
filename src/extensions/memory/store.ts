@@ -32,6 +32,7 @@ import { FactRetriever } from "./retrieval.ts";
 import { normalizeTerm, expandQuery } from "./synonyms.ts";
 import { projectScopeKey } from "./query-scope.ts";
 import { FactTermCache } from "./term-cache.ts";
+import { log } from "../logging.ts";
 
 /**
  * Distinguish real corruption (backup-and-rebuild) from transient open
@@ -222,7 +223,7 @@ export class MemoryStore {
       notice += "Backup failed; started with an empty memory.";
     }
     this._pruneCorruptBackups();
-    console.warn(`[pico memory] ${notice}`);
+    log.warn("memory", notice);
     return notice;
   }
 
@@ -256,7 +257,7 @@ export class MemoryStore {
         // else is a real migration failure worth surfacing.
         const message = err instanceof Error ? err.message : String(err);
         if (!/duplicate column name/i.test(message)) {
-          console.warn(`[pico memory] migration failed (${sql}): ${message}`);
+          log.warn("memory", `migration failed (${sql}): ${message}`);
         }
       }
     }
@@ -327,7 +328,7 @@ export class MemoryStore {
     } catch (err) {
       // A failed rebuild must not brick the store: keep the legacy schema
       // (add() dedup is still scope-aware) and surface the reason.
-      console.warn(`[pico memory] scope-unique migration failed: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn("memory", `scope-unique migration failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

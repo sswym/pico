@@ -24,6 +24,7 @@ import { BuiltinMemoryProvider } from "./builtin-provider.ts";
 import { HolographicMemoryProvider } from "./holographic-provider.ts";
 import { WriteQueue } from "./provider.ts";
 import { picoMemoryDbPath, picoSettingsPath } from "../paths.ts";
+import { log } from "../logging.ts";
 
 export interface MemorySettings {
   /** Backend identifier: "builtin" | provider name. Default "builtin". */
@@ -246,16 +247,16 @@ export class ProviderManager {
       try {
         return factory();
       } catch (err) {
-        console.warn(`[memory] Provider "${backend}" failed to construct: ${err instanceof Error ? err.message : String(err)}`);
+        log.warn("memory", `Provider "${backend}" failed to construct: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     const builtinFactory = FACTORY_REGISTRY.get("builtin");
     if (!builtinFactory) throw new Error("Builtin memory provider factory missing");
-    console.warn(`[memory] Unknown provider "${backend}", falling back to builtin`);
+    log.warn("memory", `Unknown provider "${backend}", falling back to builtin`);
     try {
       return builtinFactory();
     } catch (err) {
-      console.warn(`[memory] Builtin provider failed to construct: ${err instanceof Error ? err.message : String(err)} — memory disabled for this session`);
+      log.warn("memory", `Builtin provider failed to construct: ${err instanceof Error ? err.message : String(err)} — memory disabled for this session`);
       return new NoopMemoryProvider();
     }
   }
@@ -357,7 +358,7 @@ export class ProviderManager {
       try {
         provider.onMemoryWrite?.(metadata);
       } catch (err) {
-        console.warn("[memory] External provider onMemoryWrite failed:", err);
+        log.warn("memory", "External provider onMemoryWrite failed:", err);
       }
     }
   }

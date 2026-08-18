@@ -1,6 +1,30 @@
 import type { Message } from "@earendil-works/pi-ai";
 import type { SingleResult } from "./results.ts";
 
+/**
+ * Per-result message cap (L6 部分落地). A subagent's session JSONL is stored
+ * verbatim into the main session on every call — a long-running child and its
+ * tool_result quirks can otherwise grow the main session by hundreds of KB per
+ * call. The tail is what rendering and final-output extraction depend on
+ * (getFinalOutput scans from the end), so we keep the FIRST user message for
+ * task context, the LAST MAX_KEPT_MESSAGES for trajectory, and drop the
+ * middle. 128 keeps a healthy tool-call slice on display while bounding the
+ * stored bytes at roughly the same order as a 20-turn short session.
+ */
+export const MAX_KEPT_MESSAGES = 128;
+
+function capMessages(result: SingleResult): void {
+  if (result.messages.length <= MAX_KEPT_MESSAGES + 1) return;
+  /** First user message (task context) always survives. */
+  const firstIdx = result.messages.findIndex((m) => m.role === "user");
+  const tail = result.messages.slice(-MAX_KEPT_MESSAGES);
+  const first = firstIdx >= 0 ? result.messages[firstIdx] : undefined;
+  const kept: Message[] = [];
+  if (first && !tail.includes(first)) kept.push(first);
+  kept.push(...tail);
+  result.messages = kept;
+}
+
 export function applyJsonModeEvent(result: SingleResult, event: unknown): boolean {
 	if (!event || typeof event !== "object") return false;
 	const raw = event as { type?: unknown; message?: unknown };
@@ -23,11 +47,13 @@ export function applyJsonModeEvent(result: SingleResult, event: unknown): boolea
 			if (msg.stopReason) result.stopReason = msg.stopReason;
 			if (msg.errorMessage) result.errorMessage = msg.errorMessage;
 		}
+		capMessages(result);
 		return true;
 	}
 
 	if (raw.type === "tool_result_end" && raw.message) {
 		result.messages.push(raw.message as Message);
+		capMessages(result);
 		return true;
 	}
 

@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { getEmbeddedContent, getEmbeddedKeys } from "../extensions/embedded-assets.ts";
+import { log } from "../extensions/logging.ts";
 
 export interface EmbeddedRuntimeDirs {
   promptsDir: string;
@@ -78,7 +79,7 @@ export function prepareEmbeddedRuntime(isBunBinary: boolean): EmbeddedRuntimeDir
   } catch (err) {
     // Unwritable tmpdir must not crash the binary at startup — fall back to
     // source-style resolution (embeddedDirs null keeps the existing branch).
-    console.warn(`[pico] failed to create embedded runtime dir under ${tmpdir()}: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn("", `failed to create embedded runtime dir under ${tmpdir()}: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 
@@ -115,7 +116,7 @@ export function prepareEmbeddedRuntime(isBunBinary: boolean): EmbeddedRuntimeDir
   } catch (err) {
     // Disk full / permission error mid-extract: clean up and degrade to
     // source-mode resolution instead of exiting on a raw ENOENT.
-    console.warn(`[pico] embedded asset extraction failed: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn("", `embedded asset extraction failed: ${err instanceof Error ? err.message : String(err)}`);
     cleanup();
     process.removeListener("exit", cleanup);
     return null;

@@ -31,6 +31,7 @@ import {
 } from "./manager.ts";
 import type { LspManagerState } from "./manager.ts";
 import { resolveFormattingOptions } from "./format-options.ts";
+import { log } from "../logging.ts";
 import { getInstallHint, installServer, formatInstallHint } from "./install.ts";
 import { applyTextEditsToString } from "./edits.ts";
 import { DiagnosticsLedger } from "./diagnostics-ledger.ts";
@@ -707,7 +708,7 @@ export const lspExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       // withMissingServerInstall; anything else must not vanish silently.
       if (!(err instanceof LspError) || err.errorCode !== COMMAND_NOT_FOUND) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[lsp] startup warmup failed: ${msg}`);
+        log.warn("lsp", `startup warmup failed: ${msg}`);
       }
     } finally {
       // Surfacing failures (e.g. "typescript-language-server init failed")

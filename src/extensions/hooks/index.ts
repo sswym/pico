@@ -32,6 +32,7 @@ import type {
 import { type Hook, loadHooks, drainHookConfigErrors } from "./config.ts";
 import { type HookVars, runHook } from "./runner.ts";
 import { allowProjectHooks } from "../policy.ts";
+import { log } from "../logging.ts";
 
 export { loadHooks, type Hook } from "./config.ts";
 export { runHook, substitute } from "./runner.ts";
@@ -98,9 +99,10 @@ export function createHooksExtension(deps: {
         if (ctx?.hasUI) {
           ctx.ui.notify(content, level);
         } else {
-          // Config-error lines already carry the prefix; avoid doubling it.
-          const prefix = content.startsWith("[pico hooks] ") ? "" : "[pico hooks] ";
-          console.warn(`${prefix}${content}`);
+          // log.warn always emits the `[pico hooks] ` prefix — strip any
+          // prefix already carried by the content to avoid doubling it.
+          const body = content.replace(/^\[pico hooks\] /, "");
+          log.warn("hooks", body);
         }
       } catch {
         // non-TUI mode may drop notify
@@ -233,7 +235,7 @@ export function createHooksExtension(deps: {
             // anywhere useful, so just log to stderr.
             const why = res.timedOut ? "timeout" : `exit ${res.exitCode}`;
             try {
-              console.warn(`[pico hooks] PreSessionEnd hook \`${hook.command}\` ${why}`);
+              log.warn("hooks", `PreSessionEnd hook \`${hook.command}\` ${why}`);
             } catch {}
           }
         }),

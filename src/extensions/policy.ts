@@ -6,6 +6,7 @@
  * would otherwise drift across tools.
  */
 import { readSettingsObject } from "./settings.ts";
+import { log } from "./logging.ts";
 
 export type Capability =
   | "read"
@@ -94,9 +95,7 @@ function readSafetyValue(raw: Record<string, unknown>, key: string): boolean | u
   if (typeof value === "boolean") return value;
   if (typeof value === "string" && !warnedSafetyTypes.has(key)) {
     warnedSafetyTypes.add(key);
-    console.warn(
-      `[pico] settings.json safety.${key} is a string ("${value}"); expected a boolean — treated as disabled`,
-    );
+    log.warn("", `settings.json safety.${key} is a string ("${value}"); expected a boolean — treated as disabled`);
   }
   return undefined;
 }

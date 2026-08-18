@@ -23,6 +23,7 @@ import type { Category, Scope } from "./schema.ts";
 import { HELPFUL_DELTA, UNHELPFUL_DELTA } from "./schema.ts";
 import { picoHolographicMemoryPath } from "../paths.ts";
 import { scanSecrets } from "./secrets.ts";
+import { log } from "../logging.ts";
 
 function defaultDbPath(): string {
   return picoHolographicMemoryPath();
@@ -248,7 +249,7 @@ export class HolographicMemoryProvider implements MemoryProvider {
       try {
         const backup = `${this.dbPath}.corrupt-${Date.now()}`;
         renameSync(this.dbPath, backup);
-        console.warn(`[pico memory] holographic store unreadable; backed up to ${backup}`);
+        log.warn("memory", `holographic store unreadable; backed up to ${backup}`);
       } catch {
         // No file at all (first run) or backup failed — nothing to preserve.
       }

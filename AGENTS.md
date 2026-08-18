@@ -77,7 +77,7 @@ bin/pico.ts → bin/env-bootstrap.ts（副作用，必须最先导入）
 - **事件生命周期**：`before_agent_start` → `session_start` → `tool_call` → `tool_result` → `turn_end` → `agent_end` → `session_shutdown`（多个扩展在 shutdown 做清理/落盘）
 - **Session-scoped state**：todo、plan 等状态以 session ID 为 key，module-level 变量持有
 - **DI 工厂**：hooks、mcp 扩展用显式依赖注入 `createHooksExtension` / `createMcpExtension`
-- **共享模块**：扩展间不直接 import；轻量通知走 `src/extensions/events.ts`，公共设置/安全开关走 `src/extensions/{settings,policy}.ts`
+- **共享模块**：扩展间不直接 import；轻量通知走 `src/extensions/events.ts`，公共设置/安全开关走 `src/extensions/{settings,policy}.ts`，诊断/日志走 `src/extensions/logging.ts`（统一 `[pico <tag>]` 前缀 + `PICO_LOG_LEVEL`/`PICO_LOG_FILE`）
 
 ### 关键目录
 
@@ -152,6 +152,9 @@ function makeFakePi() {
 | `PICO_SUPERVISOR_ASK_TIMEOUT_MS` | 子代理监督提问超时（毫秒） |
 | `PICO_AUTO_THINKING_DISABLE` | 关闭 auto-thinking（设为 `1`/`true`/`yes`；`0`/`false` 视为未禁用） |
 | `PICO_ULTRATHINK_NOTICE_ONLY` | ultrathink 只注入系统提醒、不提升思考等级 |
+| `PICO_LOG_LEVEL` | 日志级别（`debug`/`info`/`warn`/`error`，默认 `warn`） |
+| `PICO_LOG_FILE` | 日志落盘文件（相对路径落 `$PICO_HOME/logs/`，空则仅 stderr；只记非用户内容） |
+| `PICO_LOG_DIR` | 日志目录（默认 `$PICO_HOME/logs`） |
 
 前五个安全开关也可长期写入 `~/.pico/agent/settings.json` 的 `safety` 字段；环境变量优先于 settings。**值必须是布尔**——字符串会被当作禁用并打印告警：
 

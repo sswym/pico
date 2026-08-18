@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { applyOverrides, loadSubagentConfig } from "./config.ts";
 import { getEmbeddedContent, getEmbeddedKeys } from "../embedded-assets.ts";
+import { log } from "../logging.ts";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -250,7 +251,7 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			body = parsed.body;
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
-			console.warn(`[pico subagent] skipping agent file ${filePath}: invalid frontmatter (${message})`);
+			log.warn("subagent", `skipping agent file ${filePath}: invalid frontmatter (${message})`);
 			continue;
 		}
 

@@ -563,7 +563,7 @@ pico/
 ## 15. 测试
 
 ```bash
-bun run verify          # tsc --noEmit + 全量 bun test（1177 用例 / 49 文件）
+bun run verify          # tsc --noEmit + 全量 bun test（1236 用例 / 56 文件）
 bun test tests/<feature>.test.ts
 ```
 

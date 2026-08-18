@@ -8,6 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { picoSubagentConfigPath } from "../paths.ts";
 import { readSettings } from "../settings.ts";
+import { log } from "../logging.ts";
 import type { AgentConfig } from "./agents.ts";
 
 export interface AgentOverride {
@@ -110,9 +111,9 @@ const recentErrors: string[] = [];
 
 function warnOnce(path: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
-  const line = `[pico subagent] ignoring ${path}: ${msg}`;
-  console.warn(line);
-  recentErrors.push(line);
+  const body = `ignoring ${path}: ${msg}`;
+  log.warn("subagent", body);
+  recentErrors.push(`[pico subagent] ${body}`);
   if (warnedPaths.has(path)) return;
   warnedPaths.add(path);
 }

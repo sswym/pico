@@ -412,6 +412,57 @@ test("subagent runner applies json mode message and tool-result events", () => {
   });
 });
 
+test("subagent runner caps message arrays but keeps task context and tail", () => {
+  const { applyJsonModeEvent } = require("../src/extensions/subagent/runner.ts");
+  const base = {
+    agent: "worker",
+    agentSource: "user" as const,
+    task: "t",
+    exitCode: 0,
+    messages: [],
+    stderr: "",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+  } as any;
+  // Feed 300 assistant messages → capped to 128 + (kept first user).
+  for (let i = 0; i < 300; i++) {
+    applyJsonModeEvent(base, {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        usage: { input: 1, output: 1 },
+        content: [{ type: "text", text: `msg-${i}` }],
+      },
+    });
+  }
+  expect(base.messages.length).toBeLessThanOrEqual(129);
+  // The tail is preserved (final-output extraction scans from the end).
+  expect(base.messages[base.messages.length - 1].content[0].text).toBe("msg-299");
+});
+
+test("subagent runner keeps the first user message across the cap", () => {
+  const { applyJsonModeEvent } = require("../src/extensions/subagent/runner.ts");
+  const base = {
+    agent: "worker",
+    agentSource: "user" as const,
+    task: "t",
+    exitCode: 0,
+    messages: [],
+    stderr: "",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+  } as any;
+  applyJsonModeEvent(base, {
+    type: "message_end",
+    message: { role: "user", content: [{ type: "text", text: "task context" }] },
+  });
+  for (let i = 0; i < 200; i++) {
+    applyJsonModeEvent(base, {
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: `m-${i}` }] },
+    });
+  }
+  expect(base.messages[0].content[0].text).toBe("task context");
+});
+
 test("process helpers build initial and unknown-agent results", () => {
   const agent = {
     name: "worker",

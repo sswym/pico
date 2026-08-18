@@ -27,6 +27,7 @@ import {
 // 现有技能清单需要完整扫描能力，重复实现 discoverSkills 的递归扫描不划算，
 // skill/catalog.ts 是纯发现工具，无扩展状态。
 import { discoverSkills } from "../skill/catalog.ts";
+import { log } from "../logging.ts";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -75,7 +76,7 @@ function maybeTriggerReview(ctx: ExtensionContext, config: EvolutionConfig, revi
   const existing = listEvolvedSkills(ctx);
   state.inFlight = consumeReview(ctx, messages, existing, config, reviewDeps)
     .catch((err) => {
-      console.warn("[pico evolution] review failed:", err);
+      log.warn("evolution", "review failed:", err);
     })
     .finally(() => {
       state.inFlight = null;

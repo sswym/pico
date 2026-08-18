@@ -16,6 +16,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { picoInputHistoryPath } from "./paths.ts";
+import { log } from "./logging.ts";
 
 const DEFAULT_LIMIT = 100;
 
@@ -166,7 +167,7 @@ export function appendInputHistory(text: string, path = picoInputHistoryPath(), 
       // Read-back is best-effort; the append itself already succeeded.
     }
   } catch (err) {
-    console.warn(`[pico input-history] failed to persist input: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn("input-history", `failed to persist input: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

@@ -21,7 +21,8 @@ export function codegraphAssetName(platform: string = process.platform, arch: st
   if (platform === "linux" && arch === "arm64") return "codegraph-linux-arm64.tar.gz";
   if (platform === "darwin" && arch === "x64") return "codegraph-darwin-x64.tar.gz";
   if (platform === "darwin" && arch === "arm64") return "codegraph-darwin-arm64.tar.gz";
-  // win32 资产是 zip；托管安装暂只支持 tar.gz，不映射（走"请手动安装"）。
+  if (platform === "win32" && arch === "x64") return "codegraph-win32-x64.zip";
+  if (platform === "win32" && arch === "arm64") return "codegraph-win32-arm64.zip";
   return undefined;
 }
 

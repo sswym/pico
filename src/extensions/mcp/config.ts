@@ -15,13 +15,14 @@ import type { McpConfig, McpServerConfig } from "./types.ts";
 import { picoMcpConfigPath } from "../paths.ts";
 import { readSettings } from "../settings.ts";
 import { allowProjectMcp } from "../policy.ts";
+import { log } from "../logging.ts";
 
 const warnedInvalidServers = new Set<string>();
 
 function warnOnce(key: string, message: string): void {
   if (warnedInvalidServers.has(key)) return;
   warnedInvalidServers.add(key);
-  console.warn(`[pico mcp] ${message}`);
+  log.warn("mcp", message);
 }
 
 export function __resetMcpConfigWarningsForTests(): void {

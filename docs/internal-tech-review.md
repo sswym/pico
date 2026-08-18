@@ -788,8 +788,10 @@ flowchart TD
 
 ### 5.1 现状
 
-- 功能面完整：29 扩展、1201 用例全绿、`bun run verify`（tsc + 全量测试）通过；
+- 功能面完整：29 扩展、1236 用例全绿、`bun run verify`（tsc + 全量测试）通过；
+- 第二十二轮整改（2026-08-18，使用者视角优化）：统一日志系统（`src/extensions/logging.ts`，`[pico]` 前缀 + 级别 + `PICO_LOG_FILE` 可选落盘，见 §6.5）；托管安装补 codegraph win32 zip 支持；子代理 `sessionMessages` 封顶（L6 部分落地，见 §5.2/L6）；`/export --path` 参数预校验（L33 缓解）；文档数字回写（README 1236 用例 / 56 文件）；
 - 第二十一轮整改（2026-08-17，pico 会话内 verify 环境污染修复 + 文档数字回写）：ccstyle 两个测试文件在 `PI_PACKAGE_DIR` 环境继承下必崩（父 pico 进程把它指向临时解压目录，上游 `getThemesDir` 解析到不存在的 dist 路径，`initTheme` 抛 ENOENT）；测试在 `initTheme()` 前删除该 env 后恢复（41/41，全量 1201 全绿实测）；同步回写 automode 移除后的文档：AGENTS.md/README 扩展数 30→29、ponytail/ccstyle/evolution 历史序号去歧义化、README undo 功能描述更新为旁路观测式、AGENTS.md 环境变量表补齐 7 个已登记变量；
+- rtk / codegraph 托管安装（2026-08-18）：setup 向导经 `src/extensions/managed-install.ts` 通用托管核心，从 GitHub release 下载预编译二进制解包到 `$PICO_HOME/bin/`（rtk v0.45.0、codegraph v1.5.0 实测），不污染系统 PATH，卸载/重装只删一个文件；
 - 第二十轮整改（2026-08-17，移除 automode 自动护栏扩展）：见 §4.20；1201 用例全绿；
 - 第十九轮整改（2026-08-16，logo 紧凑阈值放宽：非最大窗口也显示完整 logo）：见 §4.19；1336 用例全绿；
 - 第十八轮整改（2026-08-16，undo 重构：移除沙箱式 undo-redo，新增旁路观测式 undo + 会话回退）：见 §4.18；1336 用例全绿；
@@ -820,7 +822,7 @@ flowchart TD
 | L3 | `acceptance.criteria` 与 `evidence` **按下标隐式配对** | 配置错位时门禁误判 | 待改命名配对 |
 | L4 | pi 无工具注销 API：MCP 工具名进程内不可刷新 | 工具列表无法刷新（已用 holder 修复闭包失效） | 受上游约束 |
 | L5 | ~~LSP 诊断等待为轮询窗口（500ms/5s），非事件驱动~~（已改：2026-08 第六轮起事件驱动 + 版本追踪 + 拉取式诊断，见 §3.6） | — | 已修 |
-| L6 | 子代理 stderr 无界累积；`sessionMessages` 会话内无界增长 | 长会话内存 | 待加截断/上限 |
+| L6 | 子代理 stderr 无界累积；`sessionMessages` 会话内无界增长 | 长会话内存 | **部分缓解**（第二十二轮）：`sessionMessages` 已按 `MAX_KEPT_MESSAGES=128` 尾截断（首条 user 消息保留，`runner.ts`，含 `tests/subagent.test.ts` 回归）；stderr 已有 256KB 上限 |
 | L7 | 私网防护仅 hostname 字符串级，`*.nip.io`/DNS rebinding 可绕过 | SSRF 边界缺口（本地代理影响有限） | 待 DNS 解析复检 |
 | L8 | worktree 合并按任务序串行，冲突仅报错不自动处理 | 冲突时需人工 | 已知 |
 | L12 | 记忆库无归档/衰减策略（facts 无限增长，contradict 仅分析最近 500 条） | 库膨胀 | 已落地时间衰减（默认 180 天降权）+ `/memory prune` 手动清理；自动合并/遗忘仍待迭代 |
@@ -844,7 +846,7 @@ flowchart TD
 | L30 | **evolution 技能库无 curator 整理**：无自动合并重叠技能/淘汰长期未用技能（hermes curator 对应物）；技能只增不整理 | 技能库可能缓慢膨胀 | Phase 2 规划（见 docs/evolution-design.md §9）；当前靠审查纪律（类级技能、create≤1/会话）与手动清理 |
 | L31 | **evolution 审查质量依赖模型判断**：审查模型对"可复用方法论"的判定影响沉淀密度；技能内容未经人工审阅直接进入下一会话系统提示词 | 低质/重复技能可能沉淀 | 默认关闭 + 注入特征门禁 + 用户可随时删除技能/清清单（`/doctor` Evolution 段可见全量）；如不满意可换更强审查模型 |
 | L32 | **`/model` 选择器搜索无法匹配目录中真实模型**（deepseek-v4-flash 搜索 "No matching models"）；误 Enter 会把选择持久化进 settings.json defaultModel | 模型切换困难、误写配置 | 受上游搜索/过滤逻辑约束；pico 侧建议加确认弹窗与写前校验 |
-| L33 | **`/export --path` 参数解析**：上游把 `--path` 后的值解析为位置参数并生成同名文件（实测产生 `--path` 文件） | 导出误生成垃圾文件 | 受上游参数解析约束；pico 侧可预校验导出参数 |
+| L33 | **`/export --path` 参数解析**：上游把 `--path` 后的值解析为位置参数并生成同名文件（实测产生 `--path` 文件） | 导出误生成垃圾文件 | **已缓解**（第二十二轮）：`bin/pico.ts` 先于上游 `validateExportArg` 预校验——非 help/version 且 `--export` 后紧跟标志/空值时 stderr 报错 + exit 2，不再落盘垃圾文件（`tests/export-arg.test.ts`） |
 
 ### 5.3 待优化项与迭代规划（建议排序）
 
@@ -898,6 +900,9 @@ bun test tests/<feature>.test.ts  # 单文件测试
 | `PICO_ENABLE_PROJECT_LSP` | 启用项目级 lsp.json（`.pico/lsp.json`） | 0 |
 | `PICO_CACHE_OPTIMIZER_DISABLE` 等 | 缓存优化器细分开关 | 开 |
 | `PICO_VISION_PROVIDER` / `PICO_VISION_MODEL` | 辅助视觉模型 | 无 |
+| `PICO_LOG_LEVEL` | 日志级别（`debug`/`info`/`warn`/`error`） | `warn` |
+| `PICO_LOG_FILE` | 日志落盘文件（相对路径落 `$PICO_HOME/logs/`，空则仅 stderr） | 空 |
+| `PICO_LOG_DIR` | 日志目录 | `$PICO_HOME/logs` |
 | `PI_CACHE_RETENTION` | 上游缓存保留策略（optimizer 写入 long） | 无 |
 
 环境变量与 settings.json 的关系：env 优先；settings `env` stanza 在启动时水合（仅当环境未设置）；`safety` 字段为开关兜底。
@@ -923,9 +928,9 @@ bun test tests/<feature>.test.ts  # 单文件测试
 
 ### 6.5 日志与可观测性
 
-- **无统一日志系统**（已知局限）：关键节点走 stderr/console——hooks 警告（`[pico hooks] …`）、事件订阅者异常（`[pico events] …`）、LSP 启动失败（`[lsp] Failed to start …`）、记忆外部 provider 异常（`[memory] …`）、contradict 样本截断警告；
-- 会话内工具执行实时可见（TUI）；`/doctor` 输出安全开关状态与能力清单；
-- 建议接入方向：统一 `[pico]` 前缀 + 级别 + 可选日志文件，纳入迭代规划。
+- **统一日志通道已落地**（第二十二轮）：`src/extensions/logging.ts` 提供 leveled logger——统一 `[pico <tag>]` 前缀 + 级别（`PICO_LOG_LEVEL`，默认 warn）+ 可选落盘（`PICO_LOG_FILE` / `PICO_LOG_DIR`，默认 `$PICO_HOME/logs`，0o600，超 5MB 截断保留末尾 1000 行）。hooks/events/lsp/memory/subagent/web/mcp/input-history 等 36 处关键节点的 `console.warn/error` 已迁移到该通道；未设 `PICO_LOG_FILE` 时纯 stderr 输出、行为零变化。`/doctor` 新增 `Logging:` 段展示级别/落盘文件。隐私红线：只记非用户内容；
+- 仅记录元数据/诊断行，绝不记录用户消息、工具参数、工具输出、prompt/system 内容；
+- 会话内工具执行实时可见（TUI）；`/doctor` 输出安全开关状态、能力清单与 `Logging:` 段。
 
 ### 6.6 风险点位与运维注意事项
 

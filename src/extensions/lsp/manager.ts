@@ -11,6 +11,7 @@ import type { LspServerConfig, LspConfig } from "./config.ts";
 import { loadConfig, getServersForFile, detectServers, resolveCommand, hasRootMarkers } from "./config.ts";
 import { LspClient, locationToDisplay, lspPositionToDisplay, LspError, COMMAND_NOT_FOUND } from "./client.ts";
 import { publishExtensionEvent } from "../events.ts";
+import { log } from "../logging.ts";
 
 // ── Runtime state ───────────────────────────────────────────────────────────
 
@@ -521,7 +522,7 @@ export async function ensureServer(
           throw err;
         }
         const msg = err instanceof LspError ? err.message : String(err);
-        console.error(`[lsp] Failed to start ${name}:`, friendlyLspInitError(name, msg));
+        log.error("lsp", `Failed to start ${name}:`, friendlyLspInitError(name, msg));
         recordInitFailure(state, name, msg);
         state.servers.delete(name);
         // Reap the spawned process — otherwise a server that started its
@@ -634,7 +635,7 @@ export async function ensureNamedServer(
         throw err;
       }
       const msg = err instanceof LspError ? err.message : String(err);
-      console.error(`[lsp] Failed to start ${name}:`, friendlyLspInitError(name, msg));
+      log.error("lsp", `Failed to start ${name}:`, friendlyLspInitError(name, msg));
       recordInitFailure(state, name, msg);
       state.servers.delete(name);
       // Reap the spawned process — mirrors ensureServer, otherwise a server

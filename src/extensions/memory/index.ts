@@ -33,6 +33,7 @@ import { CATEGORY_LIST, CORRECTED_BOOST, SCOPE_PROJECT } from "./schema.ts";
 import { executeMemoryToolAction, type MemoryToolParams } from "./tool.ts";
 import { executeMemoryCommand } from "./command.ts";
 import { renderToolCallText, renderToolResultText } from "../tool-render.ts";
+import { log } from "../logging.ts";
 
 /**
  * Render a memory tool result without the internal plumbing. The raw result
@@ -139,7 +140,7 @@ function createManager(): ProviderManager {
   try {
     return new ProviderManager();
   } catch (err) {
-    console.warn(`[pico memory] ProviderManager failed to construct: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn("memory", `ProviderManager failed to construct: ${err instanceof Error ? err.message : String(err)}`);
     return new ProviderManager({ backend: "builtin" });
   }
 }

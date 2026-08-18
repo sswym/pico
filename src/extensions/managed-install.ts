@@ -1,9 +1,9 @@
 /**
  * 通用托管安装核心（方案 B：pico 托管下载 CLI 到 $PICO_HOME/bin）。
  *
- * rtk / codegraph 共用同一链路：GitHub release 预编译 tar.gz → 临时目录
- * 解包 → chmod +x → 原子 move 到 $PICO_HOME/bin/<name> → 自检命令验证。
- * 不污染系统 PATH；卸载/重装只删一个文件；失败不留半成品。
+ * rtk / codegraph 共用同一链路：GitHub release 预编译二进制（tar.gz / zip）
+ * → 临时目录解包 → chmod +x → 原子 move 到 $PICO_HOME/bin/<name> → 自检
+ * 命令验证。不污染系统 PATH；卸载/重装只删一个文件；失败不留半成品。
  */
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -60,9 +60,6 @@ export async function installManagedTool(
       output: `当前平台 ${opts.platform ?? process.platform}/${opts.arch ?? process.arch} 没有 ${name} 预编译产物，请手动安装`,
     };
   }
-  if (asset.endsWith(".zip")) {
-    return { ok: false, output: `资产 ${asset} 是 zip 格式，托管安装暂只支持 tar.gz，请手动安装` };
-  }
 
   const url = `${opts.baseUrl ?? `https://github.com/${spec.repo}/releases/latest/download`}/${asset}`;
   const fetcher = opts.fetcher ?? globalThis.fetch;
@@ -82,10 +79,14 @@ export async function installManagedTool(
     const archive = join(work, asset);
     writeFileSync(archive, bytes);
 
-    // 系统 tar 解包（Linux/macOS 均自带；不引入解压依赖）。
-    const untar = spawnSync("tar", ["-xzf", archive, "-C", work], { stdio: ["ignore", "pipe", "pipe"] });
-    if (untar.status !== 0) {
-      return { ok: false, output: `解压失败：${untar.stderr?.toString() || untar.stdout?.toString() || `tar 退出码 ${untar.status}`}` };
+    // 系统解包（Linux/macOS 自带 tar/unzip；不引入解压依赖）。
+    const unpack =
+      asset.endsWith(".zip")
+        ? spawnSync("unzip", ["-q", "-o", archive, "-d", work], { stdio: ["ignore", "pipe", "pipe"] })
+        : spawnSync("tar", ["-xzf", archive, "-C", work], { stdio: ["ignore", "pipe", "pipe"] });
+    if (unpack.status !== 0) {
+      const label = asset.endsWith(".zip") ? "unzip" : "tar";
+      return { ok: false, output: `解压失败：${unpack.stderr?.toString() || unpack.stdout?.toString() || `${label} 退出码 ${unpack.status}`}` };
     }
 
     const extracted = locateBinary(work, name);

@@ -12,6 +12,7 @@ import { expandQuery, normalizeTerm } from "./synonyms.ts";
 import type { Scope } from "./schema.ts";
 import { scopeFilter, scoreScopeBoost } from "./query-scope.ts";
 import { FactTermCache } from "./term-cache.ts";
+import { log } from "../logging.ts";
 
 /** FTS5 stopwords. */
 const FTS_STOPWORDS: Record<string, true> = {
@@ -424,8 +425,9 @@ export class FactRetriever {
     if (rows.length < 2) return [];
 
     if (rows.length >= MAX_FACTS) {
-      console.warn(
-        `[pico memory] contradict() compared only the ${MAX_FACTS} most recently updated facts; ` +
+      log.warn(
+        "memory",
+        `contradict() compared only the ${MAX_FACTS} most recently updated facts; ` +
           `older facts were not analysed.`,
       );
     }
@@ -593,7 +595,7 @@ export class FactRetriever {
       // A failing FTS query silently returning [] reads as "no matches" —
       // surface it so a broken index/schema is diagnosable.
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[pico memory] FTS candidate query failed: ${message}`);
+      log.warn("memory", `FTS candidate query failed: ${message}`);
       return [];
     }
   }

@@ -23,8 +23,8 @@ test("codegraphAssetName maps official release assets by platform", () => {
   expect(codegraphAssetName("linux", "arm64")).toBe("codegraph-linux-arm64.tar.gz");
   expect(codegraphAssetName("darwin", "x64")).toBe("codegraph-darwin-x64.tar.gz");
   expect(codegraphAssetName("darwin", "arm64")).toBe("codegraph-darwin-arm64.tar.gz");
-  // win32 资产是 zip，托管安装不支持 → 不映射，提示手动安装。
-  expect(codegraphAssetName("win32", "x64")).toBeUndefined();
+  expect(codegraphAssetName("win32", "x64")).toBe("codegraph-win32-x64.zip");
+  expect(codegraphAssetName("win32", "arm64")).toBe("codegraph-win32-arm64.zip");
 });
 
 test("installManagedCodegraph rejects win32 zip assets explicitly", async () => {
@@ -38,6 +38,30 @@ test("installManagedCodegraph rejects win32 zip assets explicitly", async () => 
   });
   expect(result.ok).toBe(false);
   expect(result.output).toContain("zip");
+});
+
+test("installManagedCodegraph unpacks a real zip release asset into $PICO_HOME/bin", async () => {
+  // Windows 资产为 zip；托管安装用系统 unzip 解包（rtk 同链路扩展）。
+  const pkg = mkdtempSync(join(tmpdir(), "pico-codegraph-zip-"));
+  try {
+    writeFileSync(join(pkg, "codegraph"), "#!/bin/sh\necho codegraph 1.5.0-win\n");
+    const zip = Bun.spawnSync(
+      ["zip", "-q", "-j", join(pkg, "codegraph-win32-x64.zip"), join(pkg, "codegraph")],
+      {},
+    );
+    if (zip.exitCode === 0) {
+      const archive = new Uint8Array(await Bun.file(join(pkg, "codegraph-win32-x64.zip")).arrayBuffer());
+      const result = await installManagedCodegraph({
+        assetName: "codegraph-win32-x64.zip",
+        fetcher: async () => new Response(archive),
+      });
+      expect(result.ok).toBe(true);
+      expect(result.output).toContain(codegraphManagedBinPath());
+    }
+    // 无 zip 命令的环境跳过，不伪造产物。
+  } finally {
+    rmSync(pkg, { recursive: true, force: true });
+  }
 });
 
 test("installManagedCodegraph reports an unsupported platform", async () => {

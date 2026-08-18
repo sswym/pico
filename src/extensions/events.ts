@@ -1,3 +1,5 @@
+import { log } from "./logging.ts";
+
 export interface SubagentCompletedEvent {
   task: string;
   result: string;
@@ -81,7 +83,7 @@ export function publishExtensionEvent<K extends keyof ExtensionEvents>(
     } catch (err) {
       // One misbehaving subscriber must not break the rest of the chain
       // (e.g. subagent completion events feeding memory delegation).
-      console.warn(`[pico events] handler for '${eventName}' threw:`, err);
+      log.warn("events", `handler for '${eventName}' threw: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }

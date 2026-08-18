@@ -929,7 +929,7 @@ test("ProviderManager.notifyMemoryToolWrite does not throw when onMemoryWrite th
       // Should not throw
       manager.notifyMemoryToolWrite({ action: "remove", factId: 42 });
       expect(warnings).toHaveLength(1);
-      expect(warnings[0]![0]).toBe("[memory] External provider onMemoryWrite failed:");
+      expect(warnings[0]![0]).toContain("External provider onMemoryWrite failed:");
     } finally {
       console.warn = originalWarn;
     }

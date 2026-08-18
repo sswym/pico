@@ -168,3 +168,26 @@ export function isNonTuiArg(arg: string): boolean {
 function isPackageManagementCommand(rawArgs: string[]): boolean {
   return rawArgs.length > 0 && PACKAGE_COMMANDS.has(rawArgs[0]!);
 }
+
+/**
+ * Non-interactive `--export` (L33 缓解). Upstream parses `/export --path` /
+ * `--export --path` as a positional argument and bakes a literal `--path`
+ * file (or HTML) when no value follows. A bare option-like token after
+ * `--export` can only be a mistake — intercept and explain before upstream
+ * touches disk.
+ */
+export function validateExportArg(rawArgs: string[]): { ok: boolean; message?: string } {
+  const idx = rawArgs.indexOf("--export");
+  if (idx === -1) return { ok: true };
+  const next = rawArgs[idx + 1];
+  if (!next) {
+    return { ok: false, message: "--export 缺少输出路径。用法：--export <session.jsonl> [<output.html>]" };
+  }
+  if (next.startsWith("-")) {
+    return {
+      ok: false,
+      message: `--export 后的 "${next}" 看起来是另一个标志，不是导出路径。用法：--export <session.jsonl> [<output.html>]`,
+    };
+  }
+  return { ok: true };
+}

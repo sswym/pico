@@ -25,6 +25,7 @@ import "./env-bootstrap.ts";
 import { main, VERSION as UPSTREAM_VERSION } from "@earendil-works/pi-coding-agent";
 import picoPkg from "../package.json" with { type: "json" };
 import { buildRuntimeArgs, isNonTuiArg } from "../src/runtime/args.ts";
+import { validateExportArg } from "../src/runtime/args.ts";
 import { isBunBinaryRuntime, prepareEmbeddedRuntime } from "../src/runtime/embedded-runtime.ts";
 import { ensureBundledThemeFile } from "../src/extensions/retro-theme/index.ts";
 import { createDefaultExtensionRegistry } from "../src/runtime/extensions.ts";
@@ -124,6 +125,18 @@ if (!isHelpOrVersion && missingPrintPrompt(rawArgs)) {
 // retro-theme extension's own session_start sync keeps it fresh afterwards.
 // Also lets --theme <name> resolve below (M2).
 ensureBundledThemeFile();
+
+// ── L33: reject a bare option-like token after --export ─────────────────
+// Upstream parses `--export --path` as if "--path" were the positional
+// output path, silently writing a literal `--path` file. A flag-looking
+// token here is always a mistake — intercept before upstream touches disk.
+if (!isHelpOrVersion) {
+  const exportCheck = validateExportArg(rawArgs);
+  if (!exportCheck.ok) {
+    console.error(`pico: ${exportCheck.message}`);
+    process.exit(2);
+  }
+}
 
 const args = buildRuntimeArgs({
   rawArgs,

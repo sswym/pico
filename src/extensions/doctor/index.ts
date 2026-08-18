@@ -14,6 +14,7 @@ import { readSettings, readSettingsObject, writeSettings, isSettingsDamaged } fr
 import { validateCurrentSettings } from "../settings-schema.ts";
 import { ENV_SETTING_MAPPINGS, envSettingEffectiveValue } from "../envmap.ts";
 import { subscribeSessionExtensionEvent, type LspStatusEvent } from "../events.ts";
+import { loggingStatus } from "../logging.ts";
 import { readEvolutionConfig, getState } from "../evolution/state.ts";
 import { readManifest } from "../evolution/apply.ts";
 import {
@@ -134,9 +135,25 @@ export function buildDoctorReport(cwd: string): string {
     "Evolution:",
     ...evolutionSummary(),
     "",
+    "Logging:",
+    ...loggingSummary(),
+    "",
     "LSP:",
     ...lspLines,
   ].join("\n");
+}
+
+/** logging.ts 通道状态：级别 + 落盘文件（PICO_LOG_FILE 设置后不为空）。 */
+function loggingSummary(): string[] {
+  const { level, file, dir } = loggingStatus();
+  return [
+    `  level: ${level}`,
+    `  file: ${file ?? "unset — stderr only"}`,
+    `  dir: ${dir}`,
+    file
+      ? "  (set PICO_LOG_FILE / PICO_LOG_DIR to persist logs; log message volume only, no user content)"
+      : "  (set PICO_LOG_FILE=/path or PICO_LOG_FILE=name.log to enable file logging)",
+  ];
 }
 
 /** 用户级配置来源视图：命名空间（settings.json）激活与否、旧文件遗留。 */

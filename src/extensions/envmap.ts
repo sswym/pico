@@ -63,6 +63,11 @@ export const ENV_SETTING_MAPPINGS: readonly EnvSettingMapping[] = [
   { env: "PICO_EVOLUTION_DENY", settingsPath: null, precedence: "env-only", description: "审查输出门禁关键词（逗号分隔，命中拒写技能）" },
   { env: "PICO_EVOLUTION_REVIEW_EVERY_TURNS", settingsPath: "evolution.reviewEveryTurns", precedence: "env-first", description: "审查触发回合间隔（默认 6）" },
 
+  // ── 可观测性 ───────────────────────────────────────────────────────────
+  { env: "PICO_LOG_LEVEL", settingsPath: null, precedence: "env-only", description: "日志级别（debug|info|warn|error，默认 warn）" },
+  { env: "PICO_LOG_FILE", settingsPath: null, precedence: "env-only", description: "日志落盘文件（相对路径落 $PICO_HOME/logs/，空则仅 stderr）" },
+  { env: "PICO_LOG_DIR", settingsPath: null, precedence: "env-only", description: "日志目录（默认 $PICO_HOME/logs）" },
+
   // ── 内部护栏（勿手动设置）────────────────────────────────────────────
   { env: "PICO_HOOK_RECURSION_GUARD", settingsPath: null, precedence: "env-only", description: "hook 递归护栏（系统自动维护）", internal: true },
   { env: "PICO_SUBAGENT_DEPTH", settingsPath: null, precedence: "env-only", description: "子代理嵌套深度护栏（系统自动维护）", internal: true },
