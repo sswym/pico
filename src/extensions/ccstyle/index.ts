@@ -14,10 +14,10 @@ import { readSettingsObject, writeSettings, readSettings, isSettingsDamaged } fr
  * the full Input/Output view. pico's own tools (toolDefinition set) keep
  * their registered renderers.
  *
- * v1 limitations (vs upstream): no mouse click-to-expand, no rich diff for
- * edit/write, no compact round summary. The grouping patch only affects
- * tools mounted after install — /ccstyle toggling does not re-render tools
- * already on screen (no TUI handle from the extension API).
+ * v1 limitations (vs upstream): no compact round summary. The grouping patch
+ * only affects tools mounted after install — /ccstyle toggling does not
+ * re-render tools already on screen (no TUI handle from the extension API).
+ * Mouse click-to-expand and edit/write diff are supported in this port.
  *
  * Config: settings.json `ccstyle.enabled` (default true); /ccstyle on|off.
  */

@@ -5,8 +5,7 @@ import {
   type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Spacer, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
-import { TOOL_LOADING_INTERVAL_MS, toolLoadingIcon, ccHint, oneLine, PICO_TOOL_SUMMARIES } from "./util.ts";
-import { summarizeToolCall } from "../tool-render.ts";
+import { TOOL_LOADING_INTERVAL_MS, toolLoadingIcon, ccHint, humanizeToolName, summaryOfTool } from "./util.ts";
 
 /**
  * Tool-call grouping for pico — ported from pi-cc-extensions
@@ -204,148 +203,10 @@ function paddedBackgroundRow(
   return `${bgAnsi}${stable}\x1b[49m`;
 }
 
-function humanizeToolName(name: string): string {
-  return name
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/[_-]+/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
 
-function toolSummary(tool: ToolComponent): { main: string; detail: string } {
-  const name = toolName(tool);
-  const lowerName = name.toLowerCase();
-  const args = (tool.args ?? {}) as Record<string, unknown>;
-  const titled = humanizeToolName(name);
-  // pico 定制工具：与单卡摘要同一来源（todoWrite 统计、lsp 定位等）。
-  if (PICO_TOOL_SUMMARIES[name]) {
-    return { main: `${titled} ${summarizeToolCall(name, args)}`, detail: "" };
-  }
-  if (lowerName === "subagent" || lowerName === "subagent_wait") {
-    const role =
-      args.subagent_type ?? args.agent ?? args.agent_type ?? args.description ?? args.prompt;
-    return {
-      main: `${titled} ${oneLine(typeof role === "string" ? role : "run subagent", 96)}`,
-      detail: "",
-    };
-  }
-  const value = (fallback: string, ...keys: string[]) => {
-    const found = keys
-      .map((key) => args[key])
-      .find((item): item is string => typeof item === "string" && item.length > 0);
-    return `${titled} ${oneLine(found || fallback)}`;
-  };
-  if (lowerName === "agent" || lowerName === "agents") {
-    const displayName = args.subagent_type ?? args.agent_type ?? args.agent;
-    if (typeof displayName === "string" && displayName) {
-      return { main: `${titled} ${displayName}`, detail: "" };
-    }
-    return {
-      main: value(lowerName === "agent" ? "launch agent" : "launch agents", "description", "prompt"),
-      detail: "",
-    };
-  }
-  if (lowerName === "get_subagent_result" || lowerName === "steer_subagent") {
-    return {
-      main: value(lowerName === "get_subagent_result" ? "agent result" : "steer agent", "agent_id"),
-      detail: "",
-    };
-  }
-  if (lowerName === "skill") return { main: value("run skill", "name"), detail: "" };
-  if (lowerName === "enterplanmode" || lowerName === "enter_plan_mode") {
-    return { main: `${titled} enable read-only planning`, detail: "" };
-  }
-  if (lowerName === "exitplanmode" || lowerName === "exit_plan_mode") {
-    return { main: `${titled} present plan`, detail: "" };
-  }
-  if (lowerName === "taskcreate") return { main: value("create task", "subject"), detail: "" };
-  if (lowerName === "tasklist") return { main: `${titled} task list`, detail: "" };
-  if (lowerName === "taskget" || lowerName === "taskupdate") {
-    return { main: value("task", "taskId", "task_id"), detail: "" };
-  }
-  if (lowerName === "taskoutput" || lowerName === "taskstop") {
-    return { main: value("background task", "task_id", "taskId"), detail: "" };
-  }
-  if (lowerName === "taskexecute") {
-    const rawIds = Array.isArray(args.task_ids) ? args.task_ids : Array.isArray(args.taskIds) ? args.taskIds : [];
-    const ids = rawIds.filter((id): id is string | number => typeof id === "string" || typeof id === "number");
-    return {
-      main: `${titled} ${ids.length ? `${ids[0]}${ids.length > 1 ? ` (+${ids.length - 1} tasks)` : ""}` : "start tasks"}`,
-      detail: "",
-    };
-  }
-  if (name === "read") {
-    const details = [
-      args.offset !== undefined ? `offset=${args.offset}` : "",
-      args.limit !== undefined ? `limit=${args.limit}` : "",
-    ].filter(Boolean);
-    return {
-      main: `Read ${oneLine(typeof args.path === "string" ? args.path : "...")}`,
-      detail: details.length ? ` (${details.join(", ")})` : "",
-    };
-  }
-  if (name === "bash") {
-    return { main: `Bash ${oneLine(typeof args.command === "string" ? args.command : "...")}`, detail: "" };
-  }
-  if (name === "grep") {
-    const pattern = oneLine(typeof args.pattern === "string" ? args.pattern : "...");
-    return {
-      main: `Grep ${JSON.stringify(pattern)}${typeof args.path === "string" ? ` in ${oneLine(args.path)}` : ""}`,
-      detail: "",
-    };
-  }
-  if (name === "find") {
-    const pattern = oneLine(typeof args.pattern === "string" ? args.pattern : "...");
-    return {
-      main: `Find ${JSON.stringify(pattern)}${typeof args.path === "string" ? ` in ${oneLine(args.path)}` : ""}`,
-      detail: "",
-    };
-  }
-  const preferred =
-    args.agent_id ??
-    args.path ??
-    args.file_path ??
-    args.url ??
-    args.description ??
-    args.query ??
-    args.name ??
-    args.prompt ??
-    args.question ??
-    args.action;
-  return {
-    main: `${humanizeToolName(name)}${preferred === undefined ? "" : ` ${oneLine(String(preferred))}`}`,
-    detail: "",
-  };
-}
-
-/**
- * Memoized tool summaries keyed by toolCallId.
- *
- * toolSummary() runs regex/string work (humanizeToolName, oneLine,
- * summarizeToolCall) that depends only on the tool's immutable name+args.
- * The group renderer re-invokes it on every frame — the pending-animation
- * path invalidates groups every 200ms — so a stalled tool would otherwise
- * re-pay the same summary computation dozens of times. Tool call ids are
- * unique per call and args never change after dispatch, so entries never
- * need invalidation.
- */
-const summaryCache = new Map<string, { main: string; detail: string }>();
-
-/** Test-only: clear the summary cache. */
-export function __resetToolSummaryCacheForTests(): void {
-  summaryCache.clear();
-}
-
-/** Test-only: number of cached summaries. */
-export function __toolSummaryCacheSize(): number {
-  return summaryCache.size;
-}
 
 function summaryOf(tool: ToolComponent): { main: string; detail: string } {
-  const cached = summaryCache.get(tool.toolCallId);
-  if (cached) return cached;
-  const summary = toolSummary(tool);
-  summaryCache.set(tool.toolCallId, summary);
-  return summary;
+  return summaryOfTool(tool.toolCallId, toolName(tool), tool.args);
 }
 
 function toolNameList(tools: ToolComponent[]): string {
@@ -659,12 +520,12 @@ export function installToolGrouping(getEnabled: () => boolean): ToolGroupingHook
     animationTimer: undefined,
   };
   patch.installed = {
-    addChild: function (this: Container, component: Component): void {
+    addChild: function(this: Container, component: Component): void {
       patch.original.addChild.call(this, component);
       if (component && typeof component === "object") parentMap.set(component, this);
       maybeGroup(patch, this, component);
     },
-    removeChild: function (this: Container, component: Component): void {
+    removeChild: function(this: Container, component: Component): void {
       const group = parentMap.get(component);
       if (group instanceof ToolGroupComponent && parentMap.get(group) === this) {
         const tool = asTool(component);
@@ -681,7 +542,7 @@ export function installToolGrouping(getEnabled: () => boolean): ToolGroupingHook
         for (const tool of component.releaseTools()) parentMap.delete(tool);
       }
     },
-    clear: function (this: Container): void {
+    clear: function(this: Container): void {
       for (const child of [...this.children]) {
         if (child instanceof ToolGroupComponent) {
           for (const tool of child.releaseTools()) parentMap.delete(tool);
@@ -720,3 +581,5 @@ export function __resetCcstyleGroupingForTests(): void {
   if (currentPatch) deactivatePatch(currentPatch);
   nextGroupId = 1;
 }
+
+export { __resetToolSummaryCacheForTests, __toolSummaryCacheSize } from "./util.ts";

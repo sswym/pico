@@ -32,7 +32,7 @@ interface ToolCardState extends Record<string, unknown> {
   ccstyleToolVisualState?: ToolVisualState;
   ccstyleToolExpanded?: boolean;
   ccstyleAnimationScheduled?: boolean;
-  ccstyleIoView?: unknown;
+
   ccstyleAutoExpanded?: boolean;
   ccstyleUserCollapsed?: boolean;
 }
@@ -162,6 +162,7 @@ function scheduleAnimation(context: RenderContext): void {
         current.invalidate();
       }
     }, TOOL_LOADING_INTERVAL_MS);
+    sharedAnimationTimer.unref?.();
   }
 }
 
@@ -660,94 +661,9 @@ function renderExpandedTaskResult(
 
 // ── call summary ─────────────────────────────────────────────────────────────
 
-function humanizeToolLabel(label: string): string {
-  return label
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/[_-]+/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
 
-function singleToolCallSummary(toolName: string, label: string, args: unknown): { main: string; detail: string } {
-  const title = label === toolName ? humanizeToolLabel(label) : label;
-  if (!args || typeof args !== "object") return { main: title, detail: "" };
-  const record = args as Record<string, unknown>;
-  const value = (fallback: string, ...keys: string[]) => {
-    const found = keys
-      .map((key) => record[key])
-      .find((item): item is string => typeof item === "string" && item.length > 0);
-    return `${title} ${oneLine(found || fallback, 96)}`;
-  };
-  // pico 定制工具：复用 tool-render 的摘要逻辑（todoWrite 统计、lsp 定位、
-  // memory 命令、vision 图像路径、web 查询）。askUserQuestion 走下方通用
-  // question 分支，subagent 有独立分支。
-  if (PICO_TOOL_SUMMARIES[toolName]) {
-    return { main: `${title} ${summarizeToolCall(toolName, args)}`, detail: "" };
-  }
-  if (toolName === "subagent" || toolName === "subagent_wait") {
-    const role =
-      record.subagent_type ?? record.agent ?? record.agent_type ?? record.description ?? record.prompt;
-    return {
-      main: `${title} ${oneLine(typeof role === "string" ? role : "run subagent", 96)}`,
-      detail: "",
-    };
-  }
-  if (toolName === "agents") {
-    return { main: value("launch agents", "description", "prompt"), detail: "" };
-  }
-  if (toolName === "skill") return { main: value("run skill", "name"), detail: "" };
-  if (toolName === "enterplanmode" || toolName === "enter_plan_mode") {
-    return { main: `${title} enable read-only planning`, detail: "" };
-  }
-  if (toolName === "exitplanmode" || toolName === "exit_plan_mode") {
-    return { main: `${title} present plan`, detail: "" };
-  }
-  if (toolName === "taskcreate") return { main: value("create task", "subject"), detail: "" };
-  if (toolName === "tasklist") return { main: `${title} task list`, detail: "" };
-  if (toolName === "taskget" || toolName === "taskupdate") {
-    return { main: value("task", "taskId", "task_id"), detail: "" };
-  }
-  if (toolName === "taskoutput" || toolName === "taskstop") {
-    return { main: value("background task", "task_id", "taskId"), detail: "" };
-  }
-  if (toolName === "taskexecute") {
-    const rawIds = Array.isArray(record.task_ids) ? record.task_ids : Array.isArray(record.taskIds) ? record.taskIds : [];
-    const ids = rawIds.filter((id): id is string | number => typeof id === "string" || typeof id === "number");
-    return {
-      main: `${title} ${ids.length ? `${ids[0]}${ids.length > 1 ? ` (+${ids.length - 1} tasks)` : ""}` : "start tasks"}`,
-      detail: "",
-    };
-  }
-  if (toolName === "read") {
-    const details = [
-      record.offset !== undefined ? `offset=${record.offset}` : "",
-      record.limit !== undefined ? `limit=${record.limit}` : "",
-    ].filter(Boolean);
-    return {
-      main: `${title}${typeof record.path === "string" ? ` ${oneLine(record.path, 96)}` : ""}`,
-      detail: details.length ? ` (${details.join(", ")})` : "",
-    };
-  }
-  const preferred =
-    record.path ??
-    record.file_path ??
-    record.command ??
-    record.query ??
-    record.question ??
-    record.pattern ??
-    record.url ??
-    record.name ??
-    record.tool_use_id ??
-    record.toolCallId ??
-    record.id ??
-    record.message;
-  return {
-    main:
-      preferred !== undefined && preferred !== null && typeof preferred !== "object"
-        ? `${title} ${oneLine(String(preferred), 96)}`
-        : title,
-    detail: "",
-  };
-}
+
+
 
 // ── wrapped tool definition ──────────────────────────────────────────────────
 
@@ -774,7 +690,7 @@ function createCcstyleTool(originalTool: { name: string; label?: string }): Wrap
             ? "✗"
             : "●";
       const icon = theme.fg(toolIconColor(context), rawIcon);
-      const summary = singleToolCallSummary(toolName, label, args);
+      const summary = summaryOfTool(context.toolCallId, toolName, args, label);
       const expanded = Boolean(context.expanded);
       let cachedWidth: number | undefined;
       let cachedLine: string | undefined;
@@ -790,7 +706,7 @@ function createCcstyleTool(originalTool: { name: string; label?: string }): Wrap
           cachedLine = `${lead}${icon} ${theme.fg("toolTitle", headTruncateToWidth(summary.main, mainWidth))}${theme.fg("dim", summary.detail)}`;
           return [truncateToWidth(cachedLine, viewportWidth, "")];
         },
-        invalidate() {},
+        invalidate() { },
       };
     },
     renderResult(
@@ -866,7 +782,7 @@ function createCcstyleTool(originalTool: { name: string; label?: string }): Wrap
       if (expanded) {
         return renderExpandedToolResult(text || "", theme, isError, context.lastComponent, args);
       }
-      context.state.ccstyleIoView = undefined;
+
       const expandable = tasks.length > 0 || editDiff !== undefined || hasExpandableDetail(text, args);
       const hint = expandable ? ` ${theme.fg("dim", `• ${ccHint()}`)}` : "";
       const color: ThemeColor = isError ? "error" : "muted";
@@ -874,7 +790,7 @@ function createCcstyleTool(originalTool: { name: string; label?: string }): Wrap
         render(width: number): string[] {
           return [theme.fg(color, renderCollapsedToolResultToWidth(rendered, hint, width))];
         },
-        invalidate() {},
+        invalidate() { },
       };
     },
   };
@@ -982,31 +898,31 @@ function installGlobalToolRendering(enabled: () => boolean): GlobalToolRenderPat
   };
   const downstream: PatchedMethods = previous
     ? {
-        hasRendererDefinition:
-          current.hasRendererDefinition === previous.installed.hasRendererDefinition
-            ? previous.downstream.hasRendererDefinition
-            : current.hasRendererDefinition,
-        getRenderShell:
-          current.getRenderShell === previous.installed.getRenderShell
-            ? previous.downstream.getRenderShell
-            : current.getRenderShell,
-        getCallRenderer:
-          current.getCallRenderer === previous.installed.getCallRenderer
-            ? previous.downstream.getCallRenderer
-            : current.getCallRenderer,
-        getResultRenderer:
-          current.getResultRenderer === previous.installed.getResultRenderer
-            ? previous.downstream.getResultRenderer
-            : current.getResultRenderer,
-        updateDisplay:
-          current.updateDisplay === previous.installed.updateDisplay
-            ? previous.downstream.updateDisplay
-            : current.updateDisplay,
-        setExpanded:
-          current.setExpanded === previous.installed.setExpanded
-            ? previous.downstream.setExpanded
-            : current.setExpanded,
-      }
+      hasRendererDefinition:
+        current.hasRendererDefinition === previous.installed.hasRendererDefinition
+          ? previous.downstream.hasRendererDefinition
+          : current.hasRendererDefinition,
+      getRenderShell:
+        current.getRenderShell === previous.installed.getRenderShell
+          ? previous.downstream.getRenderShell
+          : current.getRenderShell,
+      getCallRenderer:
+        current.getCallRenderer === previous.installed.getCallRenderer
+          ? previous.downstream.getCallRenderer
+          : current.getCallRenderer,
+      getResultRenderer:
+        current.getResultRenderer === previous.installed.getResultRenderer
+          ? previous.downstream.getResultRenderer
+          : current.getResultRenderer,
+      updateDisplay:
+        current.updateDisplay === previous.installed.updateDisplay
+          ? previous.downstream.updateDisplay
+          : current.updateDisplay,
+      setExpanded:
+        current.setExpanded === previous.installed.setExpanded
+          ? previous.downstream.setExpanded
+          : current.setExpanded,
+    }
     : current;
   // 外部仍持有的旧 wrapper 先变为 pass-through，再挂新安装。
   disconnectPatch(previous);
@@ -1022,12 +938,12 @@ function installGlobalToolRendering(enabled: () => boolean): GlobalToolRenderPat
   };
 
   patch.installed = {
-    hasRendererDefinition: function (this: ToolExecutionComponent, ...args: unknown[]): boolean {
+    hasRendererDefinition: function(this: ToolExecutionComponent, ...args: unknown[]): boolean {
       const tool = asTool(this);
       if (tool !== undefined && shouldGloballyStyleTool(tool)) return true;
       return patch.downstream.hasRendererDefinition.apply(this, args);
     },
-    getRenderShell: function (this: ToolExecutionComponent, ...args: unknown[]): string {
+    getRenderShell: function(this: ToolExecutionComponent, ...args: unknown[]): string {
       if (!patch.active) return patch.downstream.getRenderShell.apply(this, args);
       const tool = asTool(this);
       const useCcstyle = tool !== undefined && shouldGloballyStyleTool(tool);
@@ -1036,14 +952,14 @@ function installGlobalToolRendering(enabled: () => boolean): GlobalToolRenderPat
       if (tool !== undefined) syncToolShell(tool, shell as "default" | "self");
       return shell;
     },
-    getCallRenderer: function (this: ToolExecutionComponent, ...args: unknown[]): unknown {
+    getCallRenderer: function(this: ToolExecutionComponent, ...args: unknown[]): unknown {
       const tool = asTool(this);
       if (tool !== undefined && shouldGloballyStyleTool(tool)) {
         return getGloballyStyledTool(tool.toolName, patch).renderCall;
       }
       return patch.downstream.getCallRenderer.apply(this, args);
     },
-    getResultRenderer: function (this: ToolExecutionComponent, ...args: unknown[]): unknown {
+    getResultRenderer: function(this: ToolExecutionComponent, ...args: unknown[]): unknown {
       const tool = asTool(this);
       if (tool !== undefined && shouldGloballyStyleTool(tool)) {
         const wrapped = getGloballyStyledTool(tool.toolName, patch);
@@ -1057,7 +973,7 @@ function installGlobalToolRendering(enabled: () => boolean): GlobalToolRenderPat
       }
       return patch.downstream.getResultRenderer.apply(this, args);
     },
-    updateDisplay: function (this: ToolExecutionComponent, ...args: unknown[]): void {
+    updateDisplay: function(this: ToolExecutionComponent, ...args: unknown[]): void {
       patch.downstream.updateDisplay.apply(this, args);
       const tool = asTool(this);
       if (!patch.active || !patch.enabled() || tool === undefined || !tool.expanded) return;
@@ -1069,7 +985,7 @@ function installGlobalToolRendering(enabled: () => boolean): GlobalToolRenderPat
       contentBox.paddingY = 1;
       contentBox.setBgFn?.((text: string) => theme.bg("userMessageBg", text));
     },
-    setExpanded: function (this: ToolExecutionComponent, expanded: boolean): void {
+    setExpanded: function(this: ToolExecutionComponent, expanded: boolean): void {
       if (!expanded) {
         // 用户在自动展开之后显式折叠（全局 ctrl+o / 鼠标点击收起）：
         // 清除自动展开标记并永久记住，避免下一次渲染又按 firstSettle 展开。
