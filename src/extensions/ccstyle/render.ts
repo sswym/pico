@@ -716,12 +716,13 @@ function createCcstyleTool(originalTool: { name: string; label?: string }): Wrap
       context: RenderContext,
     ): Component {
       // write/edit 结果落地时自动展开一次并保持展开（ccstyleToolExpanded 持久）；
-      // 用户显式折叠（setExpanded(false) 包装）会清除该标记。
+      // 用户显式折叠（setExpanded(false) 包装）会清除该标记。失败结果不自动展开。
       const settled = !options.isPartial;
       const autoExpands = toolName === "write" || toolName === "edit";
       const firstSettle =
         autoExpands &&
         settled &&
+        !context.isError &&
         !context.state.ccstyleUserCollapsed &&
         context.state.ccstyleAutoExpanded === undefined;
       if (firstSettle) {

@@ -731,6 +731,32 @@ test("write auto-expands on result and stays expanded until user collapse", () =
   hooks.shutdown();
 });
 
+test("failed write/edit results do not auto-expand", () => {
+  const hooks = installDefaultMode();
+  const write = makeTool("write", { file_path: "/tmp/a.ts", content: "abc" });
+  write.updateResult(
+    { content: [{ type: "text", text: "Error: EACCES: permission denied" }], details: undefined, isError: true },
+    false,
+  );
+
+  // 失败结果不自动展开——保持折叠的错误摘要，用户仍可手动展开。
+  const collapsedLines = write.render(100).join("\n");
+  expect(collapsedLines).not.toContain("Input");
+  expect(collapsedLines).not.toContain("Output");
+  expect(collapsedLines).toContain("EACCES");
+
+  const edit = makeTool("edit", { file_path: "/tmp/a.ts" });
+  edit.updateResult(
+    { content: [{ type: "text", text: "Error: file not found" }], details: undefined, isError: true },
+    false,
+  );
+  const editLines = edit.render(100).join("\n");
+  expect(editLines).not.toContain("Input");
+  expect(editLines).not.toContain("Output");
+  expect(editLines).toContain("file not found");
+  hooks.shutdown();
+});
+
 test("edit auto-expands to the colored diff and collapses on user action", () => {
   const hooks = installDefaultMode();
   const edit = makeTool("edit");
