@@ -10,10 +10,10 @@
  * 更短值）；非交互（-p/--print）与 reload 不等待——fire-and-forget 让
  * promise 自然结束，避免拖慢无人值守脚本与重载流程。
  */
-import type { AgentEndEvent, ExtensionAPI, ExtensionContext, ExtensionFactory, SessionShutdownEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentEndEvent, ExtensionAPI, ExtensionContext, ExtensionFactory, SessionShutdownEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { sep } from "node:path";
-import { readManifest, userSkillsDir, applyReview, validateReviewOutput } from "./apply.ts";
-import { runEvolutionReview, type ReviewOutput, type ReviewDeps } from "./review.ts";
+import { isSkillStale, readManifest, recordSkillUse, userSkillsDir, applyReview, validateReviewOutput } from "./apply.ts";
+import { runEvolutionReview, type ExistingSkillInfo, type ReviewOutput, type ReviewDeps } from "./review.ts";
 import {
   addFreshMessages,
   getShutdownWaitMs,
@@ -38,19 +38,28 @@ function isNonInteractive(): boolean {
   return process.argv.some((arg) => arg === "-p" || arg === "--print" || arg.startsWith("--print=") || arg === "--mode" || arg.startsWith("--mode="));
 }
 
-/** 现有 pico 自产技能清单（清单内 + 用户级目录），供审查模型决定 create/update。 */
-function listEvolvedSkills(ctx: ExtensionContext): Array<{ name: string; description: string }> {
+/** 现有 pico 自产技能清单（清单内 + 用户级目录），附使用统计供审查模型判断活跃度。 */
+function listEvolvedSkills(ctx: ExtensionContext): ExistingSkillInfo[] {
   const manifest = readManifest();
   const root = userSkillsDir() + sep;
   return discoverSkills(ctx.cwd)
     .filter((s) => manifest.skills[s.name] !== undefined && s.filePath.startsWith(root))
-    .map((s) => ({ name: s.name, description: s.description }));
+    .map((s) => {
+      const entry = manifest.skills[s.name]!;
+      return {
+        name: s.name,
+        description: s.description,
+        useCount: entry.useCount,
+        lastUsedAt: entry.lastUsedAt,
+        lastResult: entry.lastResult,
+      };
+    });
 }
 
 async function consumeReview(
   ctx: ExtensionContext,
   messages: ExtractableMessage[],
-  existing: Array<{ name: string; description: string }>,
+  existing: ExistingSkillInfo[],
   config: EvolutionConfig,
   reviewDeps?: ReviewDeps,
 ): Promise<void> {
@@ -92,6 +101,22 @@ export interface EvolutionExtensionDeps {
  * DI 工厂（同 hooks/mcp/vision 模式）：测试传 fake reviewDeps 驱动完整链路，
  * 生产用默认。
  */
+function describeEvolvedSkills(cwd: string): string {
+  const manifest = readManifest();
+  const root = userSkillsDir() + sep;
+  const evolved = discoverSkills(cwd)
+    .filter((s) => manifest.skills[s.name] !== undefined && s.filePath.startsWith(root))
+    .map((s) => ({ name: s.name, description: s.description, entry: manifest.skills[s.name]! }));
+  if (evolved.length === 0) return "No evolved skills.";
+  const lines = evolved.map(({ name, description, entry }) => {
+    const usage = entry.lastUsedAt
+      ? `used ${entry.useCount}x, last ${entry.lastUsedAt.slice(0, 10)} ${entry.lastResult}`
+      : "never used";
+    return `  ${name} — ${description} (${usage})${isSkillStale(entry) ? " [stale]" : ""}`;
+  });
+  return `Evolved skills (${evolved.length}):\n${lines.join("\n")}`;
+}
+
 export function createEvolutionExtension(deps: EvolutionExtensionDeps = {}): ExtensionFactory {
   return (pi: ExtensionAPI) => {
     pi.on("session_start", (event) => {
@@ -100,6 +125,23 @@ export function createEvolutionExtension(deps: EvolutionExtensionDeps = {}): Ext
         if (event.reason !== "reload") resetSessionState();
       } catch {
         // best-effort — 必须不破坏会话启动
+      }
+    });
+
+    pi.on("tool_result", (event: ToolResultEvent) => {
+      // 使用反馈环：捕获 skill action=run 的自产技能调用（结果成败），
+      // 计入 manifest；非技能工具 / action=list / 非清单技能一律忽略。
+      try {
+        const config = readEvolutionConfig();
+        if (!config.enabled) return;
+        if (event.toolName !== "skill") return;
+        const details = event.details as { action?: unknown; skill?: unknown } | undefined;
+        if (details?.action !== "run") return;
+        const name = details.skill;
+        if (typeof name !== "string" || name.length === 0) return;
+        recordSkillUse(name, event.isError ? "error" : "success");
+      } catch {
+        // best-effort — 统计失败不得影响回合
       }
     });
 
@@ -125,6 +167,20 @@ export function createEvolutionExtension(deps: EvolutionExtensionDeps = {}): Ext
       } catch {
         // best-effort
       }
+    });
+
+    pi.registerCommand("evolution", {
+      description: "Show self-evolved skills with usage stats ([stale] = long-unused)",
+      handler: async (_args, ctx) => {
+        const text = describeEvolvedSkills(ctx.cwd);
+        if (ctx.hasUI) {
+          try {
+            ctx.ui.notify(text, "info");
+          } catch { }
+        } else {
+          console.log(text);
+        }
+      },
     });
   };
 }

@@ -11,8 +11,8 @@
  *
  * 本模块不做任何模型调用；模型输出永远只经 validate → apply 两步落盘。
  */
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join, sep } from "node:path";
 import { picoAgentHome } from "../paths.ts";
 import type { EvolutionConfig } from "./state.ts";
 import type { ReviewOutput } from "./review.ts";
@@ -31,6 +31,12 @@ export interface ApplyResult {
 interface ManifestEntry {
   createdAt: string;
   updatedAt: string;
+  /** 被 skill action=run 显式调用的累计次数（非自产技能不入清单，永不记录）。 */
+  useCount: number;
+  /** 最近一次调用的 ISO 时间；从未调用为 null。 */
+  lastUsedAt: string | null;
+  /** 最近一次调用结果；从未调用为 null。 */
+  lastResult: "success" | "error" | null;
 }
 
 interface Manifest {
@@ -39,6 +45,9 @@ interface Manifest {
 }
 
 const MANIFEST_FILE = ".pico-evolved.json";
+const ARCHIVE_DIR = ".archive";
+/** 手动 curator 的 stale 阈值。 */
+export const STALE_DAYS = 30;
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_NAME_LEN = 40;
 const MIN_NAME_LEN = 3;
@@ -61,16 +70,55 @@ export function manifestPath(): string {
   return join(userSkillsDir(), MANIFEST_FILE);
 }
 
+function normalizeEntry(e: unknown): ManifestEntry {
+  if (!e || typeof e !== "object") {
+    return { createdAt: "", updatedAt: "", useCount: 0, lastUsedAt: null, lastResult: null };
+  }
+  const rec = e as Record<string, unknown>;
+  const lastResult = rec.lastResult === "success" || rec.lastResult === "error" ? rec.lastResult : null;
+  return {
+    createdAt: typeof rec.createdAt === "string" ? rec.createdAt : "",
+    updatedAt: typeof rec.updatedAt === "string" ? rec.updatedAt : "",
+    useCount: typeof rec.useCount === "number" && Number.isFinite(rec.useCount) && rec.useCount >= 0 ? rec.useCount : 0,
+    lastUsedAt: typeof rec.lastUsedAt === "string" ? rec.lastUsedAt : null,
+    lastResult,
+  };
+}
+
 export function readManifest(): Manifest {
   try {
     const parsed = JSON.parse(readFileSync(manifestPath(), "utf-8")) as Partial<Manifest>;
     if (parsed && typeof parsed === "object" && parsed.skills && typeof parsed.skills === "object") {
-      return { version: 1, skills: parsed.skills as Record<string, ManifestEntry> };
+      const skills: Record<string, ManifestEntry> = {};
+      for (const [name, entry] of Object.entries(parsed.skills)) {
+        skills[name] = normalizeEntry(entry);
+      }
+      return { version: 1, skills };
     }
   } catch {
     // 缺失/损坏清单 = 空清单；下次写入自愈。
   }
   return { version: 1, skills: {} };
+}
+
+/** 清单内技能被 skill action=run 调用时记录一次使用；非清单技能忽略。 */
+export function recordSkillUse(name: string, result: "success" | "error"): boolean {
+  const manifest = readManifest();
+  const entry = manifest.skills[name];
+  if (!entry) return false;
+  entry.useCount += 1;
+  entry.lastUsedAt = new Date().toISOString();
+  entry.lastResult = result;
+  writeManifest(manifest);
+  return true;
+}
+
+/** 长期未用判定（手动 curator 的 stale 标记）：最近相关时间（使用或创建）距今超过阈值。 */
+export function isSkillStale(entry: ManifestEntry, nowMs: number = Date.now()): boolean {
+  // 从未用过 → 以创建时间起算；否则以最近使用起算。刚创建的技能不立即误报 stale。
+  const ts = Date.parse(entry.lastUsedAt ?? entry.createdAt);
+  if (!Number.isFinite(ts)) return true;
+  return nowMs - ts > STALE_DAYS * 24 * 60 * 60 * 1000;
 }
 
 function writeManifest(manifest: Manifest): void {
@@ -203,10 +251,31 @@ function isWithinSkillsDir(target: string): boolean {
   return target === root || target.startsWith(root + sep);
 }
 
+/**
+ * 覆盖前把旧 SKILL.md 归档到 skills/.archive/<name>/<mtime>.md，保留回退历史。
+ * 归档文件不是 SKILL.md 且位于嵌套目录，skill/catalog.ts 扫描天然忽略，
+ * 不会进入后续系统提示词注入。
+ */
+function archiveSkill(target: string, name: string, mtimeMs: number): void {
+  const dir = join(userSkillsDir(), ARCHIVE_DIR, name);
+  mkdirSync(dir, { recursive: true });
+  copyFileSync(target, join(dir, `${mtimeMs}.md`));
+}
+
+/** 清单条目写入：保留已有统计字段（update 不丢使用数据），create 从零开始。 */
+function manifestEntry(prev: ManifestEntry | undefined, updatedAtMs: number): ManifestEntry {
+  return {
+    createdAt: prev?.createdAt ?? new Date().toISOString(),
+    updatedAt: String(updatedAtMs),
+    useCount: prev?.useCount ?? 0,
+    lastUsedAt: prev?.lastUsedAt ?? null,
+    lastResult: prev?.lastResult ?? null,
+  };
+}
+
 export function applyReview(v: ValidatedReview): ApplyResult {
   const result: ApplyResult = { created: [], updated: [], skipped: [] };
   const manifest = readManifest();
-  const now = new Date().toISOString();
   const root = userSkillsDir();
 
   for (const item of v.create) {
@@ -226,7 +295,7 @@ export function applyReview(v: ValidatedReview): ApplyResult {
     }
     mkdirSync(join(root, item.name), { recursive: true });
     writeFileSync(target, renderSkillFile(item.name, item.description, item.content), { mode: 0o644 });
-    manifest.skills[item.name] = { createdAt: now, updatedAt: String(statSync(target).mtimeMs) };
+    manifest.skills[item.name] = manifestEntry(manifest.skills[item.name], statSync(target).mtimeMs);
     writeManifest(manifest);
     result.created.push(item.name);
   }
@@ -258,8 +327,9 @@ export function applyReview(v: ValidatedReview): ApplyResult {
       continue;
     }
     const description = readSkillDescription(target);
+    archiveSkill(target, item.name, mtimeMs);
     writeFileSync(target, renderSkillFile(item.name, description, item.content), { mode: 0o644 });
-    manifest.skills[item.name] = { createdAt: entry.createdAt, updatedAt: String(statSync(target).mtimeMs) };
+    manifest.skills[item.name] = manifestEntry(entry, statSync(target).mtimeMs);
     writeManifest(manifest);
     result.updated.push(item.name);
   }

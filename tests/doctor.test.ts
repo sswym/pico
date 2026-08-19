@@ -52,6 +52,34 @@ test("buildDoctorReport shows safety switches and capabilities", () => {
   }
 });
 
+test("buildDoctorReport Evolution section lists evolved skills with usage stats", () => {
+  const home = mkdtempSync(join(tmpdir(), "pico-doctor-home-"));
+  process.env.PICO_HOME = home;
+  try {
+    const agentDir = join(home, "agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ evolution: { enabled: true, reviewEveryTurns: 4, maxReviewsPerSession: 3 } }));
+    const skillsDir = join(home, "agent", "skills");
+    mkdirSync(join(skillsDir, "debug-node"), { recursive: true });
+    writeFileSync(join(skillsDir, "debug-node", "SKILL.md"), "---\nname: debug-node\ndescription: Debug Node services\n---\n\nsteps");
+    writeFileSync(
+      join(skillsDir, ".pico-evolved.json"),
+      JSON.stringify({
+        version: 1,
+        skills: { "debug-node": { createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z", useCount: 3, lastUsedAt: "2026-08-18T10:00:00.000Z", lastResult: "success" } },
+      }),
+    );
+
+    const report = buildDoctorReport("/repo");
+    expect(report).toContain("Evolution:");
+    expect(report).toContain("enabled: enabled");
+    expect(report).toContain("evolved skills: 1");
+    expect(report).toContain("debug-node — used 3x, last 2026-08-18 success");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("safety settings are read from settings.json and env overrides them", () => {
   const home = mkdtempSync(join(tmpdir(), "pico-doctor-home-"));
   process.env.PICO_HOME = home;
@@ -86,7 +114,7 @@ test("doctor extension registers /doctor and sends a visible report", async () =
   const commands = new Map<string, any>();
   const messages: any[] = [];
   const fakePi = {
-    on: () => {},
+    on: () => { },
     registerCommand: (name: string, opts: any) => commands.set(name, opts),
     sendMessage: (message: any) => messages.push(message),
   };
@@ -246,8 +274,8 @@ test("buildDoctorReport surfaces LSP init failures after lsp_status event", () =
   process.env.PICO_HOME = home;
   try {
     const pi = {
-      on: () => {},
-      registerCommand: () => {},
+      on: () => { },
+      registerCommand: () => { },
     } as never;
     doctorExtension(pi);
     publishExtensionEvent("lsp_status", {
@@ -272,8 +300,8 @@ test("buildDoctorReport reflects mid-session LSP failures without a manual statu
   process.env.PICO_HOME = home;
   try {
     const pi = {
-      on: () => {},
-      registerCommand: () => {},
+      on: () => { },
+      registerCommand: () => { },
     } as never;
     doctorExtension(pi);
 
@@ -496,7 +524,7 @@ test("session_start notifies once on model config conflicts", async () => {
     const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
     const fakePi = {
       on: (event: string, handler: (event: unknown, ctx: unknown) => void) => handlers.set(event, handler),
-      registerCommand: () => {},
+      registerCommand: () => { },
     };
     doctorExtension(fakePi as never);
     await handlers.get("session_start")!({}, {
@@ -534,7 +562,7 @@ test("session_start notifies on config.yml safety conflicts (ignored switches)",
     const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
     const fakePi = {
       on: (event: string, handler: (event: unknown, ctx: unknown) => void) => handlers.set(event, handler),
-      registerCommand: () => {},
+      registerCommand: () => { },
     };
     doctorExtension(fakePi as never);
     await handlers.get("session_start")!({}, { hasUI: false, ui: {} } as never);

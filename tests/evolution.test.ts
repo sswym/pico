@@ -6,14 +6,14 @@
  * Env isolation follows tests/skill.test.ts: PICO_HOME redirected to a
  * mkdtemp directory in beforeEach, restored in afterEach.
  */
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createEvolutionExtension } from "../src/extensions/evolution/index.ts";
 import { __resetEvolutionStateForTests, getState, setShutdownWaitMsForTests } from "../src/extensions/evolution/state.ts";
-import { userSkillsDir } from "../src/extensions/evolution/apply.ts";
+import { readManifest, userSkillsDir } from "../src/extensions/evolution/apply.ts";
 
 let homeDir: string;
 let oldPicoHome: string | undefined;
@@ -43,19 +43,24 @@ function makeFakeComplete(responses: string[]): FakeComplete {
   return { counter, prompts, complete };
 }
 
-function makeExtensionWith(fake: FakeComplete): { pi: ExtensionAPI; handlers: Record<string, Array<(event: never, ctx: ExtensionContext) => unknown>> } {
-  const { pi, handlers } = makePi();
+function makeExtensionWith(fake: FakeComplete): { pi: ExtensionAPI; handlers: Record<string, Array<(event: never, ctx: ExtensionContext) => unknown>>; commands: Record<string, unknown> } {
+  const { pi, handlers, commands } = makePi();
   createEvolutionExtension({ reviewDeps: { complete: fake.complete as never } })(pi);
-  return { pi, handlers };
+  return { pi, handlers, commands };
 }
 
-function makePi(): { pi: ExtensionAPI; handlers: Record<string, Array<(event: never, ctx: ExtensionContext) => unknown>> } {
+function makePi(): { pi: ExtensionAPI; handlers: Record<string, Array<(event: never, ctx: ExtensionContext) => unknown>>; commands: Record<string, unknown> } {
   const handlers: Record<string, Array<(event: never, ctx: ExtensionContext) => unknown>> = {};
+  const commands: Record<string, unknown> = {};
   return {
     handlers,
+    commands,
     pi: {
       on: (event: string, handler: never) => {
         (handlers[event] ??= []).push(handler as never);
+      },
+      registerCommand: (name: string, opts: unknown) => {
+        commands[name] = opts;
       },
     } as unknown as ExtensionAPI,
   };
@@ -283,6 +288,142 @@ test("session_shutdown does not wait on reload", async () => {
   await shutdownHandler({ type: "session_shutdown", reason: "reload" } as never, ctx);
   expect(Date.now() - started).toBeLessThan(40); // 立即返回
   release!();
+});
+
+// ---------------------------------------------------------------------------
+// 使用反馈环：tool_result 捕获 skill run → manifest 使用统计
+// ---------------------------------------------------------------------------
+
+function skillToolResult(name: string, isError = false): Record<string, unknown> {
+  return {
+    type: "tool_result",
+    toolCallId: "call-1",
+    input: { action: "run", name },
+    content: [{ type: "text", text: "done" }],
+    isError,
+    toolName: "skill",
+    details: { action: "run", skill: name },
+  };
+}
+
+/** 走完整链路：触发审查落盘技能 → 模拟 skill run → 断言 manifest 统计。 */
+async function seedSkillViaReview(fake: FakeComplete): Promise<{ handlers: Record<string, Array<(event: never, ctx: ExtensionContext) => unknown>> }> {
+  writeSettings({ enabled: true, reviewEveryTurns: 1, maxReviewsPerSession: 2 });
+  const { handlers } = makeExtensionWith(fake);
+  handlers["session_start"]!.forEach((h) => h({ type: "session_start", reason: "startup" } as never, makeCtx()));
+  const ctx = makeCtx();
+  handlers["agent_end"]!.forEach((h) => h({ type: "agent_end", messages: agentEndMessages(1) } as never, ctx));
+  await drain();
+  return { handlers };
+}
+
+test("tool_result from skill run records usage in manifest", async () => {
+  const fake = makeFakeComplete([JSON.stringify({ create: [{ name: "used-skill", description: "d", content: "body" }], update: [] })]);
+  const { handlers } = await seedSkillViaReview(fake);
+  expect(readManifest().skills["used-skill"]?.useCount).toBe(0);
+
+  const ctx = makeCtx();
+  handlers["tool_result"]!.forEach((h) => h(skillToolResult("used-skill") as never, ctx));
+  const entry = readManifest().skills["used-skill"]!;
+  expect(entry.useCount).toBe(1);
+  expect(entry.lastResult).toBe("success");
+  expect(entry.lastUsedAt).toBeTruthy();
+
+  // 再跑一次：累计
+  handlers["tool_result"]!.forEach((h) => h(skillToolResult("used-skill") as never, ctx));
+  expect(readManifest().skills["used-skill"]!.useCount).toBe(2);
+});
+
+test("tool_result error marks last run as error", async () => {
+  const fake = makeFakeComplete([JSON.stringify({ create: [{ name: "flakey-skill", description: "d", content: "body" }], update: [] })]);
+  const { handlers } = await seedSkillViaReview(fake);
+  const ctx = makeCtx();
+  handlers["tool_result"]!.forEach((h) => h(skillToolResult("flakey-skill", true) as never, ctx));
+  const entry = readManifest().skills["flakey-skill"]!;
+  expect(entry.useCount).toBe(1);
+  expect(entry.lastResult).toBe("error");
+});
+
+test("tool_result ignores non-skill tools, list action, and non-evolved skills", async () => {
+  const fake = makeFakeComplete([JSON.stringify({ create: [{ name: "tracked", description: "d", content: "body" }], update: [] })]);
+  const { handlers } = await seedSkillViaReview(fake);
+  const ctx = makeCtx();
+
+  // 非 skill 工具
+  handlers["tool_result"]!.forEach((h) => h({ ...skillToolResult("tracked"), toolName: "bash" } as never, ctx));
+  // skill 工具但 action=list
+  handlers["tool_result"]!.forEach((h) => h({ ...skillToolResult("tracked"), details: { action: "list", count: 1 } } as never, ctx));
+  // 非清单技能（用户手写）
+  handlers["tool_result"]!.forEach((h) => h(skillToolResult("user-handwritten") as never, ctx));
+  expect(readManifest().skills["tracked"]!.useCount).toBe(0);
+});
+
+test("tool_result is ignored when evolution disabled", async () => {
+  writeSettings({ enabled: false, reviewEveryTurns: 1 });
+  const fake = makeFakeComplete([JSON.stringify({ create: [{ name: "off-skill", description: "d", content: "body" }], update: [] })]);
+  const { pi, handlers } = makePi();
+  createEvolutionExtension({ reviewDeps: { complete: fake.complete as never } })(pi);
+  handlers["session_start"]!.forEach((h) => h({ type: "session_start", reason: "startup" } as never, makeCtx()));
+  const ctx = makeCtx();
+  handlers["agent_end"]!.forEach((h) => h({ type: "agent_end", messages: agentEndMessages(1) } as never, ctx));
+  await drain();
+  handlers["tool_result"]!.forEach((h) => h(skillToolResult("off-skill") as never, ctx));
+  expect(readManifest().skills["off-skill"]).toBeUndefined();
+});
+
+// ---------------------------------------------------------------------------
+// /evolution 命令：自产技能清单 + 使用统计 + stale 标记
+// ---------------------------------------------------------------------------
+
+test("/evolution registers a command and lists evolved skills with usage", async () => {
+  const fake = makeFakeComplete([JSON.stringify({ create: [{ name: "cmd-skill", description: "Cmd skill", content: "body" }], update: [] })]);
+  writeSettings({ enabled: true, reviewEveryTurns: 1, maxReviewsPerSession: 2 });
+  const { pi, handlers, commands } = makePi();
+  createEvolutionExtension({ reviewDeps: { complete: fake.complete as never } })(pi);
+  handlers["session_start"]!.forEach((h) => h({ type: "session_start", reason: "startup" } as never, makeCtx()));
+  const ctx = makeCtx();
+  handlers["agent_end"]!.forEach((h) => h({ type: "agent_end", messages: agentEndMessages(1) } as never, ctx));
+  await drain();
+
+  expect(commands["evolution"]).toBeTruthy();
+  const handler = (commands["evolution"] as { handler: (args: never, c: never) => Promise<void> }).handler;
+  let output = "";
+  const logSpy = spyOn(console, "log").mockImplementation((text: string) => {
+    output = text;
+  });
+  await handler(null as never, { cwd: homeDir, hasUI: false } as never);
+  logSpy.mockRestore();
+  expect(output).toContain("Evolved skills (1)");
+  expect(output).toContain("cmd-skill — Cmd skill (never used)");
+  expect(output).not.toContain("[stale]"); // 刚创建，未到 stale 阈值
+});
+
+test("/evolution marks long-unused skills as stale", async () => {
+  const fake = makeFakeComplete([JSON.stringify({ create: [{ name: "stale-skill", description: "d", content: "body" }], update: [] })]);
+  writeSettings({ enabled: true, reviewEveryTurns: 1, maxReviewsPerSession: 2 });
+  const { pi, handlers, commands } = makePi();
+  createEvolutionExtension({ reviewDeps: { complete: fake.complete as never } })(pi);
+  handlers["session_start"]!.forEach((h) => h({ type: "session_start", reason: "startup" } as never, makeCtx()));
+  const ctx = makeCtx();
+  handlers["agent_end"]!.forEach((h) => h({ type: "agent_end", messages: agentEndMessages(1) } as never, ctx));
+  await drain();
+
+  // 把 createdAt 改成 31 天前，模拟创建后长期未用
+  const oldDay = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+  writeFileSync(
+    join(userSkillsDir(), ".pico-evolved.json"),
+    JSON.stringify({ version: 1, skills: { "stale-skill": { createdAt: oldDay, updatedAt: String(Date.now()), useCount: 0, lastUsedAt: null, lastResult: null } } }, null, 2) + "\n",
+  );
+
+  const handler = (commands["evolution"] as { handler: (args: never, c: never) => Promise<void> }).handler;
+  let output = "";
+  const logSpy = spyOn(console, "log").mockImplementation((text: string) => {
+    output = text;
+  });
+  await handler(null as never, { cwd: homeDir, hasUI: false } as never);
+  logSpy.mockRestore();
+  expect(output).toContain("stale-skill");
+  expect(output).toContain("[stale]");
 });
 
 // ---------------------------------------------------------------------------

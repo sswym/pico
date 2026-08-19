@@ -10,6 +10,15 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { withTimeoutSignal } from "../web/fetch.ts";
 import { type EvolutionConfig, type ExtractableMessage, readEvolutionConfig } from "./state.ts";
 
+/** 审查输入中现有自产技能的信息（含使用统计，供模型判断技能的活跃度）。 */
+export interface ExistingSkillInfo {
+  name: string;
+  description: string;
+  useCount: number;
+  lastUsedAt: string | null;
+  lastResult: "success" | "error" | null;
+}
+
 export const REVIEW_TIMEOUT_MS = 60_000;
 export const MAX_OUTPUT_TOKENS = 8192;
 export const EXCERPT_BUDGET_CHARS = 30_000;
@@ -47,6 +56,14 @@ Rules:
   names like "fix-X" or "debug-Y-today" are invalid. At most 1 create.
 - UPDATE an existing evolved skill when this session corrected, extended, or
   contradicted its procedure. Never update skills not listed above.
+- PRESERVE-AND-EXTEND on update: keep every step, trigger, and pitfall the
+  current skill already covers; only add what this session proved. Never drop
+  or weaken an existing step just because one task seemed to win without it —
+  a local win that sacrifices general coverage is a regression. When unsure
+  whether an old step is still needed, keep it.
+- Usage stats (used Nx / last used date / result) tell you whether a skill is
+  actually used. Never extend a skill that is long-unused or last-failed;
+  only update it when this session decisively proved its steps wrong.
 - content is the SKILL.md body WITHOUT frontmatter. Imperative steps, trigger
   conditions, pitfalls. Keep under 3000 chars.
 - User corrections of style/workflow are first-class signals: encode them as
@@ -56,12 +73,20 @@ Rules:
 
 export function buildReviewPrompt(
   messages: ExtractableMessage[],
-  existing: Array<{ name: string; description: string }>,
+  existing: ExistingSkillInfo[],
 ): string {
   const existingBlock =
-    existing.length === 0 ? "(none)" : existing.map((e) => `- ${e.name} — ${e.description}`).join("\n");
+    existing.length === 0
+      ? "(none)"
+      : existing.map((e) => `- ${e.name} — ${e.description} (used ${e.useCount}x${formatLastUse(e)})`).join("\n");
   const excerpt = formatExcerpt(messages);
   return REVIEW_PROMPT.replace("{{existing}}", existingBlock).replace("{{excerpt}}", excerpt);
+}
+
+/** ISO 时间戳 → "2026-08-18 success" 式简短使用痕迹；从未使用返回空串。 */
+function formatLastUse(e: ExistingSkillInfo): string {
+  if (!e.lastUsedAt) return "";
+  return `, last ${e.lastUsedAt.slice(0, 10)} ${e.lastResult ?? "unknown"}`;
 }
 
 /** 消息 → 文本（新→旧顺序保留：正常时间序即 newest last），超预算丢最旧。 */
@@ -113,7 +138,7 @@ function resolveReviewModel(ctx: ExtensionContext, config: EvolutionConfig): Mod
 export async function runEvolutionReview(
   ctx: ExtensionContext,
   messages: ExtractableMessage[],
-  existing: Array<{ name: string; description: string }>,
+  existing: ExistingSkillInfo[],
   deps: ReviewDeps = defaultReviewDeps,
 ): Promise<ReviewOutput | null> {
   const config = readEvolutionConfig();

@@ -16,11 +16,27 @@ import type { ExtractableMessage } from "../src/extensions/evolution/state.ts";
 
 test("buildReviewPrompt includes existing skills and untrusted-data warning", () => {
   const messages: ExtractableMessage[] = [{ role: "user", content: "fix the auth bug" }];
-  const prompt = buildReviewPrompt(messages, [{ name: "debug-node", description: "Debug Node services" }]);
-  expect(prompt).toContain("debug-node — Debug Node services");
+  const prompt = buildReviewPrompt(messages, [
+    { name: "debug-node", description: "Debug Node services", useCount: 3, lastUsedAt: "2026-08-18T10:00:00.000Z", lastResult: "success" },
+  ]);
+  expect(prompt).toContain("debug-node — Debug Node services (used 3x, last 2026-08-18 success)");
   expect(prompt).toContain("untrusted external content");
   expect(prompt).toContain("fix the auth bug");
   expect(prompt).toContain("At most 1 create");
+  expect(prompt).toContain("PRESERVE-AND-EXTEND on update");
+});
+
+test("buildReviewPrompt shows never-used skills without a last-use suffix", () => {
+  const prompt = buildReviewPrompt([{ role: "user", content: "hi" }], [
+    { name: "fresh-skill", description: "Just created", useCount: 0, lastUsedAt: null, lastResult: null },
+  ]);
+  expect(prompt).toContain("fresh-skill — Just created (used 0x)");
+  expect(prompt).not.toContain("fresh-skill — Just created (used 0x, last");
+});
+
+test("buildReviewPrompt instructs not to extend long-unused or last-failed skills", () => {
+  const prompt = buildReviewPrompt([{ role: "user", content: "hi" }], []);
+  expect(prompt).toContain("Never extend a skill that is long-unused or last-failed");
 });
 
 test("buildReviewPrompt renders empty existing-skill list as (none)", () => {

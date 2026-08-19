@@ -69,13 +69,21 @@ function evolutionSummary(): string[] {
   const model = config.provider && config.model
     ? `${config.provider}/${config.model}`
     : "(follows current session model)";
-  const evolved = Object.keys(readManifest().skills);
+  const manifest = readManifest();
+  const evolved = Object.keys(manifest.skills);
   return [
     `  enabled: ${enabled(config.enabled)} (env PICO_EVOLUTION_ENABLED or settings evolution.enabled)`,
     `  model: ${model}`,
     `  reviewEveryTurns: ${config.reviewEveryTurns}, maxReviewsPerSession: ${config.maxReviewsPerSession}`,
     `  reviews this session: ${getState().reviewsDone}`,
-    `  evolved skills: ${evolved.length > 0 ? evolved.join(", ") : "(none)"}`,
+    `  evolved skills: ${evolved.length}`,
+    ...evolved.map((name) => {
+      const entry = manifest.skills[name]!;
+      const usage = entry.lastUsedAt
+        ? `used ${entry.useCount}x, last ${entry.lastUsedAt.slice(0, 10)} ${entry.lastResult}`
+        : "never used";
+      return `    ${name} — ${usage}`;
+    }),
     `  privacy: ${config.enabled ? "session content is sent to the review model" : "off"}`,
   ];
 }
@@ -97,8 +105,8 @@ export function buildDoctorReport(cwd: string): string {
     : settingsValidation.issues.map((issue) => `  ${issue.key}: ${issue.message}`);
   const lspLines = lspFailures.length > 0
     ? lspFailures.map(
-        (f) => `  ${f.server}: init failed — ${f.message} (${new Date(f.at).toISOString()})`,
-      )
+      (f) => `  ${f.server}: init failed — ${f.message} (${new Date(f.at).toISOString()})`,
+    )
     : ["  no init failures recorded"];
   return [
     "pico doctor",
@@ -197,7 +205,7 @@ function notifyConfigWarning(ctx: ExtensionContext, message: string): void {
     } else {
       process.stderr.write(`[pico] ${message}\n`);
     }
-  } catch {}
+  } catch { }
 }
 
 /**
@@ -252,7 +260,7 @@ function startupConfigAdvisories(ctx: ExtensionContext): void {
             "info",
           );
         }
-      } catch {}
+      } catch { }
       return;
     }
   }
@@ -275,7 +283,7 @@ function startupConfigAdvisories(ctx: ExtensionContext): void {
     notifyConfigWarning(
       ctx,
       `配置冲突：config.yml 的 safety 开关被 pico 忽略（实际只认 settings.json 与 env）：${detail}。` +
-        "运行 /doctor 查看迁移指引。",
+      "运行 /doctor 查看迁移指引。",
     );
   }
   const modelConflicts = detectConfigYmlModelConflicts();
@@ -309,17 +317,17 @@ function startupConfigAdvisories(ctx: ExtensionContext): void {
           // scenario is exactly where a silent model fallback is dangerous.
           process.stderr.write(`[pico] ${message}\n`);
         }
-      } catch {}
+      } catch { }
     }
     return;
   }
   try {
     ctx.ui.notify(
       `当前默认模型 ${missing.provider}/${missing.model} 缺少 requiresReasoningContentOnAssistantMessages 兼容配置，` +
-        "多轮对话可能触发 400 错误。运行 /doctor 查看修复指引。",
+      "多轮对话可能触发 400 错误。运行 /doctor 查看修复指引。",
       "warning",
     );
-  } catch {}
+  } catch { }
 }
 
 export const doctorExtension: ExtensionFactory = (pi: ExtensionAPI) => {
@@ -352,7 +360,7 @@ export const doctorExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       // nothing with a success exit code.
       try {
         console.log(report);
-      } catch {}
+      } catch { }
     },
   });
 };

@@ -843,7 +843,7 @@ flowchart TD
 | L27 | **ccstyle 无 rich diff 词级高亮**（edit/write diff 为行级着色，无 intra-line 反色）；无 hover 高亮（1003 all-motion 在 tmux 下不可靠）、无 show-more 全量预览、无回到底部按钮 | 展开 diff 可读性略逊上游、无 hover 提示 | v1 裁剪项（§4.15），可后续补 |
 | L28 | **ccstyle 全接管后 pico 定制工具折叠摘要统一为单行**：subagent 进度列表、memory 结果细节、todo 列表等定制多行反馈移入展开态（Input/Output） | 折叠态信息密度下降 | 全接管取舍；如需可单点放回定制渲染器 |
 | L29 | **`/ccstyle` 切换不重渲染已挂载工具**：分组/渲染补丁只对新挂载的工具生效，on/off 切换后旧工具卡保持原视图直至下次 updateDisplay | 切换后视觉不一致（新会话正常） | **部分缓解**（第十七轮：`/ccstyle off` 与 `ccstyle.enabled=false` 完全关闭渲染补丁，已挂载工具随下次 updateDisplay 回原生渲染；主动强制重渲染仍无 TUI 句柄） |
-| L30 | **evolution 技能库无 curator 整理**：无自动合并重叠技能/淘汰长期未用技能（hermes curator 对应物）；技能只增不整理 | 技能库可能缓慢膨胀 | Phase 2 规划（见 docs/evolution-design.md §9）；当前靠审查纪律（类级技能、create≤1/会话）与手动清理 |
+| L30 | **evolution 技能库无自动 curator**：无自动合并重叠技能/淘汰长期未用技能（hermes curator 对应物）；技能只增不整理 | 技能库可能缓慢膨胀 | **部分缓解**（2026-08：使用反馈环落地——`tool_result` 捕获 skill run 计入 manifest 统计，审查 prompt 注入使用统计；`/evolution` 命令列出自产技能 + 使用统计 + `[stale]` 标记，手动 curator 可执行）；自动合并/淘汰待使用数据积累后评估（见 docs/evolution-design.md §9/§13） |
 | L31 | **evolution 审查质量依赖模型判断**：审查模型对"可复用方法论"的判定影响沉淀密度；技能内容未经人工审阅直接进入下一会话系统提示词 | 低质/重复技能可能沉淀 | 默认关闭 + 注入特征门禁 + 用户可随时删除技能/清清单（`/doctor` Evolution 段可见全量）；如不满意可换更强审查模型 |
 | L32 | **`/model` 选择器搜索无法匹配目录中真实模型**（deepseek-v4-flash 搜索 "No matching models"）；误 Enter 会把选择持久化进 settings.json defaultModel | 模型切换困难、误写配置 | 受上游搜索/过滤逻辑约束；pico 侧建议加确认弹窗与写前校验 |
 | L33 | **`/export --path` 参数解析**：上游把 `--path` 后的值解析为位置参数并生成同名文件（实测产生 `--path` 文件） | 导出误生成垃圾文件 | **已缓解**（第二十二轮）：`bin/pico.ts` 先于上游 `validateExportArg` 预校验——非 help/version 且 `--export` 后紧跟标志/空值时 stderr 报错 + exit 2，不再落盘垃圾文件（`tests/export-arg.test.ts`） |

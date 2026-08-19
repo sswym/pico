@@ -100,7 +100,7 @@ export interface ReviewDeps {
 export async function runEvolutionReview(
   ctx: ExtensionContext,
   messages: ExtractableMessage[],
-  existing: SkillInfo[],        // discoverSkills 过滤出清单内技能（name + description）
+  existing: ExistingSkillInfo[],  // discoverSkills 过滤出清单内技能（name + description + 使用统计）
   deps: ReviewDeps = defaultReviewDeps,
 ): Promise<ReviewOutput | null>   // null = 模型不可用/解析失败，静默降级
 ```
@@ -144,8 +144,10 @@ export function applyReview(v: ValidatedReview): ApplyResult            // 写�
 清单文件：`~/.pico/agent/skills/.pico-evolved.json`
 
 ```json
-{ "version": 1, "skills": { "<name>": { "createdAt": "ISO", "updatedAt": "ISO" } } }
+{ "version": 1, "skills": { "<name>": { "createdAt": "ISO", "updatedAt": "<mtimeMs>", "useCount": 0, "lastUsedAt": null, "lastResult": null } } }
 ```
+
+条目字段：`createdAt`（创建 ISO）、`updatedAt`（写入后文件 mtime 浮点，用于用户修改检测）、**使用统计**——`useCount`（被 `skill action=run` 显式调用的累计次数）、`lastUsedAt`（最近调用 ISO）、`lastResult`（`"success"`/`"error"`）。旧条目（无统计字段）读取时 normalize 补默认；update 写清单时保留既有统计（create 从零开始）。统计只记录**显式 skill run**——技能指令已随系统提示词自动注入，agent 常直接照做而不显式 run，因此 useCount 是真实使用的下界（见 §13 实测）。
 
 **用户修改检测只用 mtime 比对**（清单 updatedAt vs 磁盘 mtime，秒级精度对低频审查够用），不引入哈希/bytes 字段。
 
@@ -157,7 +159,7 @@ export function applyReview(v: ValidatedReview): ApplyResult            // 写�
 You are the skill-curation pass for pico, a coding agent.
 
 Existing pico-evolved skills (may be empty):
-<name> — <description>
+<name> — <description> (used Nx, last YYYY-MM-DD success|error)
 
 Conversation excerpt, newest last:
 <截断消息，预算 30_000 字符>
@@ -171,6 +173,9 @@ Rules:
   names like "fix-X" or "debug-Y-today" are invalid. At most 1 create.
 - UPDATE an existing evolved skill when this session corrected, extended, or
   contradicted its procedure. Never update skills not listed above.
+- Usage stats (used Nx / last used date / result) tell you whether a skill is
+  actually used. Never extend a skill that is long-unused or last-failed;
+  only update it when this session decisively proved its steps wrong.
 - content is the SKILL.md body WITHOUT frontmatter. Imperative steps, trigger
   conditions, pitfalls. Keep under 3000 chars.
 - User corrections of style/workflow are first-class signals: encode them as
@@ -247,7 +252,10 @@ envmap.ts 登记（env-first）：
 
 **Phase 1（本次范围）**：state + index + review + apply + 配置登记 + /doctor 段 + 测试。交付标准：开启后每个会话最多 2 次审查，可复用流程自动沉淀为带 `x-pico-evolved` 标记的技能，下一会话生效；`bun run verify` 全绿。
 
-**Phase 2**：技能使用后 patch——skill run 的 tool_result / subagent_completed 事件把"用了哪个技能 + 结果"注入下次审查上下文（补"使用中改进"闭环）；curator——每周低频任务（复用 subagent 通道读技能文件）合并重叠技能、淘汰长期未用技能；使用统计（bump 计数）驱动 curator 决策。
+**Phase 2（使用反馈环最小版 2026-08 已实现，curator 手动版已实现；自动整理待评估）**：
+- **使用反馈环（已实现）**：`tool_result` 订阅捕获 `skill action=run`（按 `event.details.action==="run"` 过滤，list/非 skill 工具忽略）→ `recordSkillUse` 计入 manifest 使用统计；审查 prompt 的 existing 块注入 `used Nx, last <date> <result>` + 新增规则"长期未用/最近失败的技能不扩展"（见 §4.4/§5）。只统计显式 run——隐式使用（技能注入系统提示词后直接照做）不可观测，useCount 是下界（见 §13）。
+- **curator 手动版（已实现）**：`/evolution` 命令列出全部自产技能 + 使用统计 + `[stale]` 标记（最近相关时间 = lastUsedAt ?? createdAt 距今超 30 天）。只展示不删除——删除是用户决策（`rm -rf ~/.pico/agent/skills/<name>` 后条目自然失效）。
+- **待评估**：自动 curator（合并重叠技能/淘汰长期未用）仍依赖使用数据积累后的模式判断；`subagent_completed` 事件驱动仍按 §4.2 约定预留。
 
 **Phase 3**（独立功能，另行设计）：session_search——FTS5 会话全文检索工具（hermes 的跨会话回溯能力，pico 目前没有）。
 
@@ -288,3 +296,13 @@ Phase 1 实现后真实场景（pico -p + opencode-go/deepseek-v4-flash）验证
 - **发现并修复：mtime 同毫秒误判**——写入后立即 update 时，文件 mtime 浮点毫秒可能大于清单 updatedAt（ISO 毫秒截断），被误判 user-modified。修复：清单 updatedAt 改存写入后文件 mtime（浮点），比较带 +1ms 容差；旧 ISO 值解析 NaN 时保守跳过。
 - **新增 env `PICO_EVOLUTION_REVIEW_EVERY_TURNS`**（env-first over settings，已登记 envmap）：真实场景可测性需要（-p 单回合不触发默认 6 回合阈值），顺带成为用户可用的阈值覆盖入口。
 - **-p 模式的审查语义确认**：`await main()` 自然退出时 Bun 等待 pending fetch，回合末触发的审查若已发出请求会完成落盘；静默路径（模型判断无技能 → 空 JSON）是设计预期（宁缺毋滥），实测两次空结果后一次真实技能产出。
+
+## 13. 使用反馈环与手动 curator 实现期真实场景测试记录（2026-08）
+
+Phase 2 最小版（使用统计 + tool_result 捕获 + /evolution 命令 + /doctor 段）实现后真实场景（pico -p + kevimllm/deepseek-v4-flash，PICO_EVOLUTION_ENABLED=1 + REVIEW_EVERY_TURNS=1）验证结论：
+
+- **审查→落盘→统计字段全链路真实工作**：真实端口冲突任务（EADDRINUSE 8123）触发审查，`port-conflict-resolution` 技能落盘（frontmatter 带 `x-pico-evolved`、引号转义 description 保真）；manifest 新条目带 `useCount:0/lastUsedAt:null/lastResult:null`；**旧条目（无统计字段）被 normalize 兼容**——写新条目时整份清单重写，旧条目自动补齐统计字段。
+- **真实 skill run 捕获**：第二轮任务中 agent 调用 `skill action=run port-conflict-resolution` 后 manifest 变为 `useCount:1, lastUsedAt:"2026-08-19T09:21:42Z", lastResult:"success"`；第三轮明确指示 run 后统计再更新——tool_result 事件链、details 解析、白名单过滤全部真实工作。
+- **发现真实局限：隐式使用不可观测**——第一轮端口冲突任务 agent 只调用 `skill action=list`（查可用技能）后直接按系统提示词注入的技能指令行事，不显式 run，因此该次实际使用未被计数。结论：技能注入是自动的，useCount 只反映显式委派式调用，是真实使用的下界；审查 prompt 与 stale 判定不应把 useCount=0 当作"从未使用"的强证据（stale 判定已用 createdAt 起算兜底，见 §4.4）。
+- **/doctor 与 /evolution 真实数据展示**：4 个真实自产技能逐条显示统计；`port-conflict-resolution — used 1x, last 2026-08-19 success`；从未使用技能显示 `never used`。
+- **skill list 不被计数**：`action=list` 的 tool_result 被正确忽略（details.action !== "run"），列表查询不污染统计。

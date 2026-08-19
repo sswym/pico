@@ -6,14 +6,16 @@
  * mkdtemp directory in beforeEach, restored in afterEach.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   applyReview,
   containsInjection,
+  isSkillStale,
   manifestPath,
   readManifest,
+  recordSkillUse,
   sanitizeSkillName,
   userSkillsDir,
   validateReviewOutput,
@@ -260,6 +262,30 @@ test("applyReview updates an evolved skill and preserves its description", () =>
   expect(content).not.toContain("original body");
 });
 
+test("applyReview archives the previous version before overwriting (preserve-and-extend)", () => {
+  seedEvolvedSkill("arch");
+  const result = applyReview({ create: [], update: [{ name: "arch", content: "v2 body" }] });
+  expect(result.updated).toEqual(["arch"]);
+
+  const archiveDir = join(userSkillsDir(), ".archive", "arch");
+  const versions = readdirSync(archiveDir).filter((f) => f.endsWith(".md"));
+  expect(versions.length).toBe(1);
+  expect(readFileSync(join(archiveDir, versions[0]!), "utf-8")).toContain("original body");
+  // 归档不参与技能发现：新版本仍在原位
+  expect(readSkill("arch")).toContain("v2 body");
+});
+
+test("applyReview archives each update generation separately", () => {
+  seedEvolvedSkill("gen");
+  applyReview({ create: [], update: [{ name: "gen", content: "v2" }] });
+  applyReview({ create: [], update: [{ name: "gen", content: "v3" }] });
+
+  const archiveDir = join(userSkillsDir(), ".archive", "gen");
+  const versions = readdirSync(archiveDir).filter((f) => f.endsWith(".md"));
+  expect(versions.length).toBe(2);
+  expect(readSkill("gen")).toContain("v3");
+});
+
 test("applyReview refuses update of skills not in manifest", () => {
   const dir = join(userSkillsDir(), "foreign");
   mkdirSync(dir, { recursive: true });
@@ -305,4 +331,88 @@ test("applyReview writes manifest after skills (both files present)", () => {
   expect(result.created).toEqual(["both"]);
   expect(existsSync(manifestPath())).toBe(true);
   expect(existsSync(join(userSkillsDir(), "both", "SKILL.md"))).toBe(true);
+});
+
+// ---------------------------------------------------------------------------
+// 使用统计：recordSkillUse / isSkillStale / 字段保留
+// ---------------------------------------------------------------------------
+
+test("recordSkillUse records success and accumulates count", () => {
+  seedEvolvedSkill("stat");
+  expect(recordSkillUse("stat", "success")).toBe(true);
+  expect(recordSkillUse("stat", "success")).toBe(true);
+  const entry = readManifest().skills["stat"]!;
+  expect(entry.useCount).toBe(2);
+  expect(entry.lastResult).toBe("success");
+  expect(entry.lastUsedAt).toBeTruthy();
+});
+
+test("recordSkillUse records error result", () => {
+  seedEvolvedSkill("errstat");
+  recordSkillUse("errstat", "error");
+  const entry = readManifest().skills["errstat"]!;
+  expect(entry.useCount).toBe(1);
+  expect(entry.lastResult).toBe("error");
+});
+
+test("recordSkillUse ignores skills not in manifest (user-written)", () => {
+  expect(recordSkillUse("never-evolved", "success")).toBe(false);
+  expect(readManifest().skills["never-evolved"]).toBeUndefined();
+});
+
+test("applyReview update preserves usage stats", () => {
+  seedEvolvedSkill("keepstat");
+  recordSkillUse("keepstat", "success");
+  const before = readManifest().skills["keepstat"]!;
+  expect(before.useCount).toBe(1);
+
+  const result = applyReview({ create: [], update: [{ name: "keepstat", content: "v2 body" }] });
+  expect(result.updated).toEqual(["keepstat"]);
+  const after = readManifest().skills["keepstat"]!;
+  expect(after.useCount).toBe(1); // 未被 update 清零
+  expect(after.lastResult).toBe("success");
+  expect(after.createdAt).toBe(before.createdAt); // createdAt 也保留
+});
+
+test("readManifest normalizes legacy entries without usage fields", () => {
+  mkdirSync(userSkillsDir(), { recursive: true });
+  writeFileSync(
+    manifestPath(),
+    JSON.stringify({ version: 1, skills: { "old-skill": { createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" } } }),
+  );
+  const entry = readManifest().skills["old-skill"]!;
+  expect(entry.useCount).toBe(0);
+  expect(entry.lastUsedAt).toBeNull();
+  expect(entry.lastResult).toBeNull();
+});
+
+test("isSkillStale flags never-used-for-long and long-unused skills", () => {
+  const now = Date.now();
+
+  seedEvolvedSkill("fresh");
+  expect(isSkillStale(readManifest().skills["fresh"]!, now)).toBe(false); // 刚创建、从未使用 → 不误报
+
+  seedEvolvedSkill("recent");
+  recordSkillUse("recent", "success");
+  expect(isSkillStale(readManifest().skills["recent"]!, Date.now())).toBe(false); // 刚用过
+
+  // 手动构造 31 天前创建、从未使用
+  writeFileSync(
+    manifestPath(),
+    JSON.stringify({
+      version: 1,
+      skills: { neverfresh: { createdAt: new Date(now - 31 * 24 * 60 * 60 * 1000).toISOString(), updatedAt: "2026-01-01T00:00:00.000Z", useCount: 0, lastUsedAt: null, lastResult: null } },
+    }),
+  );
+  expect(isSkillStale(readManifest().skills["neverfresh"]!, now)).toBe(true);
+
+  // 31 天前使用过
+  writeFileSync(
+    manifestPath(),
+    JSON.stringify({
+      version: 1,
+      skills: { ancient: { createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", useCount: 1, lastUsedAt: new Date(now - 31 * 24 * 60 * 60 * 1000).toISOString(), lastResult: "success" } },
+    }),
+  );
+  expect(isSkillStale(readManifest().skills["ancient"]!, now)).toBe(true);
 });
