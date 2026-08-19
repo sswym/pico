@@ -264,6 +264,31 @@ test("group render memoizes per-tool summaries across animation frames", () => {
   expect(__toolSummaryCacheSize()).toBe(3);
 });
 
+test("group summary refreshes when args arrive after initial empty render (streaming partial)", () => {
+  // 流式工具调用：组件先以空 args 创建（首次 message_update 时参数尚未
+  // 累积完成），updateArgs 补全后才执行。摘要缓存必须随 args 引用刷新，
+  // 否则 title-only 摘要永久污染分组折叠视图。
+  installDefaultMode(() => true);
+  setCcstyleTheme(stubTheme);
+  const hooks = installToolGrouping(() => true);
+  hooks.setTheme(stubTheme);
+  const parent = new Container();
+  const bash = makeTool("bash", {});
+  const read = makeTool("read", {});
+  parent.addChild(bash);
+  parent.addChild(read);
+  bash.updateArgs({ command: "bun test" });
+  read.updateArgs({ path: "src/a.ts" });
+  settle(bash);
+  settle(read);
+  const group = parent.children[0] as ToolGroupComponent;
+
+  const lines = group.render(100).join("\n");
+  expect(lines).toContain("Bash bun test");
+  expect(lines).toContain("Read src/a.ts");
+  expect(lines).not.toContain("Bash ...");
+});
+
 test("expanded group renders each tool's full body", () => {
   const hooks = installToolGrouping(() => true);
   hooks.setTheme(stubTheme);

@@ -228,11 +228,15 @@ export function toolCallSummary(
 // 摘要缓存（按 toolCallId）
 // ----------------------------------------------------------------------------
 
-const summaryCache = new Map<string, { main: string; detail: string }>();
+const summaryCache = new Map<string, { main: string; detail: string; args: unknown }>();
 
 /**
  * 获取缓存的工具摘要，若不存在则计算并缓存。
  * 用于 render.ts 的单卡和 grouping.ts 的分组，共享同一缓存。
+ *
+ * 缓存按 toolCallId + args 引用双 key：工具参数可能流式累积
+ * （首次渲染时 args 为空，随后 updateArgs 补全），若只按 toolCallId
+ * 缓存，空 args 的 title-only 摘要会永久污染后续渲染。
  */
 export function summaryOfTool(
   toolCallId: string,
@@ -241,9 +245,9 @@ export function summaryOfTool(
   label?: string,
 ): { main: string; detail: string } {
   const cached = summaryCache.get(toolCallId);
-  if (cached) return cached;
+  if (cached && cached.args === args) return { main: cached.main, detail: cached.detail };
   const summary = toolCallSummary(toolName, args, label);
-  summaryCache.set(toolCallId, summary);
+  summaryCache.set(toolCallId, { ...summary, args });
   return summary;
 }
 
