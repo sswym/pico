@@ -1,5 +1,6 @@
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { asTool, ToolGroupComponent, type ToolComponent } from "./grouping.ts";
+import { asThinkingBlock, toggleThinkingBlock } from "./thinking.ts";
 
 /**
  * Fullscreen mouse interaction for tool cards — ported from pi-cc-extensions
@@ -161,6 +162,10 @@ function componentAtLocalRow(
   localRow: number,
   width: number,
 ): ComponentRowHit | null {
+  if (asThinkingBlock(component)) {
+    // 整个折叠块（折叠标题行或展开内容区）都是可点击目标，点击任意行切换。
+    return { component, row: localRow };
+  }
   if (component instanceof ToolGroupComponent) {
     // 展开的 group：头两行（空行 + 头行）归 group，其余行映射到内部工具。
     const child = component.childAtRow(localRow, width);
@@ -232,6 +237,11 @@ function handleFullscreenToolClick(tui: TUI, packet: SgrMousePacket): boolean {
   const card = target.group ?? component;
   const line = hit.box.lines?.[hit.localRow];
   if (typeof line !== "string" || /\x1b]8;[^;]*;/.test(line)) return false;
+  const thinking = asThinkingBlock(component);
+  if (thinking) {
+    toggleThinkingBlock(thinking, () => tui.requestRender?.());
+    return true;
+  }
   const tool = asTool(component);
   const isGroup = component instanceof ToolGroupComponent;
   if (!tool && !isGroup) return false;
@@ -296,7 +306,7 @@ function patchViewportInput(tui: TUI): void {
   if (typeof original !== "function") return;
   host[VIEWPORT_PATCH_KEY] = true;
   host[VIEWPORT_ORIGINAL_KEY] = original;
-  host.handleViewportInput = function (this: TUI, data: string) {
+  host.handleViewportInput = function(this: TUI, data: string) {
     if (mouseEnabled() && !tui.hasOverlay?.()) {
       const packets = parseSgrMousePackets(data);
       if (packets) {
@@ -343,7 +353,7 @@ export function installMouseInteraction(
     currentTui = tui;
     patchViewportInput(tui);
     // 空 widget：只借 factory 捕获 tui，不渲染任何内容。
-    return { render: () => [] as string[], invalidate() {} };
+    return { render: () => [] as string[], invalidate() { } };
   });
 }
 

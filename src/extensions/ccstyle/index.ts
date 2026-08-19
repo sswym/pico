@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionFactory, Theme } from "@earendil-works/pi-c
 import { installDefaultMode, setCcstyleTheme, clearAllAnimations, type DefaultModeHooks } from "./render.ts";
 import { installToolGrouping, type ToolGroupingHooks } from "./grouping.ts";
 import { installMouseInteraction, teardownMouseInteraction } from "./mouse.ts";
+import { installThinkingCollapse, setThinkingTheme, type ThinkingCollapseHooks } from "./thinking.ts";
 import { readSettingsObject, writeSettings, readSettings, isSettingsDamaged } from "../settings.ts";
 
 /**
@@ -17,7 +18,8 @@ import { readSettingsObject, writeSettings, readSettings, isSettingsDamaged } fr
  * v1 limitations (vs upstream): no compact round summary. The grouping patch
  * only affects tools mounted after install — /ccstyle toggling does not
  * re-render tools already on screen (no TUI handle from the extension API).
- * Mouse click-to-expand and edit/write diff are supported in this port.
+ * Mouse click-to-expand, edit/write diff, and collapsible thinking blocks
+ * are supported in this port.
  *
  * Config: settings.json `ccstyle.enabled` (default true); /ccstyle on|off.
  */
@@ -39,7 +41,7 @@ function saveCcstyleEnabled(enabled: boolean): void {
 
 export const ccstyleExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   let enabled = readCcstyleEnabled();
-  let installation: { render: DefaultModeHooks; grouping: ToolGroupingHooks } | undefined;
+  let installation: { render: DefaultModeHooks; grouping: ToolGroupingHooks; thinking: ThinkingCollapseHooks } | undefined;
 
   /**
    * Install the rendering patches on the first TUI context. Non-interactive
@@ -54,13 +56,15 @@ export const ccstyleExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     // 与 grouping 的 maybeGroup 都读它），恢复上游原生渲染。
     const render = installDefaultMode(() => enabled);
     const grouping = installToolGrouping(() => enabled);
-    installation = { render, grouping };
+    const thinking = installThinkingCollapse(() => enabled);
+    installation = { render, grouping, thinking };
     return true;
   };
 
   const syncTheme = (ctx: { ui: { theme?: Theme } }): void => {
     if (!installation || !ctx.ui?.theme) return;
     setCcstyleTheme(ctx.ui.theme);
+    setThinkingTheme(ctx.ui.theme);
     installation.grouping.setTheme(ctx.ui.theme);
   };
 
@@ -115,6 +119,7 @@ export const ccstyleExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     if (!current) return;
     current.grouping.shutdown();
     current.render.shutdown();
+    current.thinking.shutdown();
     clearAllAnimations();
   });
 };

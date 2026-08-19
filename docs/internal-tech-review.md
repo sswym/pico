@@ -690,6 +690,7 @@ flowchart TD
 - **edit diff**：复用上游 `result.details.diff`（`+行号 内容` 格式，`generateDiffString` 生成），折叠显示 `+N -M` 统计、展开按 `toolDiffAdded/Removed/Context` 行级着色——**零新增依赖**（无 shiki/diff 库）。
 - **write/edit 自动展开**：结果落地（isPartial=false）首次渲染自动展开并**持久保持**（state `ccstyleToolExpanded`），用户显式折叠（`setExpanded(false)` 包装）后永久退出自动展开（`ccstyleUserCollapsed`）。
 - **鼠标**（fullscreen）：`ctx.ui.setWidget` factory 是扩展 API 唯一拿到 TUI（0.84+ 惰性 Proxy `createInteractiveTuiReference`）的通道；实例 own property 包装 `handleViewportInput`（constructor arrow 动态查找命中），SGR 包解析 → `tui.currentLayout` 布局树命中（`fullscreenLeafAt`/`componentAtLocalRow`）→ 折叠卡整卡点击展开（single-expand）/ 展开卡点击收起。官方 TuiAltScreen 已开 1000/1002/1006，无需补模式；OSC8 链接行与滚动条列放行。
+- **思考块折叠**（`thinking.ts`，2026-08-18 增补）：上游思考内容要么全文展示、要么 `hideThinkingBlock`（ctrl+t）收成一行无交互惰性标签。原型补丁 `AssistantMessageComponent.prototype.updateContent`（值快照 + shutdown 恢复，同 render.ts 模式）把每条消息的相邻 thinking run 渲染为可点击块：默认 `Thinking… · click to expand` 一行 —— 点击（复用上条鼠标命中链，`componentAtLocalRow` 对块容器直接返回不深入子树）展开成完整 Markdown，再点任意内容行收起；多 run 各自独立（实例上 Symbol 键 `Set<runIndex>`，组件随 chat 重建则展开态丢失，与工具卡一致）。语义兼容：`hideThinkingBlock=true` 仍走上游惰性标签（不可点）；`/ccstyle off` 时补丁内的 `!enabled()` 分支恢复上游原生全文渲染。补丁必须复刻上游 text 分支的 markdown transform（`markdownTransformers` 是构造参数，含 mermaid transformer）否则 text 渲染退化；`createMarkdownTransform` 上游未导出，在 `thinking.ts` 内重实现。
 
 **坑点**：
 1. **prototype 补丁的 downstream 必须是方法值快照**：`downstream = prototype`（对象别名）再 `prototype.updateDisplay = installed` 会变异 downstream 引用的同一对象 → `installed` 调 `downstream` 即自递归爆栈。始终 `const current = { method: prototype.method }` 快照。
@@ -698,7 +699,7 @@ flowchart TD
 4. **自动展开需持久标记**：仅"首次落地展开一帧"会被下一次自动重渲染（组件自身 `expanded=false`）折叠回去；`ccstyleToolExpanded` 持久 + `setExpanded` 包装区分"用户折叠"与"自动重渲染"。
 5. **`isPartial` 语义**：上游 `tool_execution_end` 走 `updateResult(result)`（isPartial 默认 false），`tool_execution_update` 走 `(partial, true)`；自动展开判定必须用 `options.isPartial` 而非组件字段。
 
-**测试**：`tests/ccstyle.test.ts` + `tests/ccstyle-mouse.test.ts` 共 37 条（真实组件 + 模拟惰性 Proxy TUI + 手搭布局树；含 downsteam 快照递归回归、undo-redo 包装接管回归、自动展开保持/折叠闭环）。真实验证：TUI 触发 bash/read/write/edit/askUserQuestion，分组动画、状态图标、自动展开 diff、鼠标点击展开/收起、ctrl+o 折叠后不复发均确认；`bun run verify` 1268 用例全绿。
+**测试**：`tests/ccstyle.test.ts` + `tests/ccstyle-mouse.test.ts` + `tests/ccstyle-thinking.test.ts` 共 52 条（真实组件 + 模拟惰性 Proxy TUI + 手搭布局树；含 downsteam 快照递归回归、undo-redo 包装接管回归、自动展开保持/折叠闭环、thinking 折叠/展开/多 run 独立/ccstyle off 回退/teardown 恢复）。真实验证：TUI 触发 bash/read/write/edit/askUserQuestion，分组动画、状态图标、自动展开 diff、鼠标点击展开/收起、ctrl+o 折叠后不复发均确认；当前全量 `bun run verify` 1264 用例全绿。
 
 **v1 裁剪项**（相对上游）：无 rich diff 词级高亮（edit/write 为行级着色）、无 hover 高亮（1003 all-motion 在 tmux 下不可靠）、无 show-more 全量预览、无回到底部按钮、无 compact 回合摘要、无 regular 模式鼠标（仅 fullscreen）。
 
