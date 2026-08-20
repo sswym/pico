@@ -35,7 +35,6 @@ import { filterSkillBodyForMode, getPonytailInstructions } from "./instructions.
 
 export { filterSkillBodyForMode };
 export const readDefaultMode = getDefaultMode;
-export const readQuietStartup = getQuietStartup;
 
 const RUNTIME_MODE_LIST = RUNTIME_MODES.join("|");
 const PONYTAIL_COMMAND_DESCRIPTION = `Set mode: ${RUNTIME_MODE_LIST}. Commands: status, default <mode>`;

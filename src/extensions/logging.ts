@@ -157,8 +157,6 @@ function write(level: LogLevel, tag: string, ...args: unknown[]): void {
 
 /** 统一日志入口：`log.warn("events", \`msg: ${err}\`)` 或 `log.warn("events", "msg", err)`。 */
 export const log = {
-  debug(tag: string, ...args: unknown[]): void { write("debug", tag, ...args); },
-  info(tag: string, ...args: unknown[]): void { write("info", tag, ...args); },
   warn(tag: string, ...args: unknown[]): void { write("warn", tag, ...args); },
   error(tag: string, ...args: unknown[]): void { write("error", tag, ...args); },
 };

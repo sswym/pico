@@ -87,10 +87,6 @@ export function getJob(sessionKey: string, jobId: string): AsyncJob | undefined 
 	return jobsBySession.get(sessionKey)?.get(jobId);
 }
 
-export function listJobs(sessionKey: string): AsyncJob[] {
-	return Array.from(jobsBySession.get(sessionKey)?.values() ?? []);
-}
-
 function getInternal(sessionKey: string, jobId: string): InternalJob | undefined {
 	return jobsBySession.get(sessionKey)?.get(jobId);
 }

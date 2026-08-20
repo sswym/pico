@@ -256,18 +256,7 @@ export function getServersForFile(config: LspConfig, filePath: string): Array<[s
   return result;
 }
 
-/** Get the primary (first non-linter) server for a file. */
-export function getPrimaryServerForFile(config: LspConfig, filePath: string): [string, LspServerConfig] | null {
-  const servers = getServersForFile(config, filePath);
-  for (const [name, serverConfig] of servers) {
-    if (!serverConfig.isLinter) return [name, serverConfig];
-  }
-  // Fall back to first available (linter)
-  return servers[0] ?? null;
-}
-
-/**
- * Detect which servers to start based on workspace root markers.
+/** Detect which servers to start based on workspace root markers.
  * Returns all servers whose rootMarkers match the workspace.
  */
 export function detectServers(config: LspConfig, workspaceRoot: string): Array<[string, LspServerConfig]> {

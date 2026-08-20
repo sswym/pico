@@ -87,16 +87,6 @@ export function cancelCapture(state: UndoSessionState, toolCallId: string): bool
   return state.pending.delete(toolCallId);
 }
 
-/** 栈顶 undo 条目(不弹出);空栈返回 null */
-export function peekUndo(state: UndoSessionState): UndoEntry | null {
-  return state.undoStack.at(-1) ?? null;
-}
-
-/** 栈顶 redo 条目(不弹出);空栈返回 null */
-export function peekRedo(state: UndoSessionState): UndoEntry | null {
-  return state.redoStack.at(-1) ?? null;
-}
-
 /** 弹出下一个待恢复的 undo 条目;空栈返回 null */
 export function popUndo(state: UndoSessionState): UndoEntry | null {
   return state.undoStack.pop() ?? null;

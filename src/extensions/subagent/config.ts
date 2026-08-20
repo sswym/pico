@@ -123,11 +123,6 @@ export function drainSubagentConfigErrors(): string[] {
   return recentErrors.splice(0);
 }
 
-/** Reset the once-per-path warning cache. Test-only. */
-export function __resetWarnedPaths(): void {
-  warnedPaths.clear();
-  recentErrors.length = 0;
-}
 
 export function loadSubagentConfig(): SubagentConfig {
 	const settings = readSettings();

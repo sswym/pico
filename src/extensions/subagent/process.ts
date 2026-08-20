@@ -51,7 +51,6 @@ const STDOUT_PARTIAL_CAP_BYTES = 1024 * 1024;
  * recursively stack full pico processes (each ~100MB + own model context).
  */
 export const SUBAGENT_DEPTH_ENV = "PICO_SUBAGENT_DEPTH";
-export const MAX_SUBAGENT_DEPTH = 3;
 
 /** Environment for a subagent child: inherit parent env + bumped depth and
  *  any caller-provided overrides (e.g. supervisor channel identity). */

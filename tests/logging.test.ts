@@ -51,8 +51,6 @@ describe("pico logging module", () => {
   test("default level is warn — info/debug suppressed", () => {
     const warns: string[] = [];
     console.warn = (m: string) => warns.push(m);
-    log.info("tag", "info line");
-    log.debug("tag", "debug line");
     log.warn("tag", "warn line");
     expect(warns).toEqual(["[pico tag] warn line"]);
   });
@@ -63,10 +61,7 @@ describe("pico logging module", () => {
     const warns: string[] = [];
     console.warn = (m: string) => warns.push(m);
     log.warn("tag", "warn-on-info");
-    log.info("tag", "info-on-info");
-    log.debug("tag", "debug-on-info");
     expect(warns.join("\n")).toContain("warn-on-info");
-    expect(warns.join("\n")).toContain("info-on-info");
     expect(warns.join("\n")).not.toContain("debug-on-info");
   });
 
