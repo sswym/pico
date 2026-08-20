@@ -46,7 +46,7 @@ describe("web formatting", () => {
         status: 200,
         statusText: "OK",
         contentType: "text/html",
-        markdown: "# Hi",
+        content: "# Hi",
         truncated: false,
       } as never,
       "what is this",
@@ -63,7 +63,7 @@ describe("web formatting", () => {
         url: "https://e.com",
         status: 200,
         statusText: "OK",
-        markdown: "x",
+        content: "x",
         truncated: true,
       } as never,
       undefined,
@@ -423,8 +423,8 @@ describe("cache-optimizer env switches", () => {
       on: (ev: string, h: (e: unknown, ctx: unknown) => unknown) => {
         (handlers[ev] ??= []).push(h);
       },
-      registerTool: () => {},
-      registerCommand: () => {},
+      registerTool: () => { },
+      registerCommand: () => { },
     };
   }
 

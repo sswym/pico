@@ -129,8 +129,8 @@ describe("fetchAndConvert", () => {
     const a = await fetchAndConvert("https://example.test/page");
     const b = await fetchAndConvert("https://example.test/page");
     expect(calls).toBe(1);
-    expect(a.markdown).toContain("cached body");
-    expect(b.markdown).toContain("cached body");
+    expect(a.content).toContain("cached body");
+    expect(b.content).toContain("cached body");
     expect(webFetchCacheSize()).toBe(1);
   });
 
@@ -213,7 +213,7 @@ describe("fetchAndConvert", () => {
       fetchAndConvert("https://example.test/coalesce", { fetcher }),
     ]);
     expect(calls).toBe(3);
-    expect(c.markdown).toBe(d.markdown);
+    expect(c.content).toBe(d.content);
   });
 
   test("alternate IPv4 spellings of loopback are refused as private", async () => {
@@ -247,7 +247,7 @@ describe("fetchAndConvert", () => {
 
     const a = await fetchAndConvert("https://example.test/missing");
     expect(a.status).toBe(404);
-    expect(a.markdown).toContain("Not Found");
+    expect(a.content).toContain("Not Found");
     // Error pages must not populate the cache: a second fetch hits the network.
     await fetchAndConvert("https://example.test/missing");
     expect(calls).toBe(2);
@@ -274,7 +274,7 @@ describe("fetchAndConvert", () => {
 
     expect(seenUrls).toEqual(["https://example.test/start", "https://example.test/final"]);
     expect(page.url).toBe("https://example.test/final");
-    expect(page.markdown).toContain("done");
+    expect(page.content).toContain("done");
   });
 
   test("rejects localhost and private network targets by default", async () => {
@@ -304,7 +304,7 @@ describe("fetchAndConvert", () => {
       })) as unknown as typeof fetch;
     const page = await fetchAndConvert("https://example.test/big");
     expect(page.truncated).toBe(true);
-    expect(new TextEncoder().encode(page.markdown).length).toBeLessThanOrEqual(8 * 1024);
+    expect(new TextEncoder().encode(page.content).length).toBeLessThanOrEqual(8 * 1024);
   });
 });
 
@@ -798,7 +798,7 @@ test("fetchAndConvert decodes non-UTF-8 charsets from Content-Type", async () =>
     headers: { "content-type": "text/html; charset=gbk" },
   })) as unknown as typeof fetch;
   const page = await fetchAndConvert("https://example.test/gbk", { bypassCache: true });
-  expect(page.markdown).toContain("中文标题");
+  expect(page.content).toContain("中文标题");
 });
 
 test("fetchAndConvert marks binary content types instead of dumping bytes", async () => {
@@ -807,7 +807,7 @@ test("fetchAndConvert marks binary content types instead of dumping bytes", asyn
     headers: { "content-type": "image/png" },
   })) as unknown as typeof fetch;
   const page = await fetchAndConvert("https://example.test/img.png", { bypassCache: true });
-  expect(page.markdown).toContain("Binary content (image/png)");
+  expect(page.content).toContain("Binary content (image/png)");
 });
 
 test("fetchAndConvert rejects 3xx without Location and never caches it", async () => {
@@ -877,4 +877,115 @@ test("exaSearch returns as soon as the SSE data event parses (keep-alive safe)",
   const results = await webSearch({ query: "hello" }, { maxResults: 3 } as never);
   expect(results.length).toBeGreaterThan(0);
   expect(results[0]!.url).toBe("https://example.com/a");
+});
+
+// ---- Fifth-round tests: format / timeout / UA / Cloudflare retry / Content-Length preflight ----
+
+test("format=text extracts plain text without markdown markers", async () => {
+  const html = `<html><body>
+    <h1>Title</h1>
+    <p>Hello <a href="https://x.test/y">world</a></p>
+    <pre>code block</pre>
+  </body></html>`;
+  globalThis.fetch = (async () => new Response(html, {
+    status: 200,
+    headers: { "content-type": "text/html" },
+  })) as unknown as typeof fetch;
+  const page = await fetchAndConvert("https://example.test/text", { format: "text", bypassCache: true });
+  expect(page.content).toContain("Title");
+  expect(page.content).toContain("Hello world"); // link text kept, markdown syntax gone
+  expect(page.content).toContain("code block");
+  expect(page.content).not.toContain("# Title");
+  expect(page.content).not.toContain("[world]");
+});
+
+test("format=html returns the raw page source", async () => {
+  const html = `<html><body><h1>Raw</h1><script>alert(1)</script></body></html>`;
+  globalThis.fetch = (async () => new Response(html, {
+    status: 200,
+    headers: { "content-type": "text/html" },
+  })) as unknown as typeof fetch;
+  const page = await fetchAndConvert("https://example.test/html", { format: "html", bypassCache: true });
+  expect(page.content).toBe(html);
+});
+
+test("sends a browser User-Agent and format-specific Accept header", async () => {
+  let seenInit: RequestInit | undefined;
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    seenInit = init;
+    return new Response("<p>ok</p>", { status: 200, headers: { "content-type": "text/html" } });
+  }) as unknown as typeof fetch;
+  await fetchAndConvert("https://example.test/ua", { format: "text", bypassCache: true });
+  const headers = seenInit?.headers as Record<string, string>;
+  expect(headers["User-Agent"]).toMatch(/^Mozilla\/5\.0/);
+  expect(headers.Accept).toContain("text/plain;q=1.0");
+  expect(headers["Accept-Language"]).toBe("en-US,en;q=0.9");
+});
+
+test("retries with the honest UA once when Cloudflare issues a challenge", async () => {
+  const uas: string[] = [];
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    uas.push((init?.headers as Record<string, string>)["User-Agent"] ?? "");
+    if (uas.length === 1) {
+      return new Response("<html><body>challenge</body></html>", {
+        status: 403,
+        statusText: "Forbidden",
+        headers: { "content-type": "text/html", "cf-mitigated": "challenge" },
+      });
+    }
+    return new Response("<html><body>real content</body></html>", {
+      status: 200,
+      statusText: "OK",
+      headers: { "content-type": "text/html" },
+    });
+  }) as unknown as typeof fetch;
+  const page = await fetchAndConvert("https://example.test/cf", { bypassCache: true });
+  expect(uas.length).toBe(2);
+  expect(uas[0]).toMatch(/^Mozilla\/5\.0/);
+  expect(uas[1]).toBe("pico/0.2");
+  expect(page.status).toBe(200);
+  expect(page.content).toContain("real content");
+});
+
+test("fails fast on a declared Content-Length over the cap", async () => {
+  globalThis.fetch = (async () =>
+    new Response("<p>huge</p>", {
+      status: 200,
+      headers: { "content-type": "text/html", "content-length": String(10 * 1024 * 1024) },
+    })) as unknown as typeof fetch;
+  await expect(
+    fetchAndConvert("https://example.test/huge", { bypassCache: true }),
+  ).rejects.toThrow(/too large/i);
+});
+
+test("timeoutMs caps the request duration", async () => {
+  const fetcher = (async (_url: string, init?: { signal?: AbortSignal }) => {
+    // Never resolves; only the timeout abort can end it.
+    await new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener(
+        "abort",
+        () => reject(init.signal?.reason ?? new Error("aborted")),
+        { once: true },
+      );
+    });
+    return new Response("<p>late</p>", { status: 200, headers: { "content-type": "text/html" } });
+  }) as unknown as typeof fetch;
+  await expect(
+    fetchAndConvert("https://example.test/slow", { fetcher, timeoutMs: 50, bypassCache: true }),
+  ).rejects.toThrow(/timed out/i);
+});
+
+test("cache is keyed by URL + format", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    return new Response("<p>body</p>", { status: 200, headers: { "content-type": "text/html" } });
+  }) as unknown as typeof fetch;
+  const md = await fetchAndConvert("https://example.test/fmt", { format: "markdown" });
+  const txt = await fetchAndConvert("https://example.test/fmt", { format: "text" });
+  const md2 = await fetchAndConvert("https://example.test/fmt", { format: "markdown" });
+  expect(calls).toBe(2); // markdown + text fetched once each, md2 served from cache
+  expect(md.content).toContain("body");
+  expect(txt.content).toContain("body");
+  expect(md2.content).toContain("body");
 });

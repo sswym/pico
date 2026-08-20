@@ -2,11 +2,13 @@
  * webFetch tool — fetch a URL and convert HTML → simplified Markdown.
  *
  * Scope is intentionally narrow:
- *   - Bun.fetch with a fixed UA string (HTTP→HTTPS upgrade).
- *   - HTML body parsed with node-html-parser; we keep h1-h6 / p / li / code /
- *     pre / a / blockquote / strong / em and strip script/style/nav/footer.
+ *   - Bun.fetch with a browser UA (HTTP→HTTPS upgrade).
+ *   - format=markdown (default): HTML body parsed with node-html-parser; we
+ *     keep h1-h6 / p / li / code / pre / a / blockquote / strong / em and
+ *     strip script/style/nav/footer. format=text extracts plain text,
+ *     format=html returns the raw body.
  *   - Output truncated to 8 KiB.
- *   - 15-min LRU cache (50 entries) keyed on the original URL.
+ *   - 15-min LRU cache (50 entries) keyed on URL + format.
  *   - The user-provided `prompt` is prepended to the result so the calling
  *     model can grep for the bit it wanted.
  */
@@ -17,15 +19,21 @@ export const FETCH_CACHE_TTL_MS = 15 * 60 * 1000;
 export const FETCH_CACHE_MAX = 50;
 export const FETCH_MAX_OUTPUT_BYTES = 8 * 1024;
 export const FETCH_MAX_RESPONSE_BYTES = 1024 * 1024;
-export const FETCH_TIMEOUT_MS = 15_000;
+export const FETCH_DEFAULT_TIMEOUT_MS = 30_000;
+export const FETCH_MAX_TIMEOUT_MS = 120_000;
+// Honest UA for the Cloudflare-challenge retry (TLS-fingerprint mismatch).
 const FETCH_UA = "pico/0.2";
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+
+export type WebFetchFormat = "markdown" | "text" | "html";
 
 export interface FetchedPage {
   url: string;
   status: number;
   statusText: string;
   contentType: string;
-  markdown: string;
+  content: string;
   truncated: boolean;
 }
 
@@ -34,8 +42,12 @@ const cache = new LRU<string, FetchedPage>({
   ttlMs: FETCH_CACHE_TTL_MS,
 });
 
-/** In-flight fetches keyed by normalized URL — coalesces concurrent misses. */
+/** In-flight fetches keyed by normalized URL + format — coalesces concurrent misses. */
 const inflight = new Map<string, Promise<FetchedPage>>();
+
+function cacheKey(url: string, format: WebFetchFormat): string {
+  return `${format}\n${url}`;
+}
 
 export function clearWebFetchCache(): void {
   cache.clear();
@@ -187,6 +199,69 @@ function escapeText(text: string): string {
   return text.replace(/\s+/g, " ");
 }
 
+/** Plain-text extraction — same block boundaries as htmlToMarkdown, minus the markdown syntax. */
+export function htmlToText(html: string): string {
+  const root = parseHTML(html, {
+    blockTextElements: { script: false, style: false, pre: true },
+    comment: false,
+  });
+  const out: string[] = [];
+  walkText(root, out);
+  return out
+    .join("")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function walkText(node: Node, out: string[]): void {
+  if (node.nodeType === NodeType.TEXT_NODE) {
+    out.push(escapeText(node.rawText));
+    return;
+  }
+  if (node.nodeType !== NodeType.ELEMENT_NODE) {
+    if (node.childNodes) for (const c of node.childNodes) walkText(c, out);
+    return;
+  }
+
+  const el = node as HTMLElement;
+  const tag = (el.rawTagName || "").toLowerCase();
+
+  if (DROP_TAGS.has(tag)) return;
+
+  switch (tag) {
+    case "h1":
+    case "h2":
+    case "h3":
+    case "h4":
+    case "h5":
+    case "h6":
+    case "p":
+    case "blockquote":
+    case "ul":
+    case "ol":
+    case "div":
+    case "section":
+    case "article":
+      out.push("\n");
+      for (const c of el.childNodes) walkText(c, out);
+      return;
+    case "br":
+    case "hr":
+      out.push("\n");
+      return;
+    case "li":
+      out.push("\n- ");
+      for (const c of el.childNodes) walkText(c, out);
+      return;
+    case "pre":
+      out.push("\n", el.textContent ?? "", "\n");
+      return;
+    default:
+      for (const c of el.childNodes) walkText(c, out);
+  }
+}
+
 function truncateBytes(text: string, maxBytes: number): { out: string; truncated: boolean } {
   // UTF-8 byte length without re-encoding the whole thing.
   const enc = new TextEncoder();
@@ -210,16 +285,55 @@ export interface WebFetchOptions {
   signal?: AbortSignal;
   /** Allow localhost/private network targets. Defaults to false. */
   allowPrivateNetwork?: boolean;
+  /** Output shape: markdown (default), plain text, or raw html. */
+  format?: WebFetchFormat;
+  /** Timeout in ms. Defaults to 30s, clamped to 120s max. */
+  timeoutMs?: number;
+}
+
+function acceptHeader(format: WebFetchFormat): string {
+  switch (format) {
+    case "text":
+      return "text/plain;q=1.0, text/markdown;q=0.9, text/html;q=0.8, */*;q=0.1";
+    case "html":
+      return "text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, text/markdown;q=0.7, */*;q=0.1";
+    default:
+      return "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1";
+  }
+}
+
+function fetchOnce(
+  fetcher: typeof fetch,
+  url: string,
+  format: WebFetchFormat,
+  signal: AbortSignal,
+  userAgent: string,
+): Promise<Response> {
+  return fetcher(url, {
+    headers: {
+      "User-Agent": userAgent,
+      Accept: acceptHeader(format),
+      "Accept-Language": "en-US,en;q=0.9",
+    },
+    signal,
+    redirect: "manual",
+  });
+}
+
+function isCloudflareChallenge(response: Response): boolean {
+  return response.status === 403 && response.headers.get("cf-mitigated") === "challenge";
 }
 
 export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): Promise<FetchedPage> {
+  const format = opts.format ?? "markdown";
   const upgraded = normalizeUrl(url, opts);
+  const key = cacheKey(upgraded, format);
 
   if (!opts.bypassCache) {
-    const hit = cache.get(upgraded);
+    const hit = cache.get(key);
     if (hit) return hit;
     // Coalesce concurrent misses for the same URL into one network request.
-    const pending = inflight.get(upgraded);
+    const pending = inflight.get(key);
     if (pending) {
       // The waiter's own cancellation must still land: an aborted waiter must
       // not keep waiting on (and getting) the shared response.
@@ -245,7 +359,8 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
 
   const run = (async (): Promise<FetchedPage> => {
     const fetcher = opts.fetcher ?? globalThis.fetch;
-    const timeout = withTimeoutSignal(opts.signal, FETCH_TIMEOUT_MS);
+    const timeoutMs = Math.min(opts.timeoutMs ?? FETCH_DEFAULT_TIMEOUT_MS, FETCH_MAX_TIMEOUT_MS);
+    const timeout = withTimeoutSignal(opts.signal, timeoutMs);
     let response!: Response;
     let finalUrl = upgraded;
     let body = "";
@@ -256,13 +371,17 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
       // bounce to localhost / 169.254.169.254 (cloud metadata) and slip past the
       // check that only ever ran on the original URL.
       let currentUrl = upgraded;
+      let cfRetried = false;
       const MAX_REDIRECTS = 5;
       for (let hop = 0; ; hop++) {
-        response = await fetcher(currentUrl, {
-          headers: { "User-Agent": FETCH_UA, Accept: "text/markdown, text/html, */*" },
-          signal: timeout.signal,
-          redirect: "manual",
-        });
+        response = await fetchOnce(fetcher, currentUrl, format, timeout.signal, BROWSER_UA);
+        // Cloudflare bot challenge (TLS fingerprint mismatch): retry once with
+        // the honest UA before giving up on the 403.
+        if (!cfRetried && isCloudflareChallenge(response)) {
+          await response.body?.cancel().catch(() => { });
+          cfRetried = true;
+          response = await fetchOnce(fetcher, currentUrl, format, timeout.signal, FETCH_UA);
+        }
         finalUrl = currentUrl;
         if (response.status < 300 || response.status >= 400) break;
         const location = response.headers.get("location");
@@ -276,7 +395,13 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
         currentUrl = normalizeUrl(new URL(location, currentUrl).toString(), opts);
         // The intermediate response is dropped — cancel its body so the
         // connection can be reused instead of lingering until GC.
-        await response.body?.cancel().catch(() => {});
+        await response.body?.cancel().catch(() => { });
+      }
+      // A declared Content-Length over the cap fails fast, before the body is
+      // downloaded.
+      const declared = response.headers.get("content-length");
+      if (declared && Number(declared) > FETCH_MAX_RESPONSE_BYTES) {
+        throw new Error(`Response too large (exceeds ${FETCH_MAX_RESPONSE_BYTES} byte limit)`);
       }
       // Body download stays inside the timeout/abort scope: a stalled body must
       // not hang the tool after the headers arrived.
@@ -286,40 +411,43 @@ export async function fetchAndConvert(url: string, opts: WebFetchOptions = {}): 
       timeout.cleanup();
     }
 
-    let markdown: string;
-    if (contentType.includes("text/html") || /<html[\s>]/i.test(body.slice(0, 256))) {
-      markdown = htmlToMarkdown(body);
+    const isHtml = contentType.includes("text/html") || /<html[\s>]/i.test(body.slice(0, 256));
+    let content: string;
+    if (isHtml && format === "markdown") {
+      content = htmlToMarkdown(body);
+    } else if (isHtml && format === "text") {
+      content = htmlToText(body);
     } else if (isBinaryContentType(contentType)) {
       // Images / pdfs / archives are not page content — dump a short notice
       // instead of binary garbage that the model would read as text.
-      markdown = `[Binary content (${contentType.split(";")[0]?.trim() || "unknown content-type"}), skipped]`;
+      content = `[Binary content (${contentType.split(";")[0]?.trim() || "unknown content-type"}), skipped]`;
     } else {
-      markdown = body;
+      content = body;
     }
 
-    const { out, truncated } = truncateBytes(markdown, FETCH_MAX_OUTPUT_BYTES);
+    const { out, truncated } = truncateBytes(content, FETCH_MAX_OUTPUT_BYTES);
 
     const page: FetchedPage = {
       url: finalUrl,
       status: response.status,
       statusText: response.statusText,
       contentType,
-      markdown: out,
+      content: out,
       truncated,
     };
     // Only 2xx responses are cached as successful content — a cached 3xx/4xx
     // would be re-served to later fetches for 15 minutes.
     if (response.status >= 200 && response.status < 300) {
-      cache.set(upgraded, page);
+      cache.set(key, page);
     }
     return page;
   })();
 
   if (!opts.bypassCache) {
-    inflight.set(upgraded, run);
+    inflight.set(key, run);
     run.finally(() => {
-      if (inflight.get(upgraded) === run) inflight.delete(upgraded);
-    }).catch(() => {});
+      if (inflight.get(key) === run) inflight.delete(key);
+    }).catch(() => { });
   }
   return run;
 }
@@ -517,6 +645,6 @@ export function formatFetchResult(page: FetchedPage, prompt: string | undefined)
   if (prompt && prompt.trim()) lines.push(`Prompt: ${prompt.trim()}`);
   if (page.truncated) lines.push(`Truncated to ${FETCH_MAX_OUTPUT_BYTES} bytes`);
   lines.push("");
-  lines.push(page.markdown);
+  lines.push(page.content);
   return lines.join("\n");
 }

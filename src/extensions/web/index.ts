@@ -30,6 +30,22 @@ const WebFetchParams = Type.Object({
     description:
       "Absolute URL to fetch. http:// is upgraded to https:// before the request.",
   }),
+  format: Type.Optional(
+    Type.Union(
+      [Type.Literal("markdown"), Type.Literal("text"), Type.Literal("html")],
+      {
+        description:
+          "Output shape: markdown (default, HTML converted to readable Markdown), text (plain text), or html (raw page source).",
+      },
+    ),
+  ),
+  timeout: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      maximum: 120,
+      description: "Timeout in seconds. Default 30; max 120.",
+    }),
+  ),
   prompt: Type.Optional(
     Type.String({
       description:
@@ -81,7 +97,7 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       name: "webFetch",
       label: "Web Fetch",
       description:
-        "Fetch a URL over the public network and return its content as simplified Markdown. " +
+        "Fetch a URL over the public network and return it as Markdown (default), plain text, or raw HTML. " +
         "Performs network egress; results are cached in memory for 15 minutes. " +
         "Output is truncated to 8 KiB — for longer pages, fetch again with a more specific URL.",
       promptSnippet:
@@ -94,6 +110,8 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         try {
           page = await fetchAndConvert(params.url, {
             signal,
+            format: params.format ?? "markdown",
+            timeoutMs: params.timeout !== undefined ? params.timeout * 1000 : undefined,
             bypassCache: params.bypass_cache === true,
             allowPrivateNetwork: params.allow_private_network === true,
           });
