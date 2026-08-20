@@ -3,28 +3,6 @@
  * Only the subset needed by pico's LSP extension is included.
  */
 
-// ── JSON-RPC base ─────────────────────────────────────────────────────────
-
-export interface JsonRpcRequest {
-  jsonrpc: "2.0";
-  id: number;
-  method: string;
-  params?: unknown;
-}
-
-export interface JsonRpcNotification {
-  jsonrpc: "2.0";
-  method: string;
-  params?: unknown;
-}
-
-export interface JsonRpcResponse {
-  jsonrpc: "2.0";
-  id: number;
-  result?: unknown;
-  error?: { code: number; message: string; data?: unknown };
-}
-
 // ── LSP basic structures ──────────────────────────────────────────────────
 
 export interface Position {
@@ -79,11 +57,6 @@ export interface Diagnostic {
   code?: string | number;
   source?: string;
   message: string;
-}
-
-export interface PublishDiagnosticsParams {
-  uri: string;
-  diagnostics: Diagnostic[];
 }
 
 // ── Hover ─────────────────────────────────────────────────────────────────
@@ -229,24 +202,10 @@ export interface FormattingOptions {
 
 // ── File Event ────────────────────────────────────────────────────────────
 
-export interface FileRename {
-  oldUri: string;
-  newUri: string;
-}
-
 export interface FileRenameEvent {
   oldUri: string;
   newUri: string;
 }
-
-export interface ApplyResult {
-  ok: boolean;
-  fileCount: number;
-  messages: string[];
-  error?: string;
-}
-
-export type DocumentChange = TextDocumentEdit | CreateFile | DeleteFile | RenameFile;
 
 // ── Initialize ────────────────────────────────────────────────────────────
 

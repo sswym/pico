@@ -379,4 +379,3 @@ export function __getPlanStateForTests(): { planActive: boolean; planFile: strin
   return { planActive, planFile };
 }
 
-export default planExtension;

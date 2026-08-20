@@ -12,13 +12,10 @@ import { PersistentHistoryEditor } from "../persistent-editor.ts";
 
 export {
   appendInputHistory,
-  compactHistory,
-  normalizeHistoryText,
   parseHistoryFile,
   PersistentHistoryEditor,
   readInputHistory,
   serializeHistoryFile,
-  writeInputHistory,
 } from "../persistent-editor.ts";
 
 export function inputHistoryExtension(pi: ExtensionAPI): void {

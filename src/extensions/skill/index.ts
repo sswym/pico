@@ -201,5 +201,4 @@ export function createSkillExtension(execute?: SkillExecutor, options?: SkillExt
   };
 }
 
-export const skillExtension: ExtensionFactory = createSkillExtension();
-export default skillExtension;
+export default createSkillExtension();

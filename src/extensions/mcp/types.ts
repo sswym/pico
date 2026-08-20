@@ -21,22 +21,6 @@ export interface McpConfig {
   mcpServers: Record<string, McpServerConfig>;
 }
 
-// ─── JSON-RPC 2.0 ──────────────────────────────────────────────────────────
-
-export interface JsonRpcRequest {
-  jsonrpc: "2.0";
-  method: string;
-  params?: unknown;
-  id: number;
-}
-
-export interface JsonRpcResponse {
-  jsonrpc: "2.0";
-  id: number | null;
-  result?: unknown;
-  error?: { code: number; message: string; data?: unknown };
-}
-
 // ─── MCP Initialize ────────────────────────────────────────────────────────
 
 export interface McpInitializeResult {

@@ -165,4 +165,3 @@ export const webExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   );
 };
 
-export default webExtension;

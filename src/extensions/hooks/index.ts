@@ -34,8 +34,7 @@ import { type HookVars, runHook } from "./runner.ts";
 import { allowProjectHooks } from "../policy.ts";
 import { log } from "../logging.ts";
 
-export { loadHooks, type Hook } from "./config.ts";
-export { runHook, substitute } from "./runner.ts";
+export { type Hook } from "./config.ts";
 
 function extractFilePath(input: Record<string, unknown> | undefined): string | undefined {
   if (!input) return undefined;

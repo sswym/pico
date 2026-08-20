@@ -365,4 +365,3 @@ export const doctorExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   });
 };
 
-export default doctorExtension;

@@ -543,4 +543,3 @@ export const mcpExtension: ExtensionFactory = createMcpExtension({
   close: closeMcpServer,
 });
 
-export default mcpExtension;

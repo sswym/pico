@@ -261,5 +261,3 @@ export const askExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   );
 };
 
-export default askExtension;
-export { AskUserQuestionParams } from "./schema.ts";
