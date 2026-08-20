@@ -11,7 +11,7 @@ import { acquireChildSlot, mapWithConcurrencyLimit } from "./concurrency.ts";
 import { loadSubagentConfig, positiveInt, resolveDenyAgents, resolveDenyTools, resolveSpawnWhitelist } from "./config.ts";
 import { runWithFallbackModels } from "./fallback.ts";
 import { runGateAfterSuccess } from "./gates.ts";
-import { cancelRunningJobs, createJobId, failJob, getJob, registerJob, settleJob, waitForJobs } from "./jobs.ts";
+import { createJobId, failJob, getJob, registerJob, settleJob, waitForJobs } from "./jobs.ts";
 import {
 	SUBAGENT_CHANNEL_DIR_ENV,
 	SUBAGENT_CHILD_AGENT_ENV,

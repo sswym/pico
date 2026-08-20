@@ -3,13 +3,11 @@
  * primary suite missed (see COVERAGE-CHECK.md for the gap list). Pure logic,
  * hand-rolled fakes only — matches repo conventions (no mock libraries).
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
-  mkdirSync,
   mkdtempSync,
   rmSync,
   writeFileSync,
-  readFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

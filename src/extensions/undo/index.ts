@@ -185,8 +185,6 @@ interface RestoreOutcome {
 
 /** 先恢复文件,再(能力可用时)把对话导航到目标叶节点 */
 async function restoreWithNavigation(
-  state: UndoSessionState,
-  sessionId: string,
   displayPath: string,
   targetLeafId: string | null,
   nav: UndoNavigation | undefined,
@@ -224,7 +222,7 @@ export async function performUndo(
   try {
     // 对话回退到该回合的 user 消息(整轮操作从对话消失);无 user 则回退捕获叶
     const outcome = await restoreWithNavigation(
-      state, sessionId, entry.displayPath, entry.turnUserId ?? entry.leafId, nav,
+      entry.displayPath, entry.turnUserId ?? entry.leafId, nav,
       () => restoreFileToSnapshot(sessionId, entry.path, entry.before),
     );
     // 条目原样入 redo 栈:redo 恢复 entry.after(修改后状态)
@@ -261,7 +259,7 @@ export async function performRedo(
 
   try {
     const outcome = await restoreWithNavigation(
-      state, sessionId, entry.displayPath, entry.afterLeafId ?? entry.leafId, nav,
+      entry.displayPath, entry.afterLeafId ?? entry.leafId, nav,
       () => restoreFileToSnapshot(sessionId, entry.path, entry.after),
     );
     // 条目原样回 undo 栈:下次 undo 恢复 entry.before

@@ -543,7 +543,6 @@ export interface SetupSectionPlan {
  *   once the quick flow has given a first-time user context.
  */
 export function planSetupSections(
-  options: Pick<SetupCliOptions, "quick" | "reconfigure">,
   section: SetupSection | undefined,
 ): SetupSectionPlan {
   if (section) return { quick: [section], advanced: [] };
@@ -609,7 +608,7 @@ export async function runSetupCommand(options: SetupCliOptions, io: SetupIo = {
 
     printSetupIntro(io, language);
 
-    const { quick, advanced } = planSetupSections(options, options.section);
+    const { quick, advanced } = planSetupSections(options.section);
     // The gate comes after the quick flow so a first-time user has context
     // ("basic config done") before being offered jargon-heavy sections.
     await runSectionsWithSkip(quick, prompt, io, options);

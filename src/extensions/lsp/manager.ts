@@ -794,7 +794,7 @@ export async function syncDocumentForFile(
   const candidates = primaries.length > 0 ? primaries : servers;
   let firstCommandNotFound: LspError | null = null;
 
-  for (const [name, serverConfig] of candidates) {
+  for (const [name] of candidates) {
     try {
       await ensureNamedServer(state, name, workspaceRoot);
     } catch (err) {

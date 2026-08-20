@@ -388,7 +388,7 @@ function ungroup(patch: Patch): void {
   }
 }
 
-function normalizeGroup(patch: Patch, group: ToolGroupComponent): void {
+function normalizeGroup(_patch: Patch, group: ToolGroupComponent): void {
   if (group.children.length > 1) return;
   const parent = parentMap.get(group) as Container | undefined;
   const index = parent?.children.indexOf(group) ?? -1;

@@ -124,7 +124,7 @@ export function createInitialResult(
 export function createUnknownAgentResult(
 	agentName: string,
 	task: string,
-	availableAgents: AgentConfig[],
+	_availableAgents: AgentConfig[],
 	step: number | undefined,
 ): SingleResult {
 	return {

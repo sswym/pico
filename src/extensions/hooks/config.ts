@@ -155,7 +155,7 @@ function loadHomeHooks(): Hook[] {
  * override a home-layer hook with the same key (2.5.8).
  */
 export function loadHooks(cwd: string): Hook[] {
-  const [homePath, cwdPath] = hookConfigPaths(cwd);
+  const [, cwdPath] = hookConfigPaths(cwd);
   const merged = [
     ...loadHomeHooks(),
     ...(allowProjectHooks() ? loadOne(cwdPath!) : []),

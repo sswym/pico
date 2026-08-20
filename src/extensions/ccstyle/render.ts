@@ -7,9 +7,8 @@ import {
   type ThemeColor,
   type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
-import { TOOL_LOADING_INTERVAL_MS, toolLoadingIcon, ccHint, oneLine, sanitizeToolResultText, summaryOfTool, PICO_TOOL_SUMMARIES } from "./util.ts";
+import { TOOL_LOADING_INTERVAL_MS, toolLoadingIcon, ccHint, oneLine, sanitizeToolResultText, summaryOfTool } from "./util.ts";
 import { asTool, type ToolComponent } from "./grouping.ts";
-import { summarizeToolCall } from "../tool-render.ts";
 
 /**
  * CC-style tool-card rendering for pico — ported from pi-cc-extensions
@@ -824,8 +823,6 @@ type PatchedMethods = {
   setExpanded(expanded: boolean): void;
 };
 
-const GLOBAL_TOOL_RENDER_PATCH = Symbol.for("pico.ccstyle.global-tool-render-patch");
-
 let currentPatch: GlobalToolRenderPatch | undefined;
 let currentTheme: Theme | undefined;
 let currentHooks: DefaultModeHooks | undefined;
@@ -834,7 +831,7 @@ export function setCcstyleTheme(theme: Theme): void {
   currentTheme = theme;
 }
 
-function shouldGloballyStyleTool(component: ToolComponent): boolean {
+function shouldGloballyStyleTool(_component: ToolComponent): boolean {
   // 接管全部工具：上游内置与 pico 定制工具
   // （ask/lsp/memory/todo/subagent 等）统一走 ccstyle 卡片。渲染与执行
   // 解耦——替换渲染器不影响工具执行。pico 定制工具的折叠摘要由

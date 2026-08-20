@@ -59,13 +59,6 @@ function isSgrLeftPress(packet: SgrMousePacket): boolean {
   return packet.final === "M" && baseButton === 0 && (packet.code & 32) === 0;
 }
 
-/** 仅剥离终端序列、保留原布局（换行/空白不动），用于命中区间计算。 */
-function stripTerminalSequencesPreservingLayout(value: string): string {
-  return value
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
-}
-
 // ── layout-tree hit testing ──────────────────────────────────────────────────
 
 /**

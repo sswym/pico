@@ -10,8 +10,6 @@
 
 export type SchemaValidationResult = { success: true } | { success: false; errors: string[] };
 
-const PRIMITIVE_TYPES = new Set(["string", "number", "integer", "boolean", "null"]);
-
 function typeMatches(value: unknown, type: string): boolean {
 	switch (type) {
 		case "string":

@@ -68,7 +68,7 @@ test("parseSetupArgs recognizes setup sections and flags", () => {
 });
 
 test("planSetupSections splits quick from advanced sections", () => {
-  const plan = planSetupSections({ quick: false, reconfigure: false }, undefined);
+  const plan = planSetupSections(undefined);
   expect(plan.quick).toEqual(["model", "ui"]);
   expect(plan.advanced).toEqual(["tools", "safety", "memory", "lsp", "hooks", "mcp", "integrations", "env"]);
   // Every section is covered exactly once.
@@ -78,7 +78,7 @@ test("planSetupSections splits quick from advanced sections", () => {
 });
 
 test("planSetupSections honors an explicit section argument", () => {
-  expect(planSetupSections({ quick: false, reconfigure: false }, "tools")).toEqual({
+  expect(planSetupSections("tools")).toEqual({
     quick: ["tools"],
     advanced: [],
   });

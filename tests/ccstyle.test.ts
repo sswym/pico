@@ -834,12 +834,6 @@ function makeFakePi() {
   };
 }
 
-const tuiCtx = {
-  mode: "tui",
-  hasUI: true,
-  ui: { notify: (message: string) => undefined, theme: stubTheme },
-} as never;
-
 test("ccstyle extension registers the command and session_start handler", async () => {
   const home = mkdtempSync(join(tmpdir(), "pico-ccstyle-"));
   const previousHome = process.env.PICO_HOME;
