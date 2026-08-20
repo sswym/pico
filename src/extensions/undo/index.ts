@@ -55,6 +55,14 @@ import type { UndoTreeEntry } from "./state.ts";
 
 const SESSION_FALLBACK = "__default__";
 
+/**
+ * 系统提示词引导片段:提示模型用 edit/write 修改项目源文件/配置文件,
+ * 避免用 bash 重定向等写文件(那些操作不会被 /undo 捕获)。
+ */
+export const UNDO_SYSTEM_PROMPT_HINT = `## 文件改动与 /undo 回退
+
+修改项目源文件或配置文件时,请使用 \`edit\` 或 \`write\` 工具,避免用 bash 重定向(\`>\`、\`>>\`)、\`tee\`、\`sed -i\`、\`cat > file\`、\`cp\`/\`mv\`/\`rm\` 等命令写文件——这些操作不会被 \`/undo\` 捕获。构建产物、日志、临时文件等非项目文件不受此限制。`;
+
 export { __resetUndoIdForTests };
 
 export function readUndoConfig(): UndoConfig {
@@ -301,13 +309,19 @@ export function undoExtension(pi: ExtensionAPI): void {
     if (ctx.hasUI) {
       try {
         ctx.ui.notify(result.message, result.ok ? "info" : "warning");
-      } catch {}
+      } catch { }
     } else {
       try {
         console.log(result.message);
-      } catch {}
+      } catch { }
     }
   };
+
+  // ── 提示词引导:模型优先用 edit/write 改项目文件,保证 /undo 可回退 ────────
+  pi.on("before_agent_start", async () => {
+    if (!readUndoConfig().enabled) return {};
+    return { systemPrompt: `\n${UNDO_SYSTEM_PROMPT_HINT}\n` };
+  });
 
   // ── 捕获:edit/write 执行前读原内容 ─────────────────────────────────────
   pi.on("tool_call", async (event: ToolCallEvent, ctx: ExtensionContext) => {
@@ -385,7 +399,7 @@ export function undoExtension(pi: ExtensionAPI): void {
       if (ctx.hasUI) {
         try {
           ctx.ui.notify(text, "info");
-        } catch {}
+        } catch { }
       } else {
         console.log(text);
       }
@@ -401,7 +415,7 @@ export function undoExtension(pi: ExtensionAPI): void {
       if (ctx.hasUI) {
         try {
           ctx.ui.notify("Undo history cleared.", "info");
-        } catch {}
+        } catch { }
       } else {
         console.log("Undo history cleared.");
       }

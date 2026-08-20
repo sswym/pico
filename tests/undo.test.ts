@@ -339,7 +339,7 @@ describe("undo end-to-end file restore", () => {
     const state = createUndoSessionState();
     const navCalls: string[] = [];
     const nav = {
-      waitForIdle: async () => {},
+      waitForIdle: async () => { },
       navigateTree: async (targetId: string) => {
         navCalls.push(targetId);
         return true;
@@ -368,7 +368,7 @@ describe("undo end-to-end file restore", () => {
     const state = createUndoSessionState();
     const navCalls: string[] = [];
     const nav = {
-      waitForIdle: async () => {},
+      waitForIdle: async () => { },
       navigateTree: async (targetId: string) => {
         navCalls.push(targetId);
         return true;
@@ -386,7 +386,7 @@ describe("undo end-to-end file restore", () => {
     const state = createUndoSessionState();
     const navCalls: string[] = [];
     const nav = {
-      waitForIdle: async () => {},
+      waitForIdle: async () => { },
       navigateTree: async (targetId: string) => {
         navCalls.push(targetId);
         return true;
@@ -423,7 +423,7 @@ describe("undo end-to-end file restore", () => {
     writeFileSync(filePath("a.txt"), "v1", "utf8");
     const state = createUndoSessionState();
     const nav = {
-      waitForIdle: async () => {},
+      waitForIdle: async () => { },
       navigateTree: async () => false, // 导航取消/失败
     };
 
@@ -473,9 +473,9 @@ describe("undo extension factory", () => {
       registerCommand: (name: string, opts: { description: string; handler: (args: string, ctx: FakeCtx) => Promise<void> }) => {
         commands.set(name, opts);
       },
-      registerTool: () => {},
-      sendMessage: () => {},
-      sendUserMessage: () => {},
+      registerTool: () => { },
+      sendMessage: () => { },
+      sendUserMessage: () => { },
     };
   }
 
@@ -512,6 +512,27 @@ describe("undo extension factory", () => {
     for (const name of ["undo", "redo", "undo-status", "undo-clear"]) {
       expect(pi.commands.has(name)).toBe(true);
     }
+  });
+
+  test("before_agent_start injects edit/write guidance when enabled", async () => {
+    const { pi } = installExtension();
+    const handler = pi.handlers["before_agent_start"]![0]! as unknown as () => Promise<{ systemPrompt?: string }>;
+    const result = await handler();
+    expect(result.systemPrompt).toBeDefined();
+    expect(result.systemPrompt).toContain("文件改动与 /undo 回退");
+    expect(result.systemPrompt).toContain("edit");
+    expect(result.systemPrompt).toContain("write");
+    expect(result.systemPrompt).toContain("bash");
+  });
+
+  test("before_agent_start omits guidance when undo disabled", async () => {
+    mkdirSync(join(testHome, "agent"), { recursive: true });
+    writeFileSync(join(testHome, "agent", "settings.json"), JSON.stringify({ undo: { enabled: false } }));
+
+    const { pi } = installExtension();
+    const handler = pi.handlers["before_agent_start"]![0]! as unknown as () => Promise<{ systemPrompt?: string }>;
+    const result = await handler();
+    expect(result.systemPrompt).toBeUndefined();
   });
 
   test("tool_call captures, tool_result success commits entry; /undo restores", async () => {
