@@ -104,12 +104,9 @@ export function syncTodoWidget(ctx: ExtensionContext, readTodos: TodoReader): vo
 
   ctx.ui.setStatus(TODO_STATUS_KEY, status);
   if (open.length === 0) {
-    // 2.5.12: completing the last task used to wipe the panel instantly —
-    // the "everything done" state is worth a glance. Keep it visible if the
-    // session actually had tasks, hide it for an empty first run.
-    const hadTasks = state.openIds.size > 0 || state.openContent.size > 0;
-    state.visible = hadTasks;
-    state.collapsed = false;
+    // 全部任务完成 → 自动隐藏面板(列表已整体折叠为空,无残留任务需要看)。
+    state.visible = false;
+    state.collapsed = true;
   } else if (hasNewOpen) {
     // Only genuinely new task content auto-opens the panel; a model
     // rewriting the list with fresh ids (same content) keeps it collapsed.

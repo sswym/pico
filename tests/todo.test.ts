@@ -101,6 +101,41 @@ test("allLists returns one entry per non-empty session", () => {
   expect(store.allLists()).toHaveLength(2);
 });
 
+test("syncTodoWidget hides the panel once every task is completed", () => {
+  const {
+    syncTodoWidget,
+    resetTodoWidgetStateForTests,
+    __getTodoWidgetStateForTests,
+  } = require("../src/extensions/todo/widget.ts") as typeof import("../src/extensions/todo/widget.ts");
+  resetTodoWidgetStateForTests();
+  const statuses: Array<string | undefined> = [];
+  const ctx = {
+    sessionManager: { getSessionId: () => "s1" },
+    hasUI: true,
+    ui: { setStatus: (key: string, value: string | undefined) => statuses.push(value) },
+  };
+  try {
+    // 面板因新任务自动展开
+    syncTodoWidget(ctx as never, () => [
+      { id: "1", content: "A", activeForm: "Aing", status: "in_progress" },
+      { id: "2", content: "B", activeForm: "Bing", status: "pending" },
+    ]);
+    expect(__getTodoWidgetStateForTests("s1")?.visible).toBe(true);
+
+    // 全部完成后面板自动隐藏,状态栏指示同时清除
+    syncTodoWidget(ctx as never, () => [
+      { id: "1", content: "A", activeForm: "Aing", status: "completed" },
+      { id: "2", content: "B", activeForm: "Bing", status: "completed" },
+    ]);
+    const state = __getTodoWidgetStateForTests("s1");
+    expect(state?.visible).toBe(false);
+    expect(state?.collapsed).toBe(true);
+    expect(statuses.at(-1)).toBeUndefined();
+  } finally {
+    resetTodoWidgetStateForTests();
+  }
+});
+
 test("plan-mode collapse is restored when the mode exits", () => {
   const {
     collapseTodoWidget,
@@ -112,7 +147,7 @@ test("plan-mode collapse is restored when the mode exits", () => {
   const ctx = {
     sessionManager: { getSessionId: () => "s1" },
     hasUI: true,
-    ui: { setStatus: () => {}, requestRender: () => {} },
+    ui: { setStatus: () => { }, requestRender: () => { } },
   };
   try {
     collapseTodoWidget(ctx as never);
