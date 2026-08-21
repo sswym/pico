@@ -24,7 +24,6 @@ import { signalsExtension } from "../extensions/signals.ts";
 import skillExtension from "../extensions/skill/index.ts";
 import subagentExtension from "../extensions/subagent/index.ts";
 import { todoExtension } from "../extensions/todo/index.ts";
-import undoExtension from "../extensions/undo/index.ts";
 import { vibeExtension } from "../extensions/vibe.ts";
 import { visionExtension } from "../extensions/vision/index.ts";
 import { webExtension } from "../extensions/web/index.ts";
@@ -139,7 +138,6 @@ export const defaultExtensions = [
     safety: { touchesFilesystem: true },
   },
   { name: "plan", factory: planExtension, phase: "tools" },
-  { name: "undo", factory: undoExtension, phase: "tools" },
   { name: "web", factory: webExtension, phase: "tools", safety: { usesNetwork: true } },
   {
     name: "lsp",
